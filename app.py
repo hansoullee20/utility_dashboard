@@ -1,5 +1,8 @@
+import numpy as np
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+from scipy import stats
 from typing import Dict
 
 from data import read_upload, apply_header_rows, to_numeric_series, st_safe
@@ -204,12 +207,38 @@ def main():
 
     # ---------------- 공실 filter ----------------
     has_gongshil = cur_df["brand"].astype(str).str.contains("공실", na=False).any()
-    show_gongshil = st.toggle("공실 only", value=False, disabled=not has_gongshil)
-    if show_gongshil:
+    gongshil_mode = st.radio(
+        "공실 filter", ["All", "Exclude 공실", "공실 only"],
+        index=0, horizontal=True,
+        disabled=not has_gongshil,
+    )
+    if gongshil_mode == "공실 only":
         cur_df = cur_df[cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
         if cur_df.empty:
             st.warning("No 공실 entries for the current selection.")
             st.stop()
+    elif gongshil_mode == "Exclude 공실":
+        cur_df = cur_df[~cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
+        if cur_df.empty:
+            st.warning("No entries remaining after excluding 공실.")
+            st.stop()
+
+    # ---------------- Per-size derived columns ----------------
+    usage_cols = {
+        "water_usage_m3":    ("water_usage_per_m2",    "water_usage_per_py"),
+        "hwater_usage_m3":   ("hwater_usage_per_m2",   "hwater_usage_per_py"),
+        "elect_usage_kw":    ("elect_usage_per_m2",    "elect_usage_per_py"),
+        "heat_usage_m3_mwh": ("heat_usage_per_m2",    "heat_usage_per_py"),
+    }
+    size_m2 = to_numeric_series(cur_df["size_m2"]).replace(0, float("nan")) if "size_m2" in cur_df.columns else None
+    size_py = to_numeric_series(cur_df["size_py"]).replace(0, float("nan")) if "size_py" in cur_df.columns else None
+    for usage_col, (per_m2_col, per_py_col) in usage_cols.items():
+        if usage_col in cur_df.columns:
+            usage = to_numeric_series(cur_df[usage_col])
+            if size_m2 is not None:
+                cur_df[per_m2_col] = (usage / size_m2).round(4)
+            if size_py is not None:
+                cur_df[per_py_col] = (usage / size_py).round(4)
 
     bldg_tag = "all" if "All" in selected_buildings else "_".join(selected_buildings)
     df_key = f"bldg_{bldg_tag}"
@@ -308,8 +337,8 @@ def main():
         if stats_pct:
             render_stats(stats_pct)
 
-    tab_change, tab_pct, tab_overlap, tab_ranking = st.tabs([
-        "Quantitative Change", "Percentage Change", "Quadrant Analysis", "Brand Ranking"
+    tab_change, tab_pct, tab_overlap, tab_ranking, tab_corr = st.tabs([
+        "Quantitative Change", "Percentage Change", "Quadrant Analysis", "Brand Ranking", "Correlation"
     ])
 
     # ---------------- Change tab ----------------
@@ -564,6 +593,160 @@ All three normalized to [0, 1], then averaged:
             st.dataframe(st_safe(rank_view), width="stretch", hide_index=True,
                          height=35 * len(rank_view) + 38)
             download_df_as_excel(rank_view, filename=f"{df_key}_{prefix}_brand_ranking.xlsx", sheet_name="brand_ranking")
+
+    # ---------------- Correlation tab ----------------
+    with tab_corr:
+        st.subheader("Correlation — Interactive Scatter")
+
+        _all_numeric = sorted([
+            c for c in cur_df.columns
+            if pd.api.types.is_numeric_dtype(cur_df[c])
+            and cur_df[c].notna().any()
+        ])
+        _size_first = [c for c in ["size_m2", "size_py"] if c in _all_numeric]
+        numeric_cols = _size_first + [c for c in _all_numeric if c not in _size_first]
+
+        if len(numeric_cols) < 2:
+            st.info("Not enough numeric columns for correlation.")
+        else:
+            cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+            with cc1:
+                x_col = st.selectbox("X axis", numeric_cols, index=0, key="corr_x")
+            with cc2:
+                y_col = st.selectbox("Y axis", numeric_cols, index=min(1, len(numeric_cols) - 1), key="corr_y")
+            with cc3:
+                color_by = st.selectbox("Color by", ["brand", "building"], index=0, key="corr_color")
+            with cc4:
+                log_x = st.checkbox("Log X", value=False, key="corr_log_x")
+            with cc5:
+                log_y = st.checkbox("Log Y", value=False, key="corr_log_y")
+
+            oc1, oc2 = st.columns([1, 4])
+            with oc1:
+                remove_outliers = st.checkbox("Remove outliers", value=False, key="corr_remove_outliers")
+            with oc2:
+                iqr_k = st.slider("IQR multiplier", 0.5, 3.0, 1.5, 0.1, key="corr_iqr_k", disabled=not remove_outliers)
+
+            hover_extra = [c for c in ["brand", "building", "size_m2", "size_py"] if c in cur_df.columns and c not in [x_col, y_col]]
+            corr_df = cur_df[[x_col, y_col] + hover_extra].dropna(subset=[x_col, y_col]).copy()
+
+            if remove_outliers:
+                for col in [x_col, y_col]:
+                    q1, q3 = corr_df[col].quantile(0.25), corr_df[col].quantile(0.75)
+                    iqr = q3 - q1
+                    corr_df = corr_df[(corr_df[col] >= q1 - iqr_k * iqr) & (corr_df[col] <= q3 + iqr_k * iqr)]
+
+            if corr_df.empty:
+                st.warning("No data with valid values for both selected columns.")
+            else:
+                # Regression on (optionally log-transformed) values
+                x_vals = corr_df[x_col].values.astype(float)
+                y_vals = corr_df[y_col].values.astype(float)
+                if log_x:
+                    mask = x_vals > 0
+                    x_vals, y_vals = np.log10(x_vals[mask]), y_vals[mask]
+                if log_y:
+                    mask = y_vals > 0
+                    x_vals, y_vals = x_vals[mask], np.log10(y_vals[mask])
+
+                fig = px.scatter(
+                    corr_df,
+                    x=x_col,
+                    y=y_col,
+                    color=color_by if color_by in corr_df.columns else None,
+                    hover_data=hover_extra,
+                    log_x=log_x,
+                    log_y=log_y,
+                    title=f"{x_col} vs {y_col}",
+                )
+
+                if len(x_vals) >= 2:
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(x_vals, y_vals)
+
+                    # Build trendline points in original (non-log) space for plotly
+                    x_line = np.linspace(x_vals.min(), x_vals.max(), 200)
+                    y_line = slope * x_line + intercept
+                    if log_x:
+                        x_line = 10 ** x_line
+                    if log_y:
+                        y_line = 10 ** y_line
+
+                    fig.add_scatter(
+                        x=x_line, y=y_line,
+                        mode="lines",
+                        name="Trendline",
+                        line=dict(color="red", width=2, dash="dash"),
+                    )
+
+                    x_label = f"log10({x_col})" if log_x else x_col
+                    y_label = f"log10({y_col})" if log_y else y_col
+                    sign = "+" if intercept >= 0 else "-"
+                    eq_text = f"y = {slope:.4f}x {sign} {abs(intercept):.4f}"
+                    fig.add_annotation(
+                        xref="paper", yref="paper",
+                        x=0.01, y=0.99,
+                        text=eq_text,
+                        showarrow=False,
+                        align="left",
+                        bgcolor="rgba(255,255,255,0.8)",
+                        bordercolor="red",
+                        borderwidth=1,
+                        font=dict(size=12, color="red"),
+                    )
+                    reg_row = pd.DataFrame([{
+                        "equation":   f"{y_label} = {slope:.4f} × {x_label} + {intercept:.4f}",
+                        "slope":      round(slope, 6),
+                        "intercept":  round(intercept, 6),
+                        "R²":         round(r_value ** 2, 6),
+                        "p-value":    f"{p_value:.4e}",
+                        "std_err":    round(std_err, 6),
+                        "n":          len(x_vals),
+                    }])
+
+                fig.update_layout(height=550)
+                st.plotly_chart(fig, use_container_width=True)
+
+                if len(x_vals) >= 2:
+                    st.dataframe(reg_row, hide_index=True, width="stretch")
+
+                    # Interpretation
+                    r2 = r_value ** 2
+                    direction = "positive" if slope > 0 else "negative"
+                    direction_meaning = (
+                        f"As **{x_col}** increases, **{y_col}** tends to **increase**."
+                        if slope > 0 else
+                        f"As **{x_col}** increases, **{y_col}** tends to **decrease**."
+                    )
+
+                    if r2 >= 0.7:
+                        strength = "very strong"
+                    elif r2 >= 0.5:
+                        strength = "strong"
+                    elif r2 >= 0.3:
+                        strength = "moderate"
+                    elif r2 >= 0.1:
+                        strength = "weak"
+                    else:
+                        strength = "very weak"
+
+                    if p_value < 0.001:
+                        sig_text = "highly statistically significant (p < 0.001)"
+                    elif p_value < 0.01:
+                        sig_text = "very statistically significant (p < 0.01)"
+                    elif p_value < 0.05:
+                        sig_text = "statistically significant (p < 0.05)"
+                    else:
+                        sig_text = "**not statistically significant** (p ≥ 0.05) — treat this result with caution"
+
+                    st.markdown(f"""
+**Interpretation**
+
+There is a **{strength} {direction} linear relationship** between {x_col} and {y_col} (R² = {r2:.4f}). {direction_meaning}
+
+The model explains **{r2*100:.1f}%** of the variance in {y_col}. The relationship is {sig_text}.
+
+For every 1-unit increase in {x_col}, {y_col} changes by **{slope:.4f}** on average.
+""")
 
 if __name__ == "__main__":
     try:
