@@ -40,10 +40,8 @@ def main():
         def apply_preset():
             val = preset_map.get(st.session_state["preset_select"])
             if val is not None:
-                st.session_state["tail_chg"]       = val
-                st.session_state["tail_pct"]       = val
-                st.session_state["tail_chg_input"] = val
-                st.session_state["tail_pct_input"] = val
+                st.session_state["tail"]       = val
+                st.session_state["tail_input"] = val
 
         preset = st.selectbox(
             "⚡ Quick presets",
@@ -51,61 +49,39 @@ def main():
             index=0,
             key="preset_select",
             on_change=apply_preset,
-            help="Pick a preset to quickly adjust tail percentages",
+            help="Pick a preset to quickly adjust tail percentage",
         )
 
         st.divider()
 
         # ---- Bins ----
-        bc1, bc2 = st.columns([3, 1])
-        with bc1:
-            bins_change = st.slider("Bins (change)", 5, 200, 50, 1, key="bins_chg")
-        with bc2:
-            bins_change = st.number_input("", 5, 200, value=bins_change, step=1, key="bins_chg_input", label_visibility="hidden")
-
-        bp1, bp2 = st.columns([3, 1])
-        with bp1:
-            bins_pct = st.slider("Bins (pct)", 5, 200, 50, 1, key="bins_pct")
-        with bp2:
-            bins_pct = st.number_input("", 5, 200, value=bins_pct, step=1, key="bins_pct_input", label_visibility="hidden")
+        b1, b2 = st.columns([3, 1])
+        with b1:
+            bins = st.slider("Bins", 5, 200, 50, 1, key="bins")
+        with b2:
+            bins = st.number_input("", 5, 200, value=bins, step=1, key="bins_input", label_visibility="hidden")
 
         # ---- Tail % ----
-        if "tail_chg" not in st.session_state:
-            st.session_state["tail_chg"] = 20
-        if "tail_pct" not in st.session_state:
-            st.session_state["tail_pct"] = 20
-        if "tail_chg_input" not in st.session_state:
-            st.session_state["tail_chg_input"] = 20
-        if "tail_pct_input" not in st.session_state:
-            st.session_state["tail_pct_input"] = 20
+        if "tail" not in st.session_state:
+            st.session_state["tail"] = 20
+        if "tail_input" not in st.session_state:
+            st.session_state["tail_input"] = 20
 
-        tc1, tc2 = st.columns([3, 1])
-        with tc1:
-            tail_pct_change = st.slider(
-                "Change tail %",
+        t1, t2 = st.columns([3, 1])
+        with t1:
+            tail = st.slider(
+                "Tail %",
                 1, 50,
                 step=1,
-                key="tail_chg",
-                help="Show the bottom N% and top N% of change values",
+                key="tail",
+                help="Show the bottom N% and top N% of both change and pct values",
             )
-        with tc2:
-            st.number_input("", 1, 50, step=1, key="tail_chg_input", label_visibility="hidden")
+        with t2:
+            st.number_input("", 1, 50, step=1, key="tail_input", label_visibility="hidden")
 
-        tp1, tp2 = st.columns([3, 1])
-        with tp1:
-            tail_pct_pct = st.slider(
-                "Pct tail %",
-                1, 50,
-                step=1,
-                key="tail_pct",
-                help="Show the bottom N% and top N% of percentage change values",
-            )
-        with tp2:
-            st.number_input("", 1, 50, step=1, key="tail_pct_input", label_visibility="hidden")
-
-        # Convert tail % to quantile bounds
-        q_change = (tail_pct_change / 100.0, 1.0 - tail_pct_change / 100.0)
-        q_pct = (tail_pct_pct / 100.0, 1.0 - tail_pct_pct / 100.0)
+        # Convert tail % to quantile bounds (shared for both change and pct)
+        q_change = (tail / 100.0, 1.0 - tail / 100.0)
+        q_pct    = q_change
 
         st.divider()
         debug = st.checkbox("Debug", value=False)
@@ -295,13 +271,13 @@ def main():
 
     with h1:
         stats_change = plot_hist_with_tails(
-            s_change, bins_change, float(lo_c), float(hi_c), f"Change: {change_col}"
+            s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}"
         )
         if stats_change:
             render_stats(stats_change)
     with h2:
         stats_pct = plot_hist_with_tails(
-            s_pct, bins_pct, float(lo_p), float(hi_p), f"Pct: {pct_col}"
+            s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}"
         )
         if stats_pct:
             render_stats(stats_pct)
@@ -313,7 +289,7 @@ def main():
     # ---------------- Change tab ----------------
     with tab_change:
         st.subheader(f"Quantitative Change — {change_col}")
-        chg_label = f"{tail_pct_change}%"
+        chg_label = f"{tail}%"
         chg_view_mode = st.radio(
             "Show", ["All", "Top", "Bottom"], index=0, horizontal=True, key="chg_view_mode"
         )
@@ -350,7 +326,7 @@ def main():
     # ---------------- Pct tab ----------------
     with tab_pct:
         st.subheader(f"Percentage Change — {pct_col}")
-        pct_label = f"{tail_pct_pct}%"
+        pct_label = f"{tail}%"
         pct_view_mode = st.radio(
             "Show", ["All", "Top", "Bottom"], index=0, horizontal=True, key="pct_view_mode"
         )
