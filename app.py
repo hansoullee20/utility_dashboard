@@ -55,11 +55,23 @@ def main():
         st.divider()
 
         # ---- Bins ----
+        if "bins" not in st.session_state:
+            st.session_state["bins"] = 50
+        if "bins_input" not in st.session_state:
+            st.session_state["bins_input"] = 50
+
+        def sync_bins_slider():
+            st.session_state["bins_input"] = st.session_state["bins"]
+
+        def sync_bins_input():
+            st.session_state["bins"] = st.session_state["bins_input"]
+
         b1, b2 = st.columns([3, 1])
         with b1:
-            bins = st.slider("Bins", 5, 200, 50, 1, key="bins")
+            st.slider("Bins", 5, 200, step=1, key="bins", on_change=sync_bins_slider)
         with b2:
-            bins = st.number_input("", 5, 200, value=bins, step=1, key="bins_input", label_visibility="hidden")
+            st.number_input("", 5, 200, step=1, key="bins_input", label_visibility="hidden", on_change=sync_bins_input)
+        bins = st.session_state["bins"]
 
         # ---- Tail % ----
         if "tail" not in st.session_state:
@@ -67,17 +79,22 @@ def main():
         if "tail_input" not in st.session_state:
             st.session_state["tail_input"] = 20
 
+        def sync_tail_slider():
+            st.session_state["tail_input"] = st.session_state["tail"]
+
+        def sync_tail_input():
+            st.session_state["tail"] = st.session_state["tail_input"]
+
         t1, t2 = st.columns([3, 1])
         with t1:
-            tail = st.slider(
-                "Tail %",
-                1, 50,
-                step=1,
-                key="tail",
+            st.slider(
+                "Tail %", 1, 50, step=1, key="tail",
+                on_change=sync_tail_slider,
                 help="Show the bottom N% and top N% of both change and pct values",
             )
         with t2:
-            st.number_input("", 1, 50, step=1, key="tail_input", label_visibility="hidden")
+            st.number_input("", 1, 50, step=1, key="tail_input", label_visibility="hidden", on_change=sync_tail_input)
+        tail = st.session_state["tail"]
 
         # Convert tail % to quantile bounds (shared for both change and pct)
         q_change = (tail / 100.0, 1.0 - tail / 100.0)
@@ -184,6 +201,15 @@ def main():
     if cur_df.empty:
         st.warning("No data for the selected floor combination.")
         st.stop()
+
+    # ---------------- 공실 filter ----------------
+    has_gongshil = cur_df["brand"].astype(str).str.contains("공실", na=False).any()
+    show_gongshil = st.toggle("공실 only", value=False, disabled=not has_gongshil)
+    if show_gongshil:
+        cur_df = cur_df[cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
+        if cur_df.empty:
+            st.warning("No 공실 entries for the current selection.")
+            st.stop()
 
     bldg_tag = "all" if "All" in selected_buildings else "_".join(selected_buildings)
     df_key = f"bldg_{bldg_tag}"
