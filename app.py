@@ -5,6 +5,9 @@ from typing import Dict
 from data import read_upload, apply_header_rows, to_numeric_series, st_safe
 from features import (
     create_change_columns,
+    aggregate_by_brand,
+    split_brand_by_floor,
+    get_simple_floors,
     sanitize,
     sort_df,
     display_cols_for_prefix,
@@ -16,41 +19,95 @@ from viz import plot_hist_with_tails
 
 
 def main():
-    st.set_page_config(page_title="Utility Outlier Dashboard", layout="wide")
-    st.title("Utility Outlier Dashboard")
+    st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
+    st.title("Utility Analysis Dashboard")
 
     # ---------------- Sidebar ----------------
     with st.sidebar:
         st.header("Upload")
         uploads = st.file_uploader(
             "Upload CSV/XLSX/Parquet",
-            type=["csv", "xlsx", "xls", "parquet"],
+            type=["csv", "xlsx", "xls", "xlsm", "parquet"],
             accept_multiple_files=True,
         )
 
         st.divider()
-        st.header("Thresholds")
-        bins_change = st.slider("Bins (chg)", 5, 200, 30, 1)
-        bins_pct = st.slider("Bins (pct)", 5, 200, 30, 1)
-        q_change = st.slider(
-            "Change quantiles",
-            0.0,
-            1.0,
-            value=(0.20, 0.80),
-            step=0.01,
-            key="q_change",
-        )
-        q_pct = st.slider(
-            "Pct quantiles",
-            0.0,
-            1.0,
-            value=(0.20, 0.80),
-            step=0.01,
-            key="q_pct",
+        st.header("⚙️ Settings")
+
+        # ---- Presets ----
+        preset_map = {"Default (20%)": 20, "Gentle (10%)": 10, "Dense (30%)": 30}
+
+        def apply_preset():
+            val = preset_map.get(st.session_state["preset_select"])
+            if val is not None:
+                st.session_state["tail_chg"]       = val
+                st.session_state["tail_pct"]       = val
+                st.session_state["tail_chg_input"] = val
+                st.session_state["tail_pct_input"] = val
+
+        preset = st.selectbox(
+            "⚡ Quick presets",
+            ["Custom", "Default (20%)", "Gentle (10%)", "Dense (30%)"],
+            index=0,
+            key="preset_select",
+            on_change=apply_preset,
+            help="Pick a preset to quickly adjust tail percentages",
         )
 
-        # Keeping for now (even if mostly redundant with explicit sorting)
-        row_sort_mode = st.selectbox("Row sort", ["keep", "extreme"], index=0)
+        st.divider()
+
+        # ---- Bins ----
+        bc1, bc2 = st.columns([3, 1])
+        with bc1:
+            bins_change = st.slider("Bins (change)", 5, 200, 50, 1, key="bins_chg")
+        with bc2:
+            bins_change = st.number_input("", 5, 200, value=bins_change, step=1, key="bins_chg_input", label_visibility="hidden")
+
+        bp1, bp2 = st.columns([3, 1])
+        with bp1:
+            bins_pct = st.slider("Bins (pct)", 5, 200, 50, 1, key="bins_pct")
+        with bp2:
+            bins_pct = st.number_input("", 5, 200, value=bins_pct, step=1, key="bins_pct_input", label_visibility="hidden")
+
+        # ---- Tail % ----
+        if "tail_chg" not in st.session_state:
+            st.session_state["tail_chg"] = 20
+        if "tail_pct" not in st.session_state:
+            st.session_state["tail_pct"] = 20
+        if "tail_chg_input" not in st.session_state:
+            st.session_state["tail_chg_input"] = 20
+        if "tail_pct_input" not in st.session_state:
+            st.session_state["tail_pct_input"] = 20
+
+        tc1, tc2 = st.columns([3, 1])
+        with tc1:
+            tail_pct_change = st.slider(
+                "Change tail %",
+                1, 50,
+                step=1,
+                key="tail_chg",
+                help="Show the bottom N% and top N% of change values",
+            )
+        with tc2:
+            st.number_input("", 1, 50, step=1, key="tail_chg_input", label_visibility="hidden")
+
+        tp1, tp2 = st.columns([3, 1])
+        with tp1:
+            tail_pct_pct = st.slider(
+                "Pct tail %",
+                1, 50,
+                step=1,
+                key="tail_pct",
+                help="Show the bottom N% and top N% of percentage change values",
+            )
+        with tp2:
+            st.number_input("", 1, 50, step=1, key="tail_pct_input", label_visibility="hidden")
+
+        # Convert tail % to quantile bounds
+        q_change = (tail_pct_change / 100.0, 1.0 - tail_pct_change / 100.0)
+        q_pct = (tail_pct_pct / 100.0, 1.0 - tail_pct_pct / 100.0)
+
+        st.divider()
         debug = st.checkbox("Debug", value=False)
 
     if not uploads:
@@ -69,7 +126,9 @@ def main():
         st.stop()
 
     file_name = st.selectbox("Select file", list(files.keys()))
-    sheet_name = st.selectbox("Select sheet", list(files[file_name].keys()), index=0)
+    sheet_keys = list(files[file_name].keys())
+    default_sheet = "검침 내역" if "검침 내역" in sheet_keys else sheet_keys[0]
+    sheet_name = st.selectbox("Select sheet", sheet_keys, index=sheet_keys.index(default_sheet), key=f"sheet_{file_name}")
     raw_df = files[file_name][sheet_name]
 
     # ---------------- Preprocess ----------------
@@ -91,19 +150,72 @@ def main():
             st.error(f"Missing required column: {col}")
             st.stop()
 
-    # ---------------- Building split ----------------
-    dfs = {"df_all": df}
-    # print(df.head())
-    # print(df.head())
+    # ---------------- Building & Floor filters ----------------
+    all_buildings = sorted(df["building"].dropna().unique().tolist())
+    all_floors = get_simple_floors(df)
 
+    building_options = ["All"] + all_buildings
+    floor_options    = ["All"] + all_floors
 
-    for b in ["A", "B", "C", "D"]:
-        dfs[f"df_{b.lower()}"] = df[df["building"].astype(str).str.strip() == b].copy()
+    def on_building_change():
+        sel = st.session_state["building_select"]
+        if not sel:
+            st.session_state["building_select"] = ["All"]
+        elif sel[-1] == "All":
+            st.session_state["building_select"] = ["All"]
+        elif "All" in sel:
+            st.session_state["building_select"] = [s for s in sel if s != "All"]
 
-    df_key = st.selectbox("Select DF", list(dfs.keys()))
-    cur_df = dfs[df_key].copy()
+    def on_floor_change():
+        sel = st.session_state["floor_select"]
+        if not sel:
+            st.session_state["floor_select"] = ["All"]
+        elif sel[-1] == "All":
+            st.session_state["floor_select"] = ["All"]
+        elif "All" in sel:
+            st.session_state["floor_select"] = [s for s in sel if s != "All"]
+
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        selected_buildings = st.multiselect(
+            "Building", building_options, default=["All"],
+            key="building_select", on_change=on_building_change,
+        )
+    with fc2:
+        selected_floors = st.multiselect(
+            "Floor", floor_options, default=["All"],
+            key="floor_select", on_change=on_floor_change,
+        )
+
+    active_buildings = all_buildings if "All" in selected_buildings else selected_buildings
+    active_floors    = all_floors    if "All" in selected_floors    else selected_floors
+
+    # Always filter by building only — floor filtering is handled after aggregation
+    ref_df = df[df["building"].isin(active_buildings)].copy()
+    floors_filtered = "All" not in selected_floors
+
+    if ref_df.empty:
+        st.warning("No data for the selected building.")
+        st.stop()
+
+    # Aggregate by brand using all floors, then split if specific floors selected
+    agg_df = aggregate_by_brand(ref_df)
+    if floors_filtered:
+        cur_df = split_brand_by_floor(agg_df, ref_df, active_floors)
+    else:
+        cur_df = agg_df
+
+    if cur_df.empty:
+        st.warning("No data for the selected floor combination.")
+        st.stop()
+
+    bldg_tag = "all" if "All" in selected_buildings else "_".join(selected_buildings)
+    df_key = f"bldg_{bldg_tag}"
 
     if debug:
+        st.write("floors_filtered:", floors_filtered)
+        st.write("active_floors:", active_floors)
+        st.write("ref_df floors (unique):", sorted(ref_df["floor"].dropna().unique().tolist()) if "floor" in ref_df.columns else "no floor col")
         st.dataframe(st_safe(cur_df.head(20)), width="stretch", hide_index=True)
         
 
@@ -136,31 +248,6 @@ def main():
     lo_c, hi_c = valid[change_col].quantile([q0c, q1c])
     lo_p, hi_p = valid[pct_col].quantile([q0p, q1p])
 
-    # ---------------- Plots ----------------
-    c1, c2 = st.columns(2)
-
-    with c1:
-        stats_change = plot_hist_with_tails(
-            s_change, bins_change, float(lo_c), float(hi_c), f"Change: {change_col}"
-        )
-        if stats_change:
-            st.caption(
-                f"n={stats_change['n']} | mean={stats_change['mean']:.4g} | std={stats_change['std']:.4g} | "
-                f"min={stats_change['min']:.4g} | p20={stats_change['p20']:.4g} | median={stats_change['median']:.4g} | "
-                f"p80={stats_change['p80']:.4g} | max={stats_change['max']:.4g}"
-            )
-
-    with c2:
-        stats_pct = plot_hist_with_tails(
-            s_pct, bins_pct, float(lo_p), float(hi_p), f"Pct: {pct_col}"
-        )
-        if stats_pct:
-            st.caption(
-                f"n={stats_pct['n']} | mean={stats_pct['mean']:.4g} | std={stats_pct['std']:.4g} | "
-                f"min={stats_pct['min']:.4g} | p20={stats_pct['p20']:.4g} | median={stats_pct['median']:.4g} | "
-                f"p80={stats_pct['p80']:.4g} | max={stats_pct['max']:.4g}"
-            )
-
     # ---------------- Tables (per-graph, top->bottom, sorted high->low) ----------------
     # Inclusive bounds to include ties at the cutoff
     chg_top = cur_df[cur_df[change_col] >= hi_c].copy()
@@ -174,117 +261,307 @@ def main():
     pct_top = pct_top.sort_values(pct_col, ascending=False).copy()
     pct_bot = pct_bot.sort_values(pct_col, ascending=False).copy()
 
-    left, right = st.columns(2)
+    # ---------------- Quadrant masks (shared across tabs) ----------------
+    chg_low_mask  = cur_df[change_col] <= lo_c
+    chg_high_mask = cur_df[change_col] >= hi_c
+    pct_low_mask  = cur_df[pct_col]    <= lo_p
+    pct_high_mask = cur_df[pct_col]    >= hi_p
 
-    with left:
-        st.subheader(f"{change_col} (Top/Bottom)")
+    q_HH = cur_df.loc[chg_high_mask & pct_high_mask].copy()
+    q_HL = cur_df.loc[chg_high_mask & pct_low_mask].copy()
+    q_LH = cur_df.loc[chg_low_mask  & pct_high_mask].copy()
+    q_LL = cur_df.loc[chg_low_mask  & pct_low_mask].copy()
 
-        st.markdown(f"**Top 20% (>= {float(hi_c):.4g})** — sorted high→low ({len(chg_top)})")
-        chg_cols_top = cols_brand_then_category(chg_top, prefix, mode="change")
-        chg_top_view = add_display_index(chg_top[chg_cols_top])
-        st.dataframe(st_safe(chg_top_view), width="stretch", hide_index=True)
-        download_df_as_excel(
-            chg_top_view,
-            filename=f"{df_key}_{prefix}_change_top20.xlsx",
-            sheet_name="change_top20",
+    q_HH = q_HH.sort_values([pct_col, change_col], ascending=False)
+    q_HL = q_HL.sort_values([pct_col, change_col], ascending=False)
+    q_LH = q_LH.sort_values([pct_col, change_col], ascending=False)
+    q_LL = q_LL.sort_values([pct_col, change_col], ascending=False)
+
+    # ---------------- Histograms (always visible) ----------------
+    h1, h2 = st.columns(2)
+
+    def render_stats(stats: dict):
+        stats_row = pd.DataFrame([{
+            "n":      stats["n"],
+            "min":    round(stats["min"],    4),
+            "p20":    round(stats["p20"],    4),
+            "median": round(stats["median"], 4),
+            "mean":   round(stats["mean"],   4),
+            "std":    round(stats["std"],    4),
+            "p80":    round(stats["p80"],    4),
+            "max":    round(stats["max"],    4),
+        }])
+        st.dataframe(stats_row, hide_index=True, width="stretch")
+
+    with h1:
+        stats_change = plot_hist_with_tails(
+            s_change, bins_change, float(lo_c), float(hi_c), f"Change: {change_col}"
+        )
+        if stats_change:
+            render_stats(stats_change)
+    with h2:
+        stats_pct = plot_hist_with_tails(
+            s_pct, bins_pct, float(lo_p), float(hi_p), f"Pct: {pct_col}"
+        )
+        if stats_pct:
+            render_stats(stats_pct)
+
+    tab_change, tab_pct, tab_overlap, tab_ranking = st.tabs([
+        "Quantitative Change", "Percentage Change", "Quadrant Analysis", "Brand Ranking"
+    ])
+
+    # ---------------- Change tab ----------------
+    with tab_change:
+        st.subheader(f"Quantitative Change — {change_col}")
+        chg_label = f"{tail_pct_change}%"
+        chg_view_mode = st.radio(
+            "Show", ["All", "Top", "Bottom"], index=0, horizontal=True, key="chg_view_mode"
         )
 
-        st.markdown(f"**Bottom 20% (<= {float(lo_c):.4g})** — sorted high→low ({len(chg_bot)})")
-        chg_cols_bot = cols_brand_then_category(chg_bot, prefix, mode="change")
-        chg_bot_view = add_display_index(chg_bot[chg_cols_bot])
-        st.dataframe(st_safe(chg_bot_view), width="stretch", hide_index=True)
-        download_df_as_excel(
-            chg_bot_view,
-            filename=f"{df_key}_{prefix}_change_bottom20.xlsx",
-            sheet_name="change_bottom20",
+        chg_display_cols = cols_brand_then_category(cur_df, prefix, mode="change")
+
+        if chg_view_mode == "All":
+            chg_all = cur_df[chg_display_cols].dropna(subset=[change_col]).sort_values(change_col, ascending=False).copy()
+            chg_all_view = add_display_index(chg_all)
+            st.markdown(f"**All entries** — sorted high→low ({len(chg_all)})")
+            st.dataframe(st_safe(chg_all_view), width="stretch", hide_index=True, height=35 * len(chg_all_view) + 38)
+            download_df_as_excel(chg_all_view, filename=f"{df_key}_{prefix}_change_all.xlsx", sheet_name="change_all")
+
+        elif chg_view_mode == "Top":
+            st.markdown(f"**Top {chg_label} (>= {float(hi_c):.4g})** — sorted high→low ({len(chg_top)})")
+            chg_top_view = add_display_index(chg_top[cols_brand_then_category(chg_top, prefix, mode="change")])
+            st.dataframe(st_safe(chg_top_view), width="stretch", hide_index=True)
+            download_df_as_excel(chg_top_view, filename=f"{df_key}_{prefix}_change_top.xlsx", sheet_name="change_top")
+
+        else:  # Bottom
+            st.markdown(f"**Bottom {chg_label} (<= {float(lo_c):.4g})** — sorted high→low ({len(chg_bot)})")
+            chg_bot_view = add_display_index(chg_bot[cols_brand_then_category(chg_bot, prefix, mode="change")])
+            st.dataframe(st_safe(chg_bot_view), width="stretch", hide_index=True)
+            download_df_as_excel(chg_bot_view, filename=f"{df_key}_{prefix}_change_bottom.xlsx", sheet_name="change_bottom")
+
+        chg_nan = cur_df[cur_df[change_col].isna()][chg_display_cols].copy()
+        if not chg_nan.empty:
+            st.divider()
+            st.markdown(f"**No Data (NaN)** — missing quantitative change ({len(chg_nan)})")
+            chg_nan_view = add_display_index(chg_nan)
+            st.dataframe(st_safe(chg_nan_view), width="stretch", hide_index=True)
+            download_df_as_excel(chg_nan_view, filename=f"{df_key}_{prefix}_change_nan.xlsx", sheet_name="change_nan")
+
+    # ---------------- Pct tab ----------------
+    with tab_pct:
+        st.subheader(f"Percentage Change — {pct_col}")
+        pct_label = f"{tail_pct_pct}%"
+        pct_view_mode = st.radio(
+            "Show", ["All", "Top", "Bottom"], index=0, horizontal=True, key="pct_view_mode"
         )
 
-    with right:
-        st.subheader(f"{pct_col} (Top/Bottom)")
+        pct_display_cols = cols_brand_then_category(cur_df, prefix, mode="pct")
 
-        st.markdown(f"**Top 20% (>= {float(hi_p):.4g})** — sorted high→low ({len(pct_top)})")
-        pct_cols_top = cols_brand_then_category(pct_top, prefix, mode="pct")
-        pct_top_view = add_display_index(pct_top[pct_cols_top])
-        st.dataframe(st_safe(pct_top_view), width="stretch", hide_index=True)
-        download_df_as_excel(
-            pct_top_view,
-            filename=f"{df_key}_{prefix}_pct_top20.xlsx",
-            sheet_name="pct_top20",
-        )
+        if pct_view_mode == "All":
+            pct_all = cur_df[pct_display_cols].dropna(subset=[pct_col]).sort_values(pct_col, ascending=False).copy()
+            pct_all_view = add_display_index(pct_all)
+            st.markdown(f"**All entries** — sorted high→low ({len(pct_all)})")
+            st.dataframe(st_safe(pct_all_view), width="stretch", hide_index=True, height=35 * len(pct_all_view) + 38)
+            download_df_as_excel(pct_all_view, filename=f"{df_key}_{prefix}_pct_all.xlsx", sheet_name="pct_all")
 
-        st.markdown(f"**Bottom 20% (<= {float(lo_p):.4g})** — sorted high→low ({len(pct_bot)})")
-        pct_cols_bot = cols_brand_then_category(pct_bot, prefix, mode="pct")
-        pct_bot_view = add_display_index(pct_bot[pct_cols_bot])
-        st.dataframe(st_safe(pct_bot_view), width="stretch", hide_index=True)
-        download_df_as_excel(
-            pct_bot_view,
-            filename=f"{df_key}_{prefix}_pct_bottom20.xlsx",
-            sheet_name="pct_bottom20",
-        )
+        elif pct_view_mode == "Top":
+            st.markdown(f"**Top {pct_label} (>= {float(hi_p):.4g})** — sorted high→low ({len(pct_top)})")
+            pct_top_view = add_display_index(pct_top[cols_brand_then_category(pct_top, prefix, mode="pct")])
+            st.dataframe(st_safe(pct_top_view), width="stretch", hide_index=True)
+            download_df_as_excel(pct_top_view, filename=f"{df_key}_{prefix}_pct_top.xlsx", sheet_name="pct_top")
 
-    # ---------------- Overlap (Change × Pct quadrants) ----------------
-    st.subheader("Overlap (Change × Pct quadrants)")
+        else:  # Bottom
+            st.markdown(f"**Bottom {pct_label} (<= {float(lo_p):.4g})** — sorted high→low ({len(pct_bot)})")
+            pct_bot_view = add_display_index(pct_bot[cols_brand_then_category(pct_bot, prefix, mode="pct")])
+            st.dataframe(st_safe(pct_bot_view), width="stretch", hide_index=True)
+            download_df_as_excel(pct_bot_view, filename=f"{df_key}_{prefix}_pct_bottom.xlsx", sheet_name="pct_bottom")
 
-    chg_low = cur_df[change_col] <= lo_c
-    chg_high = cur_df[change_col] >= hi_c
-    pct_low = cur_df[pct_col] <= lo_p
-    pct_high = cur_df[pct_col] >= hi_p
+        pct_nan = cur_df[cur_df[pct_col].isna()][pct_display_cols].copy()
+        if not pct_nan.empty:
+            st.divider()
+            st.markdown(f"**No Data (NaN)** — missing percentage change ({len(pct_nan)})")
+            pct_nan_view = add_display_index(pct_nan)
+            st.dataframe(st_safe(pct_nan_view), width="stretch", hide_index=True)
+            download_df_as_excel(pct_nan_view, filename=f"{df_key}_{prefix}_pct_nan.xlsx", sheet_name="pct_nan")
 
-    q_LL = cur_df.loc[chg_low & pct_low].copy()
-    q_LH = cur_df.loc[chg_low & pct_high].copy()
-    q_HL = cur_df.loc[chg_high & pct_low].copy()
-    q_HH = cur_df.loc[chg_high & pct_high].copy()
+    # ---------------- Overlap tab ----------------
+    with tab_overlap:
+        st.subheader("Outlier Quadrant Analysis — Change × Pct Cross-Filter")
 
-    # Sort each quadrant (high->low) using pct then change
-    q_LL = q_LL.sort_values([pct_col, change_col], ascending=False).copy()
-    q_LH = q_LH.sort_values([pct_col, change_col], ascending=False).copy()
-    q_HL = q_HL.sort_values([pct_col, change_col], ascending=False).copy()
-    q_HH = q_HH.sort_values([pct_col, change_col], ascending=False).copy()
-
-    r1, r2 = st.columns(2)
-    with r1:
-        st.markdown(f"**Change LOW · Pct LOW** ({len(q_LL)})")
-        q_cols = cols_brand_then_category(q_LL, prefix, mode="change")
-        q_view = add_display_index(q_LL[q_cols])
-        st.dataframe(st_safe(add_display_index(q_LL[q_cols])), width="stretch", hide_index=True)
-        download_df_as_excel(
-        q_view,
-        filename=f"{df_key}_{prefix}_overlap_LL.xlsx",
-        sheet_name="overlap_LL",
-    )
-    with r2:
-        st.markdown(f"**Change LOW · Pct HIGH** ({len(q_LH)})")
-        q_cols = cols_brand_then_category(q_LH, prefix, mode="change")
-        q_view = add_display_index(q_LH[q_cols])
-        st.dataframe(st_safe(add_display_index(q_LH[q_cols])), width="stretch", hide_index=True)
-        download_df_as_excel(
-        q_view,
-        filename=f"{df_key}_{prefix}_overlap_LH.xlsx",
-        sheet_name="overlap_LH",
-    )
-
-    r3, r4 = st.columns(2)
-    with r3:
-        st.markdown(f"**Change HIGH · Pct LOW** ({len(q_HL)})")
-        q_cols = cols_brand_then_category(q_HL, prefix, mode="change")
-        q_view = add_display_index(q_HL[q_cols])
-        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
-        download_df_as_excel(
-            q_view,
-            filename=f"{df_key}_{prefix}_overlap_HL.xlsx",
-            sheet_name="overlap_HL",
-        )
-
-    with r4:
-        st.markdown(f"**Change HIGH · Pct HIGH** ({len(q_HH)})")
+        st.markdown(f"**Critical Surge** — Change HIGH · Pct HIGH ({len(q_HH)})")
         q_cols = cols_brand_then_category(q_HH, prefix, mode="change")
         q_view = add_display_index(q_HH[q_cols])
         st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
-        download_df_as_excel(
-            q_view,
-            filename=f"{df_key}_{prefix}_overlap_HH.xlsx",
-            sheet_name="overlap_HH",
-        )
+        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_HH.xlsx", sheet_name="overlap_HH")
+
+        st.divider()
+
+        st.markdown(f"**Large Base, Moderate Surge** — Change HIGH · Pct LOW ({len(q_HL)})")
+        q_cols = cols_brand_then_category(q_HL, prefix, mode="change")
+        q_view = add_display_index(q_HL[q_cols])
+        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
+        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_HL.xlsx", sheet_name="overlap_HL")
+
+        st.divider()
+
+        st.markdown(f"**Small Base, Sharp Drop** — Change LOW · Pct HIGH ({len(q_LH)})")
+        q_cols = cols_brand_then_category(q_LH, prefix, mode="change")
+        q_view = add_display_index(q_LH[q_cols])
+        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
+        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_LH.xlsx", sheet_name="overlap_LH")
+
+        st.divider()
+
+        st.markdown(f"**Stable / No Significant Change** — Change LOW · Pct LOW ({len(q_LL)})")
+        q_cols = cols_brand_then_category(q_LL, prefix, mode="change")
+        q_view = add_display_index(q_LL[q_cols])
+        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
+        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_LL.xlsx", sheet_name="overlap_LL")
+
+        st.divider()
+
+        all_quadrant_idx = q_HH.index.union(q_HL.index).union(q_LH.index).union(q_LL.index)
+        q_normal = cur_df.loc[~cur_df.index.isin(all_quadrant_idx)].dropna(subset=[change_col, pct_col]).copy()
+        q_normal = q_normal.sort_values(change_col, ascending=False)
+        q_normal_cols = cols_brand_then_category(q_normal, prefix, mode="change")
+        st.markdown(f"**Normal (non-outliers)** — not in any quadrant ({len(q_normal)})")
+        q_normal_view = add_display_index(q_normal[q_normal_cols])
+        st.dataframe(st_safe(q_normal_view), width="stretch", hide_index=True)
+        download_df_as_excel(q_normal_view, filename=f"{df_key}_{prefix}_normal.xlsx", sheet_name="normal")
+
+    # ---------------- Brand Ranking tab ----------------
+    with tab_ranking:
+        st.subheader(f"Brand Significance Ranking — {prefix}")
+
+        valid_brands = cur_df["brand"].dropna().unique()
+        rows = []
+        for brand in valid_brands:
+            bdf = cur_df[cur_df["brand"] == brand]
+            n_total = len(bdf.dropna(subset=[change_col, pct_col]))
+            if n_total == 0:
+                continue
+
+            n_HH = int((bdf.index.isin(q_HH.index)).sum())
+            n_HL = int((bdf.index.isin(q_HL.index)).sum())
+            n_LH = int((bdf.index.isin(q_LH.index)).sum())
+            n_LL = int((bdf.index.isin(q_LL.index)).sum())
+
+            quad_score = 4 * n_HH + 3 * n_HL + 2 * n_LH
+
+            mean_change = float(to_numeric_series(bdf[change_col]).mean())
+            mean_pct    = float(to_numeric_series(bdf[pct_col]).mean())
+
+            rows.append({
+                "brand":       brand,
+                "quad_score":  quad_score,
+                "mean_change": mean_change,
+                "mean_pct":    mean_pct,
+                "n_HH":        n_HH,
+                "n_HL":        n_HL,
+                "n_LH":        n_LH,
+                "n_LL":        n_LL,
+                "n_total":     n_total,
+            })
+
+        if not rows:
+            st.info("No brand data available.")
+        else:
+            rank_df = pd.DataFrame(rows)
+
+            # Normalize each component to [0, 1]
+            def norm(s: pd.Series) -> pd.Series:
+                rng = s.max() - s.min()
+                return (s - s.min()) / rng if rng > 0 else pd.Series([0.0] * len(s), index=s.index)
+
+            rank_df["norm_quad"]   = norm(rank_df["quad_score"])
+            rank_df["norm_change"] = norm(rank_df["mean_change"])
+            rank_df["norm_pct"]    = norm(rank_df["mean_pct"])
+            rank_df["significance_score"] = (
+                (rank_df["norm_quad"] + rank_df["norm_change"] + rank_df["norm_pct"]) / 3
+            ).round(4)
+
+            rank_df = rank_df.sort_values("significance_score", ascending=False).reset_index(drop=True)
+            rank_df.insert(0, "Rank", range(1, len(rank_df) + 1))
+
+            # Merge in full brand detail columns from cur_df
+            detail_cols = cols_brand_then_category(cur_df, prefix, mode="change")
+            detail_cols = [c for c in detail_cols if c != "brand"]
+            brand_details = cur_df[["brand"] + detail_cols].copy()
+            rank_df = rank_df.merge(brand_details, on="brand", how="left")
+
+            ranking_cols = ["significance_score", "n_HH", "n_HL", "n_LH", "n_LL", "n_total", "mean_change", "mean_pct"]
+            front_cols   = ["Rank", "brand"] + detail_cols
+            display_cols = front_cols + ranking_cols
+            rank_view = rank_df[display_cols].copy()
+            rank_view["mean_change"] = rank_view["mean_change"].round(2)
+            rank_view["mean_pct"]    = rank_view["mean_pct"].round(2)
+
+            with st.expander("How is the significance score calculated?"):
+                ex = rank_df.iloc[1] if len(rank_df) > 1 else rank_df.iloc[0]
+                ex_quad_raw  = int(ex["quad_score"])
+                ex_norm_quad = round(float(ex["norm_quad"]), 4)
+                ex_norm_chg  = round(float(ex["norm_change"]), 4)
+                ex_norm_pct  = round(float(ex["norm_pct"]), 4)
+                ex_score     = round(float(ex["significance_score"]), 4)
+                ex_mean_chg  = round(float(ex["mean_change"]), 2)
+                ex_mean_pct  = round(float(ex["mean_pct"]), 2)
+
+                quad_min  = int(rank_df["quad_score"].min())
+                quad_max  = int(rank_df["quad_score"].max())
+                chg_min   = round(float(rank_df["mean_change"].min()), 2)
+                chg_max   = round(float(rank_df["mean_change"].max()), 2)
+                pct_min   = round(float(rank_df["mean_pct"].min()), 2)
+                pct_max   = round(float(rank_df["mean_pct"].max()), 2)
+
+                st.markdown(f"""
+**Significance Score** ranges from 0 to 1 (1 = most alarming).
+It is the average of three normalized components:
+
+---
+
+**1. Quadrant Weight Score**
+Each brand's entries are checked against the outlier quadrants for `{prefix}`:
+
+| Quadrant | Meaning | Weight |
+|---|---|---|
+| HH | Critical Surge — change HIGH & pct HIGH | 4 |
+| HL | Large Base, Moderate Surge — change HIGH & pct LOW | 3 |
+| LH | Small Base, Sharp Drop — change LOW & pct HIGH | 2 |
+| LL | Stable / No Significant Change — change LOW & pct LOW | 0 |
+
+Raw score = `4×n_HH + 3×n_HL + 2×n_LH` → range across brands: `{quad_min}` – `{quad_max}`
+
+**2. Mean Quantitative Change** → range: `{chg_min}` – `{chg_max}`
+Average of `{change_col}` across all entries for that brand. In the default view (All floors), each brand is aggregated into one row so this equals the brand's total change directly. When specific floors are selected, the brand is split into per-floor rows and this becomes the average across those floor rows.
+
+**3. Mean Percentage Change** → range: `{pct_min}` – `{pct_max}`
+Average of `{pct_col}` across all entries for that brand. Same logic as above — equals the brand's pct in the default view, averages across floor rows when floors are filtered.
+
+All three normalized to [0, 1], then averaged:
+`significance_score = (norm_quad + norm_change + norm_pct) / 3`
+
+---
+
+**Example — Rank {int(ex["Rank"])} brand: `{ex["brand"]}`**
+
+| Component | Raw value | Normalized |
+|---|---|---|
+| Quadrant score (4×{int(ex["n_HH"])} + 3×{int(ex["n_HL"])} + 2×{int(ex["n_LH"])}) | {ex_quad_raw} | {ex_norm_quad} |
+| Mean quantitative change | {ex_mean_chg} | {ex_norm_chg} |
+| Mean percentage change | {ex_mean_pct} | {ex_norm_pct} |
+| **Significance score** | | **({ex_norm_quad} + {ex_norm_chg} + {ex_norm_pct}) / 3 = {ex_score}** |
+
+---
+
+**Column reference:**
+- `n_HH / n_HL / n_LH / n_LL` — count of entries in each quadrant
+- `n_total` — total entries with valid change and pct values
+- `mean_change` — mean quantitative change across brand's entries
+- `mean_pct` — mean percentage change across brand's entries
+""")
+            st.dataframe(st_safe(rank_view), width="stretch", hide_index=True,
+                         height=35 * len(rank_view) + 38)
+            download_df_as_excel(rank_view, filename=f"{df_key}_{prefix}_brand_ranking.xlsx", sheet_name="brand_ranking")
 
 if __name__ == "__main__":
     try:

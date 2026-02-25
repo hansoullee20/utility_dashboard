@@ -30,7 +30,7 @@ def read_upload(name: str, data: bytes):
     if name.endswith(".parquet"):
         return {"__single__": pd.read_parquet(bio)}
 
-    if name.endswith((".xlsx", ".xls")):
+    if name.endswith((".xlsx", ".xls", ".xlsm")):
         xls = pd.ExcelFile(bio)
         return {
             sh: pd.read_excel(io.BytesIO(data), sheet_name=sh, header=[2, 3, 4])
