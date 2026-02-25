@@ -20,22 +20,27 @@ def st_safe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def read_upload(name: str, data: bytes):
-    bio = io.BytesIO(data)
+def get_sheet_names(name: str, data: bytes) -> list:
+    """Fast: only reads sheet names without loading any data."""
+    name = name.lower()
+    if name.endswith((".xlsx", ".xls", ".xlsm")):
+        return pd.ExcelFile(io.BytesIO(data)).sheet_names
+    return ["__single__"]
+
+
+@st.cache_data(show_spinner="Loading sheet...")
+def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Lazy: reads only the selected sheet."""
     name = name.lower()
 
     if name.endswith(".csv"):
-        return {"__single__": pd.read_csv(bio)}
+        return pd.read_csv(io.BytesIO(data))
 
     if name.endswith(".parquet"):
-        return {"__single__": pd.read_parquet(bio)}
+        return pd.read_parquet(io.BytesIO(data))
 
     if name.endswith((".xlsx", ".xls", ".xlsm")):
-        xls = pd.ExcelFile(bio)
-        return {
-            sh: pd.read_excel(io.BytesIO(data), sheet_name=sh, header=[2, 3, 4])
-            for sh in xls.sheet_names
-        }
+        return pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=[2, 3, 4])
 
     raise ValueError("Unsupported file type")
 

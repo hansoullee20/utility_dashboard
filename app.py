@@ -5,7 +5,7 @@ import plotly.express as px
 from scipy import stats
 from typing import Dict
 
-from data import read_upload, apply_header_rows, to_numeric_series, st_safe
+from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe
 from features import (
     create_change_columns,
     aggregate_by_brand,
@@ -111,21 +111,29 @@ def main():
         st.stop()
 
     # ---------------- Load files ----------------
-    files: Dict[str, Dict[str, pd.DataFrame]] = {}
+    file_map: Dict[str, bytes] = {}
+    sheet_map: Dict[str, list] = {}
     for f in uploads:
         try:
-            files[f.name] = read_upload(f.name, f.getvalue())
+            data = f.getvalue()
+            file_map[f.name] = data
+            sheet_map[f.name] = get_sheet_names(f.name, data)
         except Exception as e:
             st.error(f"Failed to read {f.name}: {e}")
 
-    if not files:
+    if not file_map:
         st.stop()
 
-    file_name = st.selectbox("Select file", list(files.keys()))
-    sheet_keys = list(files[file_name].keys())
+    file_name = st.selectbox("Select file", list(file_map.keys()))
+    sheet_keys = sheet_map[file_name]
     default_sheet = "검침 내역" if "검침 내역" in sheet_keys else sheet_keys[0]
     sheet_name = st.selectbox("Select sheet", sheet_keys, index=sheet_keys.index(default_sheet), key=f"sheet_{file_name}")
-    raw_df = files[file_name][sheet_name]
+
+    try:
+        raw_df = read_sheet(file_name, file_map[file_name], sheet_name)
+    except Exception as e:
+        st.error(f"Failed to read {file_name}: {e}")
+        st.stop()
 
     # ---------------- Preprocess ----------------
     try:
