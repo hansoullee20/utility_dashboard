@@ -317,8 +317,6 @@ def main():
     q_LL = q_LL.sort_values([pct_col, change_col], ascending=False)
 
     # ---------------- Histograms (always visible) ----------------
-    h1, h2 = st.columns(2)
-
     def render_stats(stats: dict):
         stats_row = pd.DataFrame([{
             "n":      stats["n"],
@@ -332,13 +330,18 @@ def main():
         }])
         st.dataframe(stats_row, hide_index=True, width="stretch")
 
-    with h1:
+    hist_view = st.radio(
+        "Histogram", ["Quantitative Change", "Percentage Change"],
+        horizontal=True, key="hist_view",
+    )
+
+    if hist_view == "Quantitative Change":
         stats_change = plot_hist_with_tails(
             s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}"
         )
         if stats_change:
             render_stats(stats_change)
-    with h2:
+    else:
         stats_pct = plot_hist_with_tails(
             s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}"
         )
