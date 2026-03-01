@@ -213,24 +213,6 @@ def main():
         st.warning("No data for the selected floor combination.")
         st.stop()
 
-    # ---------------- 공실 filter ----------------
-    has_gongshil = cur_df["brand"].astype(str).str.contains("공실", na=False).any()
-    gongshil_mode = st.radio(
-        "공실 filter", ["All", "Exclude 공실", "공실 only"],
-        index=0, horizontal=True,
-        disabled=not has_gongshil,
-    )
-    if gongshil_mode == "공실 only":
-        cur_df = cur_df[cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
-        if cur_df.empty:
-            st.warning("No 공실 entries for the current selection.")
-            st.stop()
-    elif gongshil_mode == "Exclude 공실":
-        cur_df = cur_df[~cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
-        if cur_df.empty:
-            st.warning("No entries remaining after excluding 공실.")
-            st.stop()
-
     # ---------------- Per-size derived columns ----------------
     usage_cols = {
         "water_usage_m3":    ("water_usage_per_m2",    "water_usage_per_py"),
@@ -257,6 +239,20 @@ def main():
         st.write("ref_df floors (unique):", sorted(ref_df["floor"].dropna().unique().tolist()) if "floor" in ref_df.columns else "no floor col")
         st.dataframe(st_safe(cur_df.head(20)), width="stretch", hide_index=True)
         
+
+    # ---------------- 공실 filter (logic; widget rendered just above tabs) ----------------
+    has_gongshil = cur_df["brand"].astype(str).str.contains("공실", na=False).any()
+    gongshil_mode = st.session_state.get("gongshil_mode_radio", "All")
+    if gongshil_mode == "공실 only":
+        cur_df = cur_df[cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
+        if cur_df.empty:
+            st.warning("No 공실 entries for the current selection.")
+            st.stop()
+    elif gongshil_mode == "Exclude 공실":
+        cur_df = cur_df[~cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
+        if cur_df.empty:
+            st.warning("No entries remaining after excluding 공실.")
+            st.stop()
 
     # ---------------- Category selection ----------------
     allowed = ["water", "hwater", "elect", "heat"]
@@ -336,17 +332,26 @@ def main():
     )
 
     if hist_view == "Quantitative Change":
-        stats_change = plot_hist_with_tails(
-            s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}"
+        plot_hist_with_tails(
+            s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}",
+            source_df=cur_df, val_col=change_col, key="hist_change",
+            display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
+            tail_pct=tail,
         )
-        if stats_change:
-            render_stats(stats_change)
     else:
-        stats_pct = plot_hist_with_tails(
-            s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}"
+        plot_hist_with_tails(
+            s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}",
+            source_df=cur_df, val_col=pct_col, key="hist_pct",
+            display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
+            tail_pct=tail,
         )
-        if stats_pct:
-            render_stats(stats_pct)
+
+    st.radio(
+        "공실 filter", ["All", "Exclude 공실", "공실 only"],
+        index=0, horizontal=True,
+        disabled=not has_gongshil,
+        key="gongshil_mode_radio",
+    )
 
     tab_change, tab_pct, tab_overlap, tab_ranking, tab_corr = st.tabs([
         "Quantitative Change", "Percentage Change", "Quadrant Analysis", "Brand Ranking", "Correlation"
@@ -638,118 +643,121 @@ All three normalized to [0, 1], then averaged:
             with oc2:
                 iqr_k = st.slider("IQR multiplier", 0.5, 3.0, 1.5, 0.1, key="corr_iqr_k", disabled=not remove_outliers)
 
-            hover_extra = [c for c in ["brand", "building", "size_m2", "size_py"] if c in cur_df.columns and c not in [x_col, y_col]]
-            corr_df = cur_df[[x_col, y_col] + hover_extra].dropna(subset=[x_col, y_col]).copy()
-
-            if remove_outliers:
-                for col in [x_col, y_col]:
-                    q1, q3 = corr_df[col].quantile(0.25), corr_df[col].quantile(0.75)
-                    iqr = q3 - q1
-                    corr_df = corr_df[(corr_df[col] >= q1 - iqr_k * iqr) & (corr_df[col] <= q3 + iqr_k * iqr)]
-
-            if corr_df.empty:
-                st.warning("No data with valid values for both selected columns.")
+            if x_col == y_col:
+                st.info("Please select different columns for X and Y axes.")
             else:
-                # Regression on (optionally log-transformed) values
-                x_vals = corr_df[x_col].values.astype(float)
-                y_vals = corr_df[y_col].values.astype(float)
-                if log_x:
-                    mask = x_vals > 0
-                    x_vals, y_vals = np.log10(x_vals[mask]), y_vals[mask]
-                if log_y:
-                    mask = y_vals > 0
-                    x_vals, y_vals = x_vals[mask], np.log10(y_vals[mask])
+                hover_extra = [c for c in ["brand", "building", "size_m2", "size_py"] if c in cur_df.columns and c not in [x_col, y_col]]
+                corr_df = cur_df[[x_col, y_col] + hover_extra].dropna(subset=[x_col, y_col]).copy()
 
-                fig = px.scatter(
-                    corr_df,
-                    x=x_col,
-                    y=y_col,
-                    color=color_by if color_by in corr_df.columns else None,
-                    hover_data=hover_extra,
-                    log_x=log_x,
-                    log_y=log_y,
-                    title=f"{x_col} vs {y_col}",
-                )
+                if remove_outliers:
+                    for col in [x_col, y_col]:
+                        q1, q3 = corr_df[col].quantile(0.25), corr_df[col].quantile(0.75)
+                        iqr = q3 - q1
+                        corr_df = corr_df[(corr_df[col] >= q1 - iqr_k * iqr) & (corr_df[col] <= q3 + iqr_k * iqr)]
 
-                if len(x_vals) >= 2:
-                    slope, intercept, r_value, p_value, std_err = stats.linregress(x_vals, y_vals)
-
-                    # Build trendline points in original (non-log) space for plotly
-                    x_line = np.linspace(x_vals.min(), x_vals.max(), 200)
-                    y_line = slope * x_line + intercept
+                if corr_df.empty:
+                    st.warning("No data with valid values for both selected columns.")
+                else:
+                    # Regression on (optionally log-transformed) values
+                    x_vals = corr_df[x_col].values.astype(float)
+                    y_vals = corr_df[y_col].values.astype(float)
                     if log_x:
-                        x_line = 10 ** x_line
+                        mask = x_vals > 0
+                        x_vals, y_vals = np.log10(x_vals[mask]), y_vals[mask]
                     if log_y:
-                        y_line = 10 ** y_line
+                        mask = y_vals > 0
+                        x_vals, y_vals = x_vals[mask], np.log10(y_vals[mask])
 
-                    fig.add_scatter(
-                        x=x_line, y=y_line,
-                        mode="lines",
-                        name="Trendline",
-                        line=dict(color="red", width=2, dash="dash"),
+                    fig = px.scatter(
+                        corr_df,
+                        x=x_col,
+                        y=y_col,
+                        color=color_by if color_by in corr_df.columns else None,
+                        hover_data=hover_extra,
+                        log_x=log_x,
+                        log_y=log_y,
+                        title=f"{x_col} vs {y_col}",
                     )
 
-                    x_label = f"log10({x_col})" if log_x else x_col
-                    y_label = f"log10({y_col})" if log_y else y_col
-                    sign = "+" if intercept >= 0 else "-"
-                    eq_text = f"y = {slope:.4f}x {sign} {abs(intercept):.4f}"
-                    fig.add_annotation(
-                        xref="paper", yref="paper",
-                        x=0.01, y=0.99,
-                        text=eq_text,
-                        showarrow=False,
-                        align="left",
-                        bgcolor="rgba(255,255,255,0.8)",
-                        bordercolor="red",
-                        borderwidth=1,
-                        font=dict(size=12, color="red"),
-                    )
-                    reg_row = pd.DataFrame([{
-                        "equation":   f"{y_label} = {slope:.4f} × {x_label} + {intercept:.4f}",
-                        "slope":      round(slope, 6),
-                        "intercept":  round(intercept, 6),
-                        "R²":         round(r_value ** 2, 6),
-                        "p-value":    f"{p_value:.4e}",
-                        "std_err":    round(std_err, 6),
-                        "n":          len(x_vals),
-                    }])
+                    if len(x_vals) >= 2:
+                        slope, intercept, r_value, p_value, std_err = stats.linregress(x_vals, y_vals)
 
-                fig.update_layout(height=550)
-                st.plotly_chart(fig, use_container_width=True)
+                        # Build trendline points in original (non-log) space for plotly
+                        x_line = np.linspace(x_vals.min(), x_vals.max(), 200)
+                        y_line = slope * x_line + intercept
+                        if log_x:
+                            x_line = 10 ** x_line
+                        if log_y:
+                            y_line = 10 ** y_line
 
-                if len(x_vals) >= 2:
-                    st.dataframe(reg_row, hide_index=True, width="stretch")
+                        fig.add_scatter(
+                            x=x_line, y=y_line,
+                            mode="lines",
+                            name="Trendline",
+                            line=dict(color="red", width=2, dash="dash"),
+                        )
 
-                    # Interpretation
-                    r2 = r_value ** 2
-                    direction = "positive" if slope > 0 else "negative"
-                    direction_meaning = (
-                        f"As **{x_col}** increases, **{y_col}** tends to **increase**."
-                        if slope > 0 else
-                        f"As **{x_col}** increases, **{y_col}** tends to **decrease**."
-                    )
+                        x_label = f"log10({x_col})" if log_x else x_col
+                        y_label = f"log10({y_col})" if log_y else y_col
+                        sign = "+" if intercept >= 0 else "-"
+                        eq_text = f"y = {slope:.4f}x {sign} {abs(intercept):.4f}"
+                        fig.add_annotation(
+                            xref="paper", yref="paper",
+                            x=0.01, y=0.99,
+                            text=eq_text,
+                            showarrow=False,
+                            align="left",
+                            bgcolor="rgba(255,255,255,0.8)",
+                            bordercolor="red",
+                            borderwidth=1,
+                            font=dict(size=12, color="red"),
+                        )
+                        reg_row = pd.DataFrame([{
+                            "equation":   f"{y_label} = {slope:.4f} × {x_label} + {intercept:.4f}",
+                            "slope":      round(slope, 6),
+                            "intercept":  round(intercept, 6),
+                            "R²":         round(r_value ** 2, 6),
+                            "p-value":    f"{p_value:.4e}",
+                            "std_err":    round(std_err, 6),
+                            "n":          len(x_vals),
+                        }])
 
-                    if r2 >= 0.7:
-                        strength = "very strong"
-                    elif r2 >= 0.5:
-                        strength = "strong"
-                    elif r2 >= 0.3:
-                        strength = "moderate"
-                    elif r2 >= 0.1:
-                        strength = "weak"
-                    else:
-                        strength = "very weak"
+                    fig.update_layout(height=550)
+                    st.plotly_chart(fig, use_container_width=True)
 
-                    if p_value < 0.001:
-                        sig_text = "highly statistically significant (p < 0.001)"
-                    elif p_value < 0.01:
-                        sig_text = "very statistically significant (p < 0.01)"
-                    elif p_value < 0.05:
-                        sig_text = "statistically significant (p < 0.05)"
-                    else:
-                        sig_text = "**not statistically significant** (p ≥ 0.05) — treat this result with caution"
+                    if len(x_vals) >= 2:
+                        st.dataframe(reg_row, hide_index=True, width="stretch")
 
-                    st.markdown(f"""
+                        # Interpretation
+                        r2 = r_value ** 2
+                        direction = "positive" if slope > 0 else "negative"
+                        direction_meaning = (
+                            f"As **{x_col}** increases, **{y_col}** tends to **increase**."
+                            if slope > 0 else
+                            f"As **{x_col}** increases, **{y_col}** tends to **decrease**."
+                        )
+
+                        if r2 >= 0.7:
+                            strength = "very strong"
+                        elif r2 >= 0.5:
+                            strength = "strong"
+                        elif r2 >= 0.3:
+                            strength = "moderate"
+                        elif r2 >= 0.1:
+                            strength = "weak"
+                        else:
+                            strength = "very weak"
+
+                        if p_value < 0.001:
+                            sig_text = "highly statistically significant (p < 0.001)"
+                        elif p_value < 0.01:
+                            sig_text = "very statistically significant (p < 0.01)"
+                        elif p_value < 0.05:
+                            sig_text = "statistically significant (p < 0.05)"
+                        else:
+                            sig_text = "**not statistically significant** (p ≥ 0.05) — treat this result with caution"
+
+                        st.markdown(f"""
 **Interpretation**
 
 There is a **{strength} {direction} linear relationship** between {x_col} and {y_col} (R² = {r2:.4f}). {direction_meaning}
