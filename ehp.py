@@ -305,6 +305,13 @@ def render_ehp_view(df: pd.DataFrame) -> None:
     st.subheader("EHP(OAC) 전기 사용량 분석")
     st.caption("단위: kWh — 월별 누계 검침에서 월 사용량 산출 (January 2018 excluded — no prior baseline)")
 
+    # Debug expander — shows raw parsed output before any filtering
+    with st.expander("Debug — raw parsed data", expanded=False):
+        st.write(f"Shape: {df.shape}")
+        st.write("Columns:", list(df.columns[:10]))
+        st.write("Unique buildings:", df["building"].unique().tolist() if "building" in df.columns else "N/A")
+        st.dataframe(df.head(5))
+
     # Building filter
     all_buildings = sorted(df["building"].dropna().unique().tolist())
     sel_bldg = st.multiselect(
@@ -315,6 +322,10 @@ def render_ehp_view(df: pd.DataFrame) -> None:
 
     if df.empty:
         st.warning("No data for selected building.")
+        with st.expander("Debug — raw parsed DataFrame"):
+            st.write("Shape:", df.shape)
+            st.write("Columns:", list(df.columns))
+            st.dataframe(df.head(10))
         return
 
     df_unit = _compute_unit_usage(df)

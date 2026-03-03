@@ -1,4 +1,5 @@
 import io
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -135,20 +136,35 @@ def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     """
     raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
 
-    # Data rows start at index 2; keep only valid-building rows (A/B/C/D)
-    data_rows = raw.iloc[2:].copy()
-    data_rows = data_rows[
-        data_rows[0].astype(str).str.strip().isin({"A", "B", "C", "D"})
-    ].copy()
+    # Excel merged cells only populate the first row of the merge; forward-fill
+    # each column so every row has the correct building / any other merged value.
+    raw = raw.ffill(axis=0)
+
+    valid_buildings = {"A", "B", "C", "D"}
+
+    # Auto-detect which column holds building letters (first col with ≥5 A/B/C/D values)
+    bldg_col = 0
+    for ci in range(min(8, raw.shape[1])):
+        n_matches = raw[ci].astype(str).str.strip().isin(valid_buildings).sum()
+        if n_matches >= 5:
+            bldg_col = ci
+            break
+
+    # Keep only data rows that belong to a valid building
+    data_rows = raw[raw[bldg_col].astype(str).str.strip().isin(valid_buildings)].copy()
+
+    # Infer adjacent info columns relative to bldg_col
+    panel_col  = bldg_col + 1
+    equip_col  = bldg_col + 2
+    cap_col    = bldg_col + 3
+    brand_col  = bldg_col + 4
 
     df = pd.DataFrame(index=range(len(data_rows)))
-    df["building"]     = data_rows[0].values
-    df["panel_name"]   = data_rows[1].astype(str).str.strip().values
-    df["equipment_no"] = data_rows[2].astype(str).str.strip().values
-    df["capacity_kw"]  = pd.to_numeric(data_rows[3], errors="coerce").values
-    df["brand"]        = data_rows[4].astype(str).str.strip().values
-
-    df["building"] = df["building"].astype(str).str.strip()
+    df["building"]     = data_rows[bldg_col].astype(str).str.strip().values
+    df["panel_name"]   = data_rows[panel_col].astype(str).str.strip().values  if panel_col  in data_rows.columns else ""
+    df["equipment_no"] = data_rows[equip_col].astype(str).str.strip().values  if equip_col  in data_rows.columns else ""
+    df["capacity_kw"]  = pd.to_numeric(data_rows[cap_col],   errors="coerce").values if cap_col   in data_rows.columns else np.nan
+    df["brand"]        = data_rows[brand_col].astype(str).str.strip().values  if brand_col  in data_rows.columns else ""
 
     # Drop rows with missing brand
     brand_str = df["brand"].astype(str).str.strip()
