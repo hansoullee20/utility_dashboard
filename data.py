@@ -120,10 +120,70 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-_EHP_YEAR_COL_START = {
-    2018: 13, 2019: 25, 2020: 37, 2021: 49,
-    2022: 61, 2023: 73, 2024: 85, 2025: 97,
-}
+import re as _re
+
+
+def _parse_ehp_col_map(raw: pd.DataFrame) -> dict:
+    """Scan the raw sheet header rows and return {col_index: (year, month)}.
+
+    The Excel header has two quirks we handle:
+      1. Only the first month of each year contains the year (e.g. "2019.1월검침").
+         The remaining 11 months just say "2월검침", "3월검침", …
+      2. The earliest year (2018) has NO year label at all — all 12 cells just
+         say "N월 검침" with no year prefix.
+
+    Algorithm
+    ---------
+    • Find the header row with the most "N월" cells.
+    • Scan left-to-right: cells matching "YYYY.N월" start a new year; cells
+      matching only "N월" inherit the current year.
+    • After the scan, any cells BEFORE the first explicit year label are
+      unlabeled months.  We assume they form exactly 12 months of (first_year − 1).
+    """
+    ym_pat   = _re.compile(r'(20\d{2})[.년\s]*(\d{1,2})월')
+    m_pat    = _re.compile(r'(\d{1,2})월')
+
+    # Pick the row with the most month-like values
+    best_row_idx, best_count = 0, 0
+    for ri in range(min(6, len(raw))):
+        cnt = sum(1 for v in raw.iloc[ri] if m_pat.search(str(v)))
+        if cnt > best_count:
+            best_count, best_row_idx = cnt, ri
+    if best_count == 0:
+        return {}
+    header = raw.iloc[best_row_idx]
+
+    col_to_ym: dict = {}
+    current_year = None
+
+    for ci, val in enumerate(header):
+        s = str(val).strip()
+        ym_m = ym_pat.search(s)
+        m_m  = m_pat.search(s)
+        if ym_m:
+            current_year = int(ym_m.group(1))
+            col_to_ym[ci] = (current_year, int(ym_m.group(2)))
+        elif m_m and current_year is not None:
+            col_to_ym[ci] = (current_year, int(m_m.group(1)))
+
+    # Handle unlabeled leading months (the earliest year has no year header).
+    # Find columns BEFORE the first explicit year label that still have "N월".
+    if col_to_ym:
+        first_labeled_ci = min(col_to_ym)
+        first_year = col_to_ym[first_labeled_ci][0]
+        prev_year  = first_year - 1
+        unlabeled: list[tuple[int, int]] = []
+        for ci in range(first_labeled_ci):
+            s = str(header.iloc[ci]).strip()
+            m_m = m_pat.search(s)
+            if m_m:
+                unlabeled.append((ci, int(m_m.group(1))))
+        # Only assign if the count is a reasonable year-block (≤ 12 months)
+        if 0 < len(unlabeled) <= 12:
+            for ci, month in unlabeled:
+                col_to_ym[ci] = (prev_year, month)
+
+    return col_to_ym
 
 
 @st.cache_data(show_spinner="Loading EHP sheet...")
@@ -132,53 +192,51 @@ def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
 
     Returns a wide DataFrame with one row per EHP unit:
       building, panel_name, equipment_no, capacity_kw, brand,
-      cum_2018_01 … cum_2025_12
+      cum_YYYY_MM  (one column per year-month, derived from Excel headers)
     """
-    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
+    raw_orig = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
 
-    # Excel merged cells only populate the first row of the merge; forward-fill
-    # each column so every row has the correct building / any other merged value.
-    raw = raw.ffill(axis=0)
+    # Parse year-month column mapping from the ORIGINAL (unmodified) headers
+    col_to_ym = _parse_ehp_col_map(raw_orig)
+
+    # Forward-fill merged cells in data rows so building / brand propagate down
+    raw = raw_orig.ffill(axis=0)
 
     valid_buildings = {"A", "B", "C", "D"}
 
     # Auto-detect which column holds building letters (first col with ≥5 A/B/C/D values)
     bldg_col = 0
     for ci in range(min(8, raw.shape[1])):
-        n_matches = raw[ci].astype(str).str.strip().isin(valid_buildings).sum()
-        if n_matches >= 5:
+        if raw[ci].astype(str).str.strip().isin(valid_buildings).sum() >= 5:
             bldg_col = ci
             break
 
-    # Keep only data rows that belong to a valid building
     data_rows = raw[raw[bldg_col].astype(str).str.strip().isin(valid_buildings)].copy()
 
-    # Infer adjacent info columns relative to bldg_col
-    panel_col  = bldg_col + 1
-    equip_col  = bldg_col + 2
-    cap_col    = bldg_col + 3
-    brand_col  = bldg_col + 4
+    panel_col = bldg_col + 1
+    equip_col = bldg_col + 2
+    cap_col   = bldg_col + 3
+    brand_col = bldg_col + 4
 
     df = pd.DataFrame(index=range(len(data_rows)))
     df["building"]     = data_rows[bldg_col].astype(str).str.strip().values
-    df["panel_name"]   = data_rows[panel_col].astype(str).str.strip().values  if panel_col  in data_rows.columns else ""
-    df["equipment_no"] = data_rows[equip_col].astype(str).str.strip().values  if equip_col  in data_rows.columns else ""
-    df["capacity_kw"]  = pd.to_numeric(data_rows[cap_col],   errors="coerce").values if cap_col   in data_rows.columns else np.nan
-    df["brand"]        = data_rows[brand_col].astype(str).str.strip().values  if brand_col  in data_rows.columns else ""
+    df["panel_name"]   = data_rows[panel_col].astype(str).str.strip().values if panel_col in data_rows.columns else ""
+    df["equipment_no"] = data_rows[equip_col].astype(str).str.strip().values if equip_col in data_rows.columns else ""
+    df["capacity_kw"]  = pd.to_numeric(data_rows[cap_col], errors="coerce").values if cap_col in data_rows.columns else np.nan
+    df["brand"]        = data_rows[brand_col].astype(str).str.strip().values if brand_col in data_rows.columns else ""
 
     # Drop rows with missing brand
     brand_str = df["brand"].astype(str).str.strip()
     df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
 
-    for year, start_col in _EHP_YEAR_COL_START.items():
-        for month_idx in range(12):
-            col_num  = start_col + month_idx
-            col_name = f"cum_{year}_{month_idx + 1:02d}"
-            if col_num in data_rows.columns:
-                df[col_name] = pd.to_numeric(
-                    data_rows[col_num].astype(str).str.replace(",", "", regex=False),
-                    errors="coerce",
-                ).values
+    # Add cumulative reading columns using the header-derived mapping
+    for ci, (year, month) in sorted(col_to_ym.items()):
+        col_name = f"cum_{year}_{month:02d}"
+        if ci in data_rows.columns and col_name not in df.columns:
+            df[col_name] = pd.to_numeric(
+                data_rows[ci].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).values
 
     return df.reset_index(drop=True)
 

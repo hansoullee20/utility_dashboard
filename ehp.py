@@ -308,7 +308,8 @@ def render_ehp_view(df: pd.DataFrame) -> None:
     # Debug expander — shows raw parsed output before any filtering
     with st.expander("Debug — raw parsed data", expanded=False):
         st.write(f"Shape: {df.shape}")
-        st.write("Columns:", list(df.columns[:10]))
+        cum_cols = [c for c in df.columns if c.startswith("cum_")]
+        st.write(f"Cumulative columns detected ({len(cum_cols)}):", cum_cols)
         st.write("Unique buildings:", df["building"].unique().tolist() if "building" in df.columns else "N/A")
         st.dataframe(df.head(5))
 
