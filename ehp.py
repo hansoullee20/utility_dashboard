@@ -61,18 +61,65 @@ def _agg_brand(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-def _annual_totals(agg: pd.DataFrame) -> pd.DataFrame:
-    """Sum monthly usages within each year → annual kWh per brand."""
+def make_year_dfs(agg: pd.DataFrame) -> dict[int, pd.DataFrame]:
+    """Return {year: DataFrame} — one tidy DataFrame per year.
+
+    Each year DataFrame has columns:
+      brand, building, [units], [capacity_kw], 1월, 2월, …, 12월, 연간합계
+
+    Monthly values are kWh usage (already computed from cumulative diffs).
+    Rows are sorted by 연간합계 descending.
+    January correctly uses December of the prior year as its baseline because
+    _compute_unit_usage processes all years in chronological sequence.
+    """
     meta = ["brand", "building"]
     for c in ["units", "capacity_kw"]:
         if c in agg.columns:
             meta.append(c)
-    result = agg[meta].copy()
+
+    year_dfs: dict[int, pd.DataFrame] = {}
     for y in EHP_YEARS:
-        cols = [f"usage_{y}_{m:02d}" for m in _MONTHS if f"usage_{y}_{m:02d}" in agg.columns]
-        if cols:
-            result[str(y)] = agg[cols].sum(axis=1, min_count=1).round(0)
-    return result
+        avail = [m for m in _MONTHS if f"usage_{y}_{m:02d}" in agg.columns]
+        if not avail:
+            continue
+        src_cols = [f"usage_{y}_{m:02d}" for m in avail]
+        ydf = agg[meta + src_cols].copy()
+        rename = {f"usage_{y}_{m:02d}": f"{m}월" for m in avail}
+        ydf = ydf.rename(columns=rename)
+        mon_cols = [f"{m}월" for m in avail]
+        ydf["연간합계"] = ydf[mon_cols].sum(axis=1, min_count=1).round(0)
+        year_dfs[y] = ydf.sort_values("연간합계", ascending=False).reset_index(drop=True)
+    return year_dfs
+
+
+def _annual_totals(year_dfs: dict[int, pd.DataFrame]) -> pd.DataFrame:
+    """Build brand × year annual-totals table from year_dfs."""
+    if not year_dfs:
+        return pd.DataFrame()
+    # Union of all brands across all years
+    all_brands = pd.concat(
+        [ydf[["brand", "building"]] for ydf in year_dfs.values()]
+    ).drop_duplicates().reset_index(drop=True)
+
+    # Optionally carry over capacity_kw / units from whichever year has it
+    for c in ["units", "capacity_kw"]:
+        for ydf in year_dfs.values():
+            if c in ydf.columns:
+                all_brands = all_brands.merge(
+                    ydf[["brand", "building", c]], on=["brand", "building"], how="left"
+                )
+                break
+
+    for y, ydf in year_dfs.items():
+        all_brands = all_brands.merge(
+            ydf[["brand", "building", "연간합계"]].rename(columns={"연간합계": str(y)}),
+            on=["brand", "building"],
+            how="left",
+        )
+
+    year_cols = [str(y) for y in year_dfs]
+    all_brands["Total"] = all_brands[year_cols].sum(axis=1, min_count=1).round(0)
+    return all_brands.sort_values("Total", ascending=False).reset_index(drop=True)
 
 
 # ─── Tab renderers ────────────────────────────────────────────────────────────
@@ -83,17 +130,13 @@ def _annual_tab(annual: pd.DataFrame) -> None:
         st.warning("No annual data available.")
         return
 
-    annual = annual.copy()
-    annual["Total"] = annual[year_cols].sum(axis=1, min_count=1).round(0)
-    annual_sorted = annual.sort_values("Total", ascending=False).copy()
-
-    _n = len(annual_sorted)
+    _n = len(annual)
     if _n >= 2:
         top_n = st.slider("Show top N brands", 5, _n, min(20, _n), key="ehp_annual_n")
     else:
         top_n = _n
 
-    plot_df = annual_sorted.head(top_n).iloc[::-1].copy()  # reversed: top at top
+    plot_df = annual.head(top_n).iloc[::-1].copy()  # reversed: highest at top
 
     fig = go.Figure()
     for i, year in enumerate(year_cols):
@@ -127,62 +170,53 @@ def _annual_tab(annual: pd.DataFrame) -> None:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Summary table (all brands)
     show_cols = ["brand", "building"]
     for c in ["units", "capacity_kw"]:
-        if c in annual_sorted.columns:
+        if c in annual.columns:
             show_cols.append(c)
     show_cols += year_cols + ["Total"]
-    show = [c for c in show_cols if c in annual_sorted.columns]
-    out = add_display_index(annual_sorted[show].copy())
+    out = add_display_index(annual[[c for c in show_cols if c in annual.columns]].copy())
     st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
                  height=min(35 * len(out) + 38, 700))
     download_df_as_excel(out, "ehp_annual_usage.xlsx", "annual")
 
 
-def _trend_tab(agg: pd.DataFrame) -> None:
-    usage_cols = [c for c in agg.columns if c.startswith("usage_")]
-    if not usage_cols:
+def _trend_tab(year_dfs: dict) -> None:
+    """Monthly trend using per-year DataFrames."""
+    if not year_dfs:
         st.warning("No usage data.")
         return
 
-    # Build sorted brand list
-    agg = agg.copy()
-    agg["_total"] = agg[usage_cols].sum(axis=1, min_count=1)
-    sorted_brands = (
-        agg.groupby("brand")["_total"].sum()
-        .sort_values(ascending=False).index.tolist()
+    # Build brand ranking by total across all years
+    total_ser = (
+        pd.concat([ydf[["brand", "building", "연간합계"]] for ydf in year_dfs.values()])
+        .groupby(["brand", "building"])["연간합계"].sum()
+        .sort_values(ascending=False)
     )
+    brand_options = total_ser.index.get_level_values("brand").unique().tolist()
 
     sel_brands = st.multiselect(
-        "Select brands to compare", sorted_brands,
-        default=sorted_brands[:min(5, len(sorted_brands))],
+        "Select brands to compare", brand_options,
+        default=brand_options[:min(5, len(brand_options))],
         key="ehp_trend_brands",
     )
     if not sel_brands:
         st.info("Select at least one brand.")
         return
 
-    # All ordered periods that exist
-    all_periods = [
-        (y, m, f"usage_{y}_{m:02d}", f"{y}-{m:02d}")
-        for y in EHP_YEARS for m in _MONTHS
-        if f"usage_{y}_{m:02d}" in agg.columns
-    ]
-
     fig = go.Figure()
     for i, brand in enumerate(sel_brands):
-        rows = agg[agg["brand"] == brand]
-        # Sum across buildings so one line per brand
-        y_vals = [
-            rows[col].sum(min_count=1) if col in rows.columns else np.nan
-            for _, _, col, _ in all_periods
-        ]
-        x_vals = [period for _, _, _, period in all_periods]
+        x_vals, y_vals = [], []
+        for year, ydf in sorted(year_dfs.items()):
+            rows = ydf[ydf["brand"] == brand]
+            mon_cols = [c for c in ydf.columns if c.endswith("월")]
+            for col in mon_cols:
+                m = int(col.replace("월", ""))
+                x_vals.append(f"{year}-{m:02d}")
+                y_vals.append(rows[col].sum(min_count=1) if not rows.empty else np.nan)
 
         fig.add_trace(go.Scatter(
-            x=x_vals,
-            y=y_vals,
+            x=x_vals, y=y_vals,
             mode="lines+markers",
             name=brand,
             line=dict(color=_PALETTE[i % len(_PALETTE)], width=2),
@@ -206,62 +240,58 @@ def _trend_tab(agg: pd.DataFrame) -> None:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Downloadable table: brand × period
+    # Download: brand × "YYYY-MM" period table
     tbl_rows = []
     for brand in sel_brands:
-        rows = agg[agg["brand"] == brand]
         row = {"brand": brand}
-        for _, _, col, period in all_periods:
-            row[period] = round(rows[col].sum(min_count=1), 0) if col in rows.columns else np.nan
+        for year, ydf in sorted(year_dfs.items()):
+            rows = ydf[ydf["brand"] == brand]
+            for col in [c for c in ydf.columns if c.endswith("월")]:
+                m = int(col.replace("월", ""))
+                period = f"{year}-{m:02d}"
+                row[period] = rows[col].sum(min_count=1) if not rows.empty else np.nan
         tbl_rows.append(row)
-    tbl = pd.DataFrame(tbl_rows)
-    download_df_as_excel(tbl, "ehp_monthly_trend.xlsx", "trend")
+    download_df_as_excel(pd.DataFrame(tbl_rows), "ehp_monthly_trend.xlsx", "trend")
 
 
-def _year_tab(agg: pd.DataFrame) -> None:
-    available_years = [
-        y for y in EHP_YEARS
-        if any(f"usage_{y}_{m:02d}" in agg.columns for m in _MONTHS)
-    ]
-    if not available_years:
+def _year_tab(year_dfs: dict) -> None:
+    """Year detail using the per-year DataFrames directly."""
+    if not year_dfs:
         st.warning("No year data.")
         return
 
+    available_years = sorted(year_dfs.keys())
     c1, c2 = st.columns([2, 3])
     with c1:
         sel_year = st.selectbox("Year", available_years,
                                 index=len(available_years) - 1, key="ehp_year")
 
-    month_cols = [f"usage_{sel_year}_{m:02d}" for m in _MONTHS
-                  if f"usage_{sel_year}_{m:02d}" in agg.columns]
-    if not month_cols:
-        st.warning("No data for selected year.")
+    year_df  = year_dfs[sel_year]                          # already sorted by 연간합계 desc
+    mon_cols = [c for c in year_df.columns if c.endswith("월")]
+    if not mon_cols:
+        st.warning("No monthly data for selected year.")
         return
 
-    _n = len(agg)
+    _n = len(year_df)
     with c2:
         if _n >= 2:
             top_n = st.slider("Show top N brands", 5, _n, min(20, _n), key="ehp_year_n")
         else:
             top_n = _n
 
-    year_df = agg[["brand", "building"] + month_cols].copy()
-    year_df["year_total"] = year_df[month_cols].sum(axis=1, min_count=1)
-    year_df = year_df.sort_values("year_total", ascending=False).head(top_n)
-    plot_df  = year_df.iloc[::-1].copy()  # reversed for horizontal bar
+    plot_df = year_df.head(top_n).iloc[::-1].copy()  # reversed: highest at top
 
     fig = go.Figure()
-    for i, (col, m) in enumerate(zip(month_cols, _MONTHS)):
-        month_name = _MONTH_ABBR[m - 1]
+    for i, col in enumerate(mon_cols):
         fig.add_trace(go.Bar(
             y=plot_df["brand"],
             x=plot_df[col].fillna(0),
-            name=month_name,
+            name=col,   # "1월", "2월", …
             orientation="h",
             marker_color=_PALETTE[i % len(_PALETTE)],
             marker_line_color="white",
             marker_line_width=0.3,
-            hovertemplate=f"<b>%{{y}}</b><br>{month_name}: %{{x:,.0f}} kWh<extra></extra>",
+            hovertemplate=f"<b>%{{y}}</b><br>{col}: %{{x:,.0f}} kWh<extra></extra>",
         ))
 
     max_label = plot_df["brand"].astype(str).str.len().max() if len(plot_df) else 20
@@ -283,17 +313,15 @@ def _year_tab(agg: pd.DataFrame) -> None:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Monthly totals row (all selected brands combined)
-    totals = {_MONTH_ABBR[m - 1]: round(year_df[col].sum(), 0)
-              for col, m in zip(month_cols, _MONTHS)}
-    totals["Total"] = round(year_df["year_total"].sum(), 0)
-    st.markdown(f"**Monthly totals — {sel_year} (shown brands)**")
+    # Monthly totals row
+    shown = year_df.head(top_n)
+    totals = {col: round(shown[col].sum(), 0) for col in mon_cols}
+    totals["연간합계"] = round(shown["연간합계"].sum(), 0)
+    st.markdown(f"**Monthly totals — {sel_year} (top {top_n} brands)**")
     st.dataframe(pd.DataFrame([totals]), hide_index=True, use_container_width=True)
 
-    # Per-brand table
-    show = ["brand", "building"] + month_cols + ["year_total"]
-    show = [c for c in show if c in year_df.columns]
-    out = add_display_index(year_df.sort_values("year_total", ascending=False)[show].copy())
+    # Per-brand table (year_df columns: brand, building, [units, capacity_kw], 1월…12월, 연간합계)
+    out = add_display_index(year_df.copy())
     st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
                  height=min(35 * len(out) + 38, 700))
     download_df_as_excel(out, f"ehp_year_{sel_year}.xlsx", "year_detail")
@@ -329,9 +357,10 @@ def render_ehp_view(df: pd.DataFrame) -> None:
             st.dataframe(df.head(10))
         return
 
-    df_unit = _compute_unit_usage(df)
-    agg     = _agg_brand(df_unit)
-    annual  = _annual_totals(agg)
+    df_unit  = _compute_unit_usage(df)
+    agg      = _agg_brand(df_unit)
+    year_dfs = make_year_dfs(agg)       # {year: tidy DataFrame per year}
+    annual   = _annual_totals(year_dfs) # brand × year annual totals
 
     tab_annual, tab_trend, tab_year = st.tabs(
         ["Annual Summary", "Monthly Trend", "Year Detail"]
@@ -340,6 +369,6 @@ def render_ehp_view(df: pd.DataFrame) -> None:
     with tab_annual:
         _annual_tab(annual)
     with tab_trend:
-        _trend_tab(agg)
+        _trend_tab(year_dfs)
     with tab_year:
-        _year_tab(agg)
+        _year_tab(year_dfs)
