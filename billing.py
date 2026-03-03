@@ -10,6 +10,7 @@ from viz import plot_hist_with_tails
 _WATER_COLOR = "#4C72B0"
 _ELECT_COLOR = "#DD8A00"
 _HEAT_COLOR  = "#C44E52"
+_TOTAL_COLOR = "#7B68EE"   # medium slate blue for 총 합계
 _GRID        = "#DDDDDD"
 
 _UTIL_COLS = [
@@ -47,6 +48,10 @@ _VIEW_SEGMENTS = {
                                   ("hotwater_comm",  "급탕 공용",  "#C47C7C")],
     ("열요금",   "급탕 전용"):   [("hotwater_excl",  "급탕 전용",  "#8B3A3A")],
     ("열요금",   "급탕 공용"):   [("hotwater_comm",  "급탕 공용",  "#C47C7C")],
+    ("총 합계",  "합계"):        [("total_excl",     "전용",       _TOTAL_COLOR),
+                                  ("total_comm",     "공용",       "#B0A8F0")],
+    ("총 합계",  "전용"):        [("total_excl",     "전용",       _TOTAL_COLOR)],
+    ("총 합계",  "공용"):        [("total_comm",     "공용",       "#B0A8F0")],
 }
 
 _VIEW_OPTIONS = {
@@ -54,6 +59,7 @@ _VIEW_OPTIONS = {
     "전기요금": ["합계", "전용", "공용"],
     "열요금":   ["합계", "냉난방 합계", "냉난방 전용", "냉난방 공용",
                  "급탕 합계", "급탕 전용", "급탕 공용"],
+    "총 합계":  ["합계", "전용", "공용"],
 }
 
 
@@ -71,6 +77,9 @@ _TABLE_EXTRA = {
     ("열요금",   "급탕 합계"):   ["heat_total"],
     ("열요금",   "급탕 전용"):   ["hotwater_comm", "heat_total"],
     ("열요금",   "급탕 공용"):   ["hotwater_excl", "heat_total"],
+    ("총 합계",  "합계"):        ["total"],
+    ("총 합계",  "전용"):        ["total_comm",    "total"],
+    ("총 합계",  "공용"):        ["total_excl",    "total"],
 }
 
 
@@ -265,6 +274,7 @@ _HIST_REF_COL = {
     "상하수도": "water_total",
     "전기요금": "elect_total",
     "열요금":   "heat_total",
+    "총 합계":  "total",
 }
 
 
