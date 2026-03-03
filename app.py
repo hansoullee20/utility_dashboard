@@ -215,10 +215,10 @@ def main():
 
     # ---------------- Per-size derived columns ----------------
     usage_cols = {
-        "water_usage_m3":    ("water_usage_per_m2",    "water_usage_per_py"),
-        "hwater_usage_m3":   ("hwater_usage_per_m2",   "hwater_usage_per_py"),
-        "elect_usage_kw":    ("elect_usage_per_m2",    "elect_usage_per_py"),
-        "heat_usage_m3_mwh": ("heat_usage_per_m2",    "heat_usage_per_py"),
+        "water_current":  ("water_usage_per_m2",  "water_usage_per_py"),
+        "hwater_current": ("hwater_usage_per_m2", "hwater_usage_per_py"),
+        "elect_current":  ("elect_usage_per_m2",  "elect_usage_per_py"),
+        "heat_current":   ("heat_usage_per_m2",   "heat_usage_per_py"),
     }
     size_m2 = to_numeric_series(cur_df["size_m2"]).replace(0, float("nan")) if "size_m2" in cur_df.columns else None
     size_py = to_numeric_series(cur_df["size_py"]).replace(0, float("nan")) if "size_py" in cur_df.columns else None
@@ -619,25 +619,79 @@ All three normalized to [0, 1], then averaged:
             if pd.api.types.is_numeric_dtype(cur_df[c])
             and cur_df[c].notna().any()
         ])
-        _size_first = [c for c in ["size_m2", "size_py"] if c in _all_numeric]
-        numeric_cols = _size_first + [c for c in _all_numeric if c not in _size_first]
 
-        if len(numeric_cols) < 2:
+        _cat_cols = {}
+        for _cat, _match in [
+            ("m²",          lambda c: c == "size_m2"),
+            ("평 (py)",      lambda c: c == "size_py"),
+            ("Water",        lambda c: c.startswith("water_")),
+            ("Hot Water",    lambda c: c.startswith("hwater_")),
+            ("Electricity",  lambda c: c.startswith("elect_")),
+            ("Heat",         lambda c: c.startswith("heat_")),
+        ]:
+            cols = [c for c in _all_numeric if _match(c)]
+            if cols:
+                _cat_cols[_cat] = cols
+        categories = list(_cat_cols.keys())
+
+        _SUFFIX_ORDER = [
+            "change", "pct",
+            "current", "previous",
+            "usage_m3", "usage_kw", "usage_m3_mwh",
+            "usage_per_m2", "usage_per_py",
+        ]
+        _SUFFIX_LABELS = {
+            "previous":      "Previous Usage",
+            "current":       "Current Usage",
+            "usage_m3":      "Usage (m³)",
+            "usage_kw":      "Usage (kWh)",
+            "usage_m3_mwh":  "Usage (m³/MWh)",
+            "usage_per_m2":  "Usage per m²",
+            "usage_per_py":  "Usage per 평",
+            "change":        "Quantitative Change",
+            "pct":           "Percentage Change",
+        }
+        _COL_LABELS = {"size_m2": "m²", "size_py": "평 (py)"}
+        def _col_label(col):
+            if col in _COL_LABELS:
+                return _COL_LABELS[col]
+            for prefix in ["water_", "hwater_", "elect_", "heat_"]:
+                if col.startswith(prefix):
+                    suffix = col[len(prefix):]
+                    return _SUFFIX_LABELS.get(suffix, suffix)
+            return col
+        def _col_sort_key(col):
+            for prefix in ["water_", "hwater_", "elect_", "heat_"]:
+                if col.startswith(prefix):
+                    suffix = col[len(prefix):]
+                    try:
+                        return _SUFFIX_ORDER.index(suffix)
+                    except ValueError:
+                        return len(_SUFFIX_ORDER)
+            return -1
+        _cat_cols = {cat: sorted(cols, key=_col_sort_key) for cat, cols in _cat_cols.items()}
+
+        if sum(len(v) for v in _cat_cols.values()) < 2:
             st.info("Not enough numeric columns for correlation.")
         else:
-            cc1, cc2, cc3, cc4, cc5 = st.columns(5)
-            with cc1:
-                x_col = st.selectbox("X axis", numeric_cols, index=0, key="corr_x")
-            with cc2:
-                y_col = st.selectbox("Y axis", numeric_cols, index=min(1, len(numeric_cols) - 1), key="corr_y")
+            xc1, xc2, yc1, yc2, cc3 = st.columns(5)
+            with xc1:
+                x_cat = st.selectbox("X Category", categories, index=0, key="corr_x_cat")
+            with xc2:
+                x_col = st.selectbox("X Column", _cat_cols[x_cat], index=0, key=f"corr_x_{x_cat}", format_func=_col_label)
+            with yc1:
+                _y_cat_default = min(1, len(categories) - 1)
+                y_cat = st.selectbox("Y Category", categories, index=_y_cat_default, key="corr_y_cat")
+            with yc2:
+                y_col = st.selectbox("Y Column", _cat_cols[y_cat], index=0, key=f"corr_y_{y_cat}", format_func=_col_label)
             with cc3:
                 color_by = st.selectbox("Color by", ["brand", "building"], index=0, key="corr_color")
-            with cc4:
-                log_x = st.checkbox("Log X", value=False, key="corr_log_x")
-            with cc5:
-                log_y = st.checkbox("Log Y", value=False, key="corr_log_y")
 
-            oc1, oc2 = st.columns([1, 4])
+            lc1, lc2, oc1, oc2 = st.columns([1, 1, 1, 4])
+            with lc1:
+                log_x = st.checkbox("Log X", value=False, key="corr_log_x")
+            with lc2:
+                log_y = st.checkbox("Log Y", value=False, key="corr_log_y")
             with oc1:
                 remove_outliers = st.checkbox("Remove outliers", value=False, key="corr_remove_outliers")
             with oc2:
@@ -668,8 +722,27 @@ All three normalized to [0, 1], then averaged:
                         mask = y_vals > 0
                         x_vals, y_vals = x_vals[mask], np.log10(y_vals[mask])
 
+                    _BLDG_COLOR_MAP = {
+                        "A": "#1f77b4",
+                        "B": "#d62728",
+                        "C": "#2ca02c",
+                        "D": "#9467bd",
+                    }
+                    plot_df = corr_df.copy()
+                    if color_by == "building" and "building" in plot_df.columns:
+                        unique_bldgs = plot_df["building"].astype(str).unique()
+                        color_map = {
+                            b: _BLDG_COLOR_MAP.get(b, "#aaaaaa")
+                            for b in unique_bldgs
+                        }
+                    else:
+                        color_map = None
+                    category_orders = (
+                        {color_by: sorted(plot_df[color_by].astype(str).unique())}
+                        if color_by in plot_df.columns else None
+                    )
                     fig = px.scatter(
-                        corr_df,
+                        plot_df,
                         x=x_col,
                         y=y_col,
                         color=color_by if color_by in corr_df.columns else None,
@@ -677,6 +750,8 @@ All three normalized to [0, 1], then averaged:
                         log_x=log_x,
                         log_y=log_y,
                         title=f"{x_col} vs {y_col}",
+                        color_discrete_map=color_map,
+                        category_orders=category_orders,
                     )
 
                     if len(x_vals) >= 2:

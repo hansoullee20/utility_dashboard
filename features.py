@@ -67,7 +67,8 @@ def aggregate_by_brand(df: pd.DataFrame) -> pd.DataFrame:
     sum_cols += size_cols
     sum_cols = list(dict.fromkeys(sum_cols))  # deduplicate, preserve order
 
-    agg = df.groupby("brand", as_index=False)[sum_cols].sum(min_count=1)
+    group_cols = ["brand", "building"] if "building" in df.columns else ["brand"]
+    agg = df.groupby(group_cols, as_index=False)[sum_cols].sum(min_count=1)
 
     # Recalculate change and pct from summed previous/current
     for prev, curr, usage, change, pct in specs:
@@ -82,19 +83,12 @@ def aggregate_by_brand(df: pd.DataFrame) -> pd.DataFrame:
                 agg[change] = d
                 agg[pct] = p.round(2)
 
-    # Add building summary (e.g. "A, B") if available
-    if "building" in df.columns:
-        bldg = df.groupby("brand")["building"].apply(
-            lambda x: ", ".join(sorted(x.dropna().astype(str).unique()))
-        ).reset_index()
-        agg = agg.merge(bldg, on="brand", how="left")
-
     # Add floor summary (e.g. "1F, 2F, 3F") if available
     if "floor" in df.columns:
-        flr = df.groupby("brand")["floor"].apply(
+        flr = df.groupby(group_cols)["floor"].apply(
             lambda x: ", ".join(sorted(x.dropna().astype(str).unique()))
         ).reset_index()
-        agg = agg.merge(flr, on="brand", how="left")
+        agg = agg.merge(flr, on=group_cols, how="left")
 
     return agg
 
