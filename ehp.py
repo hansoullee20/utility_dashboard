@@ -468,16 +468,26 @@ def render_ehp_view(df: pd.DataFrame) -> None:
     st.subheader("EHP(OAC) 전기 사용량 분석")
     st.caption("단위: kWh — 월별 누계 검침에서 월 사용량 산출 (January 2018 excluded — no prior baseline)")
 
-    # Debug expander — shows raw parsed output before any filtering
+    # ── Diagnostic: always-visible when something is wrong ──
+    cum_cols      = [c for c in df.columns if c.startswith("cum_")]
+    all_buildings = sorted(df["building"].dropna().unique().tolist())
+
+    if df.empty or not cum_cols or not all_buildings:
+        st.error("Parser returned no usable data. See details below.")
+        st.write(f"**DataFrame shape:** {df.shape}")
+        st.write(f"**Columns:** {list(df.columns)}")
+        st.write(f"**Cumulative columns found:** {cum_cols}")
+        if "building" in df.columns:
+            st.write(f"**All building values (raw):** {df['building'].unique().tolist()}")
+        st.write("**First 10 rows:**")
+        st.dataframe(df.head(10))
+        return
+
     with st.expander("Debug — raw parsed data", expanded=False):
-        st.write(f"Shape: {df.shape}")
-        cum_cols = [c for c in df.columns if c.startswith("cum_")]
-        st.write(f"Cumulative columns detected ({len(cum_cols)}):", cum_cols)
-        st.write("Unique buildings:", df["building"].unique().tolist() if "building" in df.columns else "N/A")
+        st.write(f"Shape: {df.shape} | Cumulative cols: {len(cum_cols)} | Buildings: {all_buildings}")
         st.dataframe(df.head(5))
 
     # Building filter
-    all_buildings = sorted(df["building"].dropna().unique().tolist())
     sel_bldg = st.multiselect(
         "Building", ["All"] + all_buildings, default=["All"], key="ehp_building",
     )
@@ -486,10 +496,6 @@ def render_ehp_view(df: pd.DataFrame) -> None:
 
     if df.empty:
         st.warning("No data for selected building.")
-        with st.expander("Debug — raw parsed DataFrame"):
-            st.write("Shape:", df.shape)
-            st.write("Columns:", list(df.columns))
-            st.dataframe(df.head(10))
         return
 
     df_unit  = _compute_unit_usage(df)
