@@ -106,7 +106,7 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
             continue
         if c in cost_cols:
             cleaned = df[c].astype(str).str.strip().replace(_blank, "0")
-            df[c] = pd.to_numeric(cleaned.str.replace(",", "", regex=False), errors="coerce").fillna(0)
+            df[c] = (pd.to_numeric(cleaned.str.replace(",", "", regex=False), errors="coerce").fillna(0) / 10_000).round(2)
         else:
             df[c] = to_numeric_series(df[c])
 

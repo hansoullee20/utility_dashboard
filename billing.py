@@ -123,7 +123,7 @@ def _util_selector(df: pd.DataFrame, key: str):
 
 def render_billing_view(df: pd.DataFrame) -> None:
     st.subheader("수도광열비 부과 내역")
-    st.caption("단위: 원 (VAT 별도)")
+    st.caption("단위: 만원 (VAT 별도)")
 
     # ── Filters ──
     all_buildings = sorted(df["building"].dropna().unique().tolist())
@@ -227,7 +227,7 @@ def _ranking_tab(df: pd.DataFrame) -> None:
             marker_color=color,
             marker_line_color="white",
             marker_line_width=0.5,
-            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:,.0f}} 원<extra></extra>",
+            hovertemplate=f"<b>%{{y}}</b><br>{label}: %{{x:,.0f}} 만원<extra></extra>",
         ))
 
     max_label_len = plot_df["brand"].astype(str).str.len().max() if len(plot_df) else 20
@@ -239,7 +239,7 @@ def _ranking_tab(df: pd.DataFrame) -> None:
         title=dict(text=f"<b>{sel_util}{title_view} — Top {top_n}</b>", font=dict(size=13, color="#222222"), x=0),
         height=max(420, top_n * 22 + 100),
         xaxis=dict(
-            title="원 (KRW)",
+            title="만원",
             showgrid=True, gridcolor=_GRID, griddash="dot",
             zeroline=False, tickfont=dict(size=10, color="#555555"),
             **( {"range": [0, x_max]} if x_max else {} ),
@@ -319,7 +319,7 @@ def _histogram_tab(df: pd.DataFrame) -> None:
     lo = float(s.quantile(tail_pct / 100))
     hi = float(s.quantile(1 - tail_pct / 100))
 
-    title = f"{sel_util} {view_mode} (원)"
+    title = f"{sel_util} {view_mode} (만원)"
     display_cols = [c for c in ["brand", "building", "floor", "unit", "size_m2", val_col] if c in df.columns]
     plot_hist_with_tails(
         s, bins=int(bins), lo=lo, hi=hi,
@@ -342,13 +342,13 @@ def _histogram_tab(df: pd.DataFrame) -> None:
         st.markdown(f"**All entries** — sorted high → low ({len(tbl)})")
     elif show_mode == "Top":
         tbl = df[df[val_col] >= hi][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**Top {label} (≥ {hi:,.0f})** — sorted high → low ({len(tbl)})")
+        st.markdown(f"**Top {label} (≥ {hi:,.2f})** — sorted high → low ({len(tbl)})")
     elif show_mode == "Middle":
         tbl = df[(df[val_col] > lo) & (df[val_col] < hi)][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**Middle** ({lo:,.0f} – {hi:,.0f}) — sorted high → low ({len(tbl)})")
+        st.markdown(f"**Middle** ({lo:,.2f} – {hi:,.2f}) — sorted high → low ({len(tbl)})")
     else:  # Bottom
         tbl = df[df[val_col] <= lo][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**Bottom {label} (≤ {lo:,.0f})** — sorted high → low ({len(tbl)})")
+        st.markdown(f"**Bottom {label} (≤ {lo:,.2f})** — sorted high → low ({len(tbl)})")
 
     tbl = add_display_index(tbl)
     st.dataframe(st_safe(tbl), hide_index=True, use_container_width=True,
@@ -383,7 +383,7 @@ def _building_tab(df: pd.DataFrame) -> None:
             marker_color=color,
             marker_line_color="white",
             marker_line_width=0.5,
-            hovertemplate=f"<b>%{{x}}동</b><br>{label}: %{{y:,.0f}} 원<extra></extra>",
+            hovertemplate=f"<b>%{{x}}동</b><br>{label}: %{{y:,.0f}} 만원<extra></extra>",
         ))
 
     fig.update_layout(
@@ -393,7 +393,7 @@ def _building_tab(df: pd.DataFrame) -> None:
         height=400,
         xaxis=dict(title="Building", tickfont=dict(size=12, color="#555555")),
         yaxis=dict(
-            title="원 (KRW)",
+            title="만원",
             showgrid=True, gridcolor=_GRID, griddash="dot",
             zeroline=False, tickfont=dict(size=10, color="#555555"),
         ),
@@ -410,7 +410,7 @@ def _building_tab(df: pd.DataFrame) -> None:
             values=agg["total"],
             hole=0.35,
             textinfo="label+percent",
-            hovertemplate="<b>%{label}동</b><br>%{value:,.0f} 원 (%{percent})<extra></extra>",
+            hovertemplate="<b>%{label}동</b><br>%{value:,.0f} 만원 (%{percent})<extra></extra>",
             marker_colors=building_colors[:len(agg)],
         ))
         fig_pie.update_layout(
