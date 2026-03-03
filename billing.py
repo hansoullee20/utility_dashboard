@@ -256,7 +256,11 @@ def _ranking_tab(df: pd.DataFrame) -> None:
 
     # ── Full ranked table (all brands, with context columns) ──
     context_cols = ["building", "floor", "unit", "size_m2"]
-    tbl_cols = ["brand"] + seg_cols + extra + context_cols
+    # For 합계 views: show total first, then breakdown; for sublevel views: breakdown first, then total
+    if view_mode == "합계":
+        tbl_cols = ["brand"] + extra + seg_cols + context_cols
+    else:
+        tbl_cols = ["brand"] + seg_cols + extra + context_cols
     show = list(dict.fromkeys(c for c in tbl_cols if c in sorted_df.columns))
     out = add_display_index(sorted_df[show].copy())
 
