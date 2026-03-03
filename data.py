@@ -45,6 +45,64 @@ def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     raise ValueError("Unsupported file type")
 
 
+BILLING_SHEET_NAME = "수도광열비 부과 내역"
+
+
+@st.cache_data(show_spinner="Loading billing sheet...")
+def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Parse 수도광열비 부과 내역 sheet into a clean flat DataFrame."""
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
+
+    # Data rows start at index 5; filter to only rows where col 2 (building) is A/B/C/D
+    data_rows = raw.iloc[5:].copy()
+    data_rows = data_rows[
+        data_rows[2].astype(str).str.strip().isin({"A", "B", "C", "D"})
+    ].copy()
+
+    col_map = {
+        2:  "building",
+        3:  "floor",
+        4:  "unit",
+        5:  "size_m2",
+        9:  "brand",
+        10: "water_excl",
+        11: "water_comm",
+        12: "water_total",
+        13: "elect_excl",
+        14: "elect_comm",
+        15: "elect_total",
+        16: "hotwater_excl",
+        17: "hotwater_comm",
+        18: "hvac_excl",
+        19: "hvac_comm",
+        20: "heat_total",
+        21: "total_excl",
+        22: "total_comm",
+        23: "total",
+    }
+
+    present_cols = [c for c in col_map if c in data_rows.columns]
+    df = data_rows[present_cols].copy()
+    df.columns = [col_map[c] for c in present_cols]
+
+    # Drop rows where brand is missing
+    brand_str = df["brand"].astype(str).str.strip()
+    df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+
+    # Coerce numeric columns
+    str_cols = {"building", "floor", "unit", "brand"}
+    for c in df.columns:
+        if c not in str_cols:
+            df[c] = to_numeric_series(df[c])
+
+    # Clean string columns
+    for c in str_cols:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+
+    return df.reset_index(drop=True)
+
+
 def apply_header_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
     Apply the exact MultiIndex cleaning pipeline you described and output a flat
