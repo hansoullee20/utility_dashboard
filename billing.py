@@ -255,8 +255,8 @@ def _ranking_tab(df: pd.DataFrame) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Full ranked table (all brands, with context columns) ──
-    base_cols = ["brand", "building", "floor", "unit", "size_m2"]
-    tbl_cols  = base_cols + seg_cols + extra
+    context_cols = ["building", "floor", "unit", "size_m2"]
+    tbl_cols = ["brand"] + seg_cols + extra + context_cols
     show = list(dict.fromkeys(c for c in tbl_cols if c in sorted_df.columns))
     out = add_display_index(sorted_df[show].copy())
 
@@ -320,7 +320,7 @@ def _histogram_tab(df: pd.DataFrame) -> None:
     hi = float(s.quantile(1 - tail_pct / 100))
 
     title = f"{sel_util} {view_mode} (만원)"
-    display_cols = [c for c in ["brand", "building", "floor", "unit", "size_m2", val_col] if c in df.columns]
+    display_cols = [c for c in ["brand", val_col, "building", "floor", "unit", "size_m2"] if c in df.columns]
     plot_hist_with_tails(
         s, bins=int(bins), lo=lo, hi=hi,
         title=title,
