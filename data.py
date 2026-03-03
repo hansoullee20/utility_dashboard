@@ -45,7 +45,8 @@ def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     raise ValueError("Unsupported file type")
 
 
-BILLING_SHEET_NAME = "수도광열비 부과 내역"
+BILLING_SHEET_NAME  = "수도광열비 부과 내역"
+EHP_OAC_SHEET_NAME  = "EHP(OAC)검침자료"
 
 
 @st.cache_data(show_spinner="Loading billing sheet...")
@@ -114,6 +115,54 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     for c in str_cols:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
+
+    return df.reset_index(drop=True)
+
+
+_EHP_YEAR_COL_START = {
+    2018: 13, 2019: 25, 2020: 37, 2021: 49,
+    2022: 61, 2023: 73, 2024: 85, 2025: 97,
+}
+
+
+@st.cache_data(show_spinner="Loading EHP sheet...")
+def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Parse EHP(OAC)검침자료 — OAC 전기 사용량 cumulative monthly readings.
+
+    Returns a wide DataFrame with one row per EHP unit:
+      building, panel_name, equipment_no, capacity_kw, brand,
+      cum_2018_01 … cum_2025_12
+    """
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
+
+    # Data rows start at index 2; keep only valid-building rows (A/B/C/D)
+    data_rows = raw.iloc[2:].copy()
+    data_rows = data_rows[
+        data_rows[0].astype(str).str.strip().isin({"A", "B", "C", "D"})
+    ].copy()
+
+    df = pd.DataFrame(index=range(len(data_rows)))
+    df["building"]     = data_rows[0].values
+    df["panel_name"]   = data_rows[1].astype(str).str.strip().values
+    df["equipment_no"] = data_rows[2].astype(str).str.strip().values
+    df["capacity_kw"]  = pd.to_numeric(data_rows[3], errors="coerce").values
+    df["brand"]        = data_rows[4].astype(str).str.strip().values
+
+    df["building"] = df["building"].astype(str).str.strip()
+
+    # Drop rows with missing brand
+    brand_str = df["brand"].astype(str).str.strip()
+    df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+
+    for year, start_col in _EHP_YEAR_COL_START.items():
+        for month_idx in range(12):
+            col_num  = start_col + month_idx
+            col_name = f"cum_{year}_{month_idx + 1:02d}"
+            if col_num in data_rows.columns:
+                df[col_name] = pd.to_numeric(
+                    data_rows[col_num].astype(str).str.replace(",", "", regex=False),
+                    errors="coerce",
+                ).values
 
     return df.reset_index(drop=True)
 
