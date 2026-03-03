@@ -122,58 +122,97 @@ def _annual_totals(year_dfs: dict[int, pd.DataFrame]) -> pd.DataFrame:
     return all_brands.sort_values("Total", ascending=False).reset_index(drop=True)
 
 
-# ─── Tab renderers ────────────────────────────────────────────────────────────
+# ─── Shared helpers ───────────────────────────────────────────────────────────
 
-def _annual_tab(annual: pd.DataFrame) -> None:
-    year_cols = [c for c in annual.columns if c.isdigit()]
-    if not year_cols:
-        st.warning("No annual data available.")
-        return
+def _left_margin(df: pd.DataFrame) -> int:
+    mx = df["brand"].astype(str).str.len().max() if len(df) else 20
+    return min(max(int(mx) * 7, 120), 320)
 
-    _n = len(annual)
-    if _n >= 2:
-        top_n = st.slider("Show top N brands", 5, _n, min(20, _n), key="ehp_annual_n")
-    else:
-        top_n = _n
 
-    plot_df = annual.head(top_n).iloc[::-1].copy()  # reversed: highest at top
-
-    fig = go.Figure()
-    for i, year in enumerate(year_cols):
-        fig.add_trace(go.Bar(
-            y=plot_df["brand"],
-            x=plot_df[year].fillna(0),
-            name=year,
-            orientation="h",
-            marker_color=_PALETTE[i % len(_PALETTE)],
-            marker_line_color="white",
-            marker_line_width=0.5,
-            hovertemplate=f"<b>%{{y}}</b><br>{year}: %{{x:,.0f}} kWh<extra></extra>",
-        ))
-
-    max_label = plot_df["brand"].astype(str).str.len().max() if len(plot_df) else 20
-    left_margin = min(max(int(max_label) * 7, 120), 320)
-
-    fig.update_layout(
+def _hbar_layout(title: str, n_brands: int, left: int, **extra) -> dict:
+    base = dict(
         **_BASE_LAYOUT,
         barmode="stack",
-        title=dict(text=f"<b>Annual EHP Usage — Top {top_n}</b>",
-                   font=dict(size=13, color="#222222"), x=0),
-        height=max(420, top_n * 22 + 120),
+        title=dict(text=f"<b>{title}</b>", font=dict(size=13, color="#222222"), x=0),
+        height=max(380, n_brands * 22 + 120),
         xaxis=dict(title="kWh", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
                    zeroline=False, tickfont=dict(size=10, color="#555555")),
         yaxis=dict(automargin=True, zeroline=False,
                    tickfont=dict(size=10, color="#555555")),
         legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom",
                     font=dict(size=11, color="#333333")),
-        margin=dict(l=left_margin, r=20, t=70, b=40),
+        margin=dict(l=left, r=20, t=70, b=40),
     )
+    base.update(extra)
+    return base
+
+
+# ─── Tab renderers ────────────────────────────────────────────────────────────
+
+def _annual_tab(annual: pd.DataFrame) -> None:
+    """Overall trend + per-brand stacked bar across all years."""
+    year_cols = [c for c in annual.columns if c.isdigit()]
+    if not year_cols:
+        st.warning("No annual data available.")
+        return
+
+    # ── Year totals trend (all brands combined) ──
+    year_totals = [(y, annual[y].sum(min_count=1)) for y in year_cols]
+    xt, yt = zip(*year_totals)
+    pct_changes = [None] + [
+        round((yt[i] - yt[i-1]) / yt[i-1] * 100, 1) if yt[i-1] else None
+        for i in range(1, len(yt))
+    ]
+    text_labels = [
+        f"{v:,.0f}<br>({'+' if p > 0 else ''}{p}%)" if p is not None else f"{v:,.0f}"
+        for v, p in zip(yt, pct_changes)
+    ]
+    fig_trend = go.Figure(go.Scatter(
+        x=list(xt), y=list(yt),
+        mode="lines+markers+text",
+        text=text_labels, textposition="top center",
+        line=dict(color="#4C72B0", width=2.5),
+        marker=dict(size=9, color="#4C72B0"),
+        hovertemplate="<b>%{x}</b>: %{y:,.0f} kWh<extra></extra>",
+    ))
+    fig_trend.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(text="<b>Total Annual Usage — All Brands</b>",
+                   font=dict(size=13, color="#222222"), x=0),
+        height=280,
+        xaxis=dict(showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                   zeroline=False, tickfont=dict(size=11, color="#555555"),
+                   dtick=1),
+        yaxis=dict(title="kWh", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                   zeroline=False, tickfont=dict(size=10, color="#555555")),
+        margin=dict(l=70, r=20, t=55, b=40),
+        showlegend=False,
+    )
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+    # ── Per-brand stacked bar ──
+    _n = len(annual)
+    if _n >= 2:
+        top_n = st.slider("Show top N brands", 5, _n, min(20, _n), key="ehp_annual_n")
+    else:
+        top_n = _n
+
+    plot_df = annual.head(top_n).iloc[::-1].copy()
+    fig = go.Figure()
+    for i, year in enumerate(year_cols):
+        fig.add_trace(go.Bar(
+            y=plot_df["brand"], x=plot_df[year].fillna(0),
+            name=year, orientation="h",
+            marker_color=_PALETTE[i % len(_PALETTE)],
+            marker_line_color="white", marker_line_width=0.5,
+            hovertemplate=f"<b>%{{y}}</b><br>{year}: %{{x:,.0f}} kWh<extra></extra>",
+        ))
+    fig.update_layout(**_hbar_layout(
+        f"Annual Usage by Brand — Top {top_n}", top_n, _left_margin(plot_df),
+    ))
     st.plotly_chart(fig, use_container_width=True)
 
-    show_cols = ["brand", "building"]
-    for c in ["units", "capacity_kw"]:
-        if c in annual.columns:
-            show_cols.append(c)
+    show_cols = ["brand", "building"] + [c for c in ["units", "capacity_kw"] if c in annual.columns]
     show_cols += year_cols + ["Total"]
     out = add_display_index(annual[[c for c in show_cols if c in annual.columns]].copy())
     st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
@@ -181,81 +220,8 @@ def _annual_tab(annual: pd.DataFrame) -> None:
     download_df_as_excel(out, "ehp_annual_usage.xlsx", "annual")
 
 
-def _trend_tab(year_dfs: dict) -> None:
-    """Monthly trend using per-year DataFrames."""
-    if not year_dfs:
-        st.warning("No usage data.")
-        return
-
-    # Build brand ranking by total across all years
-    total_ser = (
-        pd.concat([ydf[["brand", "building", "연간합계"]] for ydf in year_dfs.values()])
-        .groupby(["brand", "building"])["연간합계"].sum()
-        .sort_values(ascending=False)
-    )
-    brand_options = total_ser.index.get_level_values("brand").unique().tolist()
-
-    sel_brands = st.multiselect(
-        "Select brands to compare", brand_options,
-        default=brand_options[:min(5, len(brand_options))],
-        key="ehp_trend_brands",
-    )
-    if not sel_brands:
-        st.info("Select at least one brand.")
-        return
-
-    fig = go.Figure()
-    for i, brand in enumerate(sel_brands):
-        x_vals, y_vals = [], []
-        for year, ydf in sorted(year_dfs.items()):
-            rows = ydf[ydf["brand"] == brand]
-            mon_cols = [c for c in ydf.columns if c.endswith("월")]
-            for col in mon_cols:
-                m = int(col.replace("월", ""))
-                x_vals.append(f"{year}-{m:02d}")
-                y_vals.append(rows[col].sum(min_count=1) if not rows.empty else np.nan)
-
-        fig.add_trace(go.Scatter(
-            x=x_vals, y=y_vals,
-            mode="lines+markers",
-            name=brand,
-            line=dict(color=_PALETTE[i % len(_PALETTE)], width=2),
-            marker=dict(size=4),
-            hovertemplate=f"<b>{brand}</b><br>%{{x}}: %{{y:,.0f}} kWh<extra></extra>",
-        ))
-
-    fig.update_layout(
-        **_BASE_LAYOUT,
-        title=dict(text="<b>Monthly EHP Electricity Usage (kWh)</b>",
-                   font=dict(size=13, color="#222222"), x=0),
-        height=460,
-        xaxis=dict(title="Period", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
-                   zeroline=False, tickfont=dict(size=9, color="#555555"), tickangle=-45),
-        yaxis=dict(title="kWh", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
-                   zeroline=False, tickfont=dict(size=10, color="#555555")),
-        legend=dict(orientation="v", x=1.01, xanchor="left", y=1,
-                    font=dict(size=10, color="#333333"),
-                    bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA", borderwidth=1),
-        margin=dict(l=60, r=160, t=55, b=80),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Download: brand × "YYYY-MM" period table
-    tbl_rows = []
-    for brand in sel_brands:
-        row = {"brand": brand}
-        for year, ydf in sorted(year_dfs.items()):
-            rows = ydf[ydf["brand"] == brand]
-            for col in [c for c in ydf.columns if c.endswith("월")]:
-                m = int(col.replace("월", ""))
-                period = f"{year}-{m:02d}"
-                row[period] = rows[col].sum(min_count=1) if not rows.empty else np.nan
-        tbl_rows.append(row)
-    download_df_as_excel(pd.DataFrame(tbl_rows), "ehp_monthly_trend.xlsx", "trend")
-
-
 def _year_tab(year_dfs: dict) -> None:
-    """Year detail using the per-year DataFrames directly."""
+    """Monthly breakdown for a selected year."""
     if not year_dfs:
         st.warning("No year data.")
         return
@@ -265,8 +231,7 @@ def _year_tab(year_dfs: dict) -> None:
     with c1:
         sel_year = st.selectbox("Year", available_years,
                                 index=len(available_years) - 1, key="ehp_year")
-
-    year_df  = year_dfs[sel_year]                          # already sorted by 연간합계 desc
+    year_df  = year_dfs[sel_year]
     mon_cols = [c for c in year_df.columns if c.endswith("월")]
     if not mon_cols:
         st.warning("No monthly data for selected year.")
@@ -274,57 +239,227 @@ def _year_tab(year_dfs: dict) -> None:
 
     _n = len(year_df)
     with c2:
-        if _n >= 2:
-            top_n = st.slider("Show top N brands", 5, _n, min(20, _n), key="ehp_year_n")
-        else:
-            top_n = _n
+        top_n = st.slider("Show top N brands", 5, _n, min(20, _n), key="ehp_year_n") if _n >= 2 else _n
 
-    plot_df = year_df.head(top_n).iloc[::-1].copy()  # reversed: highest at top
+    # ── Monthly totals (all brands) ──
+    month_totals = year_df[mon_cols].sum()
+    peak_m = month_totals.idxmax()
+    low_m  = month_totals.idxmin()
+    fig_mt = go.Figure(go.Bar(
+        x=mon_cols, y=month_totals.values,
+        marker_color=[
+            "#C44E52" if c == peak_m else ("#55A868" if c == low_m else "#4C72B0")
+            for c in mon_cols
+        ],
+        text=[f"{v:,.0f}" for v in month_totals.values],
+        textposition="outside",
+        textfont=dict(size=9, color="#666666"),
+        hovertemplate="<b>%{x}</b>: %{y:,.0f} kWh<extra></extra>",
+    ))
+    fig_mt.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(text=f"<b>{sel_year} — Monthly Totals (All Brands)</b>"
+                        f"   <span style='font-size:11px;color:#888'>peak={peak_m}, low={low_m}</span>",
+                   font=dict(size=13, color="#222222"), x=0),
+        height=300,
+        xaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=11, color="#555555")),
+        yaxis=dict(title="kWh", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                   zeroline=False, tickfont=dict(size=10, color="#555555")),
+        margin=dict(l=60, r=20, t=55, b=40),
+        showlegend=False,
+    )
+    st.plotly_chart(fig_mt, use_container_width=True)
 
+    # ── Per-brand stacked bar ──
+    plot_df = year_df.head(top_n).iloc[::-1].copy()
     fig = go.Figure()
     for i, col in enumerate(mon_cols):
         fig.add_trace(go.Bar(
-            y=plot_df["brand"],
-            x=plot_df[col].fillna(0),
-            name=col,   # "1월", "2월", …
-            orientation="h",
+            y=plot_df["brand"], x=plot_df[col].fillna(0),
+            name=col, orientation="h",
             marker_color=_PALETTE[i % len(_PALETTE)],
-            marker_line_color="white",
-            marker_line_width=0.3,
+            marker_line_color="white", marker_line_width=0.3,
             hovertemplate=f"<b>%{{y}}</b><br>{col}: %{{x:,.0f}} kWh<extra></extra>",
         ))
-
-    max_label = plot_df["brand"].astype(str).str.len().max() if len(plot_df) else 20
-    left_margin = min(max(int(max_label) * 7, 120), 320)
-
-    fig.update_layout(
-        **_BASE_LAYOUT,
-        barmode="stack",
-        title=dict(text=f"<b>{sel_year} Monthly Usage — Top {top_n}</b>",
-                   font=dict(size=13, color="#222222"), x=0),
-        height=max(420, top_n * 22 + 120),
-        xaxis=dict(title="kWh", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
-                   zeroline=False, tickfont=dict(size=10, color="#555555")),
-        yaxis=dict(automargin=True, zeroline=False,
-                   tickfont=dict(size=10, color="#555555")),
-        legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom",
-                    font=dict(size=11, color="#333333")),
-        margin=dict(l=left_margin, r=20, t=70, b=40),
-    )
+    fig.update_layout(**_hbar_layout(
+        f"{sel_year} Monthly Usage by Brand — Top {top_n}", top_n, _left_margin(plot_df),
+    ))
     st.plotly_chart(fig, use_container_width=True)
 
-    # Monthly totals row
-    shown = year_df.head(top_n)
-    totals = {col: round(shown[col].sum(), 0) for col in mon_cols}
-    totals["연간합계"] = round(shown["연간합계"].sum(), 0)
-    st.markdown(f"**Monthly totals — {sel_year} (top {top_n} brands)**")
-    st.dataframe(pd.DataFrame([totals]), hide_index=True, use_container_width=True)
+    # ── Stats summary row ──
+    stats = pd.DataFrame([{
+        "Total kWh": f"{year_df['연간합계'].sum():,.0f}",
+        "Peak month": peak_m,
+        "Peak kWh": f"{month_totals[peak_m]:,.0f}",
+        "Low month": low_m,
+        "Low kWh": f"{month_totals[low_m]:,.0f}",
+        "Avg / month": f"{month_totals.mean():,.0f}",
+        "# brands": len(year_df),
+    }])
+    st.dataframe(stats, hide_index=True, use_container_width=True)
 
-    # Per-brand table (year_df columns: brand, building, [units, capacity_kw], 1월…12월, 연간합계)
     out = add_display_index(year_df.copy())
     st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
                  height=min(35 * len(out) + 38, 700))
     download_df_as_excel(out, f"ehp_year_{sel_year}.xlsx", "year_detail")
+
+
+def _yoy_tab(annual: pd.DataFrame) -> None:
+    """Year-over-year comparison: heatmap + change table."""
+    year_cols = [c for c in annual.columns if c.isdigit()]
+    if len(year_cols) < 2:
+        st.warning("Need at least 2 years of data for YoY analysis.")
+        return
+
+    mode = st.radio(
+        "View", ["Annual Usage (kWh)", "YoY Change (kWh)", "YoY Change (%)"],
+        horizontal=True, key="ehp_yoy_mode",
+    )
+
+    brands = annual["brand"].tolist()
+
+    if mode == "Annual Usage (kWh)":
+        z_cols   = year_cols
+        z_matrix = annual[year_cols].fillna(0).values.tolist()
+        colorscale, zmid = "Blues", None
+        fmt = ".0f"
+    else:
+        pairs   = [(year_cols[i-1], year_cols[i]) for i in range(1, len(year_cols))]
+        z_cols  = [f"{a}→{b}" for a, b in pairs]
+        rows = []
+        for _, row in annual.iterrows():
+            r = []
+            for a, b in pairs:
+                prev, curr = row.get(a, np.nan), row.get(b, np.nan)
+                if mode == "YoY Change (kWh)":
+                    r.append(round(curr - prev, 0) if pd.notna(curr) and pd.notna(prev) else np.nan)
+                else:
+                    r.append(round((curr - prev) / prev * 100, 1)
+                             if pd.notna(curr) and pd.notna(prev) and prev != 0 else np.nan)
+            rows.append(r)
+        z_matrix   = rows
+        colorscale = "RdBu_r"   # red = increase, blue = decrease
+        zmid       = 0
+        fmt        = ".1f" if "%" in mode else ".0f"
+
+    hm_kwargs = dict(zmid=zmid) if zmid is not None else {}
+    fig_hm = go.Figure(go.Heatmap(
+        z=z_matrix,
+        x=z_cols,
+        y=brands,
+        colorscale=colorscale,
+        text=[[f"{v:{fmt}}" if pd.notna(v) else "" for v in row] for row in z_matrix],
+        texttemplate="%{text}",
+        textfont=dict(size=9),
+        hovertemplate="<b>%{y}</b><br>%{x}: %{z:,.1f}<extra></extra>",
+        **hm_kwargs,
+    ))
+    max_label = annual["brand"].astype(str).str.len().max() if len(annual) else 20
+    left_margin = min(max(int(max_label) * 7, 120), 320)
+    fig_hm.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(text=f"<b>Brand × Year — {mode}</b>",
+                   font=dict(size=13, color="#222222"), x=0),
+        height=max(400, len(brands) * 18 + 120),
+        xaxis=dict(tickfont=dict(size=10, color="#555555"), side="bottom"),
+        yaxis=dict(automargin=True, tickfont=dict(size=9, color="#555555")),
+        margin=dict(l=left_margin, r=80, t=55, b=60),
+    )
+    st.plotly_chart(fig_hm, use_container_width=True)
+
+    # ── YoY change table ──
+    if mode != "Annual Usage (kWh)":
+        tbl = annual[["brand", "building"]].copy()
+        pairs = [(year_cols[i-1], year_cols[i]) for i in range(1, len(year_cols))]
+        for a, b in pairs:
+            diff = annual[b] - annual[a]
+            pct  = (diff / annual[a] * 100).round(1)
+            tbl[f"Δ {a}→{b} kWh"] = diff.round(0)
+            tbl[f"Δ {a}→{b} %"]   = pct
+        tbl["Total"] = annual["Total"]
+        out = add_display_index(tbl)
+        st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
+                     height=min(35 * len(out) + 38, 700))
+        download_df_as_excel(out, "ehp_yoy_change.xlsx", "yoy")
+    else:
+        show = ["brand", "building"] + year_cols + ["Total"]
+        out  = add_display_index(annual[[c for c in show if c in annual.columns]].copy())
+        st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
+                     height=min(35 * len(out) + 38, 700))
+        download_df_as_excel(out, "ehp_annual_usage.xlsx", "annual")
+
+
+def _profile_tab(year_dfs: dict) -> None:
+    """Seasonality: month (1-12) × year, total kWh per month across all brands."""
+    if not year_dfs:
+        st.warning("No data.")
+        return
+
+    # Compute (year, month) → total kWh aggregated across all brands
+    records: list[dict] = []
+    for year, ydf in sorted(year_dfs.items()):
+        mon_cols = [c for c in ydf.columns if c.endswith("월")]
+        for col in mon_cols:
+            m = int(col.replace("월", ""))
+            records.append({"year": year, "month": m, "month_label": col,
+                            "total_kwh": ydf[col].sum(min_count=1)})
+    profile = pd.DataFrame(records)
+    if profile.empty:
+        st.warning("No monthly data.")
+        return
+
+    # ── Line chart: month on x, one line per year ──
+    fig = go.Figure()
+    years = sorted(profile["year"].unique())
+    for i, year in enumerate(years):
+        yp = profile[profile["year"] == year].sort_values("month")
+        fig.add_trace(go.Scatter(
+            x=yp["month_label"], y=yp["total_kwh"],
+            mode="lines+markers",
+            name=str(year),
+            line=dict(color=_PALETTE[i % len(_PALETTE)], width=2),
+            marker=dict(size=6),
+            hovertemplate=f"<b>{year}</b> %{{x}}: %{{y:,.0f}} kWh<extra></extra>",
+        ))
+    fig.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(text="<b>Monthly Seasonality — All Brands Combined</b>",
+                   font=dict(size=13, color="#222222"), x=0),
+        height=420,
+        xaxis=dict(title="Month", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                   zeroline=False, tickfont=dict(size=11, color="#555555")),
+        yaxis=dict(title="kWh", showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                   zeroline=False, tickfont=dict(size=10, color="#555555")),
+        legend=dict(orientation="v", x=1.01, xanchor="left", y=1,
+                    font=dict(size=11, color="#333333"),
+                    bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA", borderwidth=1),
+        margin=dict(l=70, r=120, t=55, b=50),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Average across years per month ──
+    avg_by_month = (
+        profile.groupby("month_label")["total_kwh"]
+        .agg(["mean", "min", "max", "std"])
+        .reindex([f"{m}월" for m in range(1, 13)]).dropna()
+        .rename(columns={"mean": "Avg kWh", "min": "Min", "max": "Max", "std": "Std"})
+    )
+    avg_by_month["Peak year"] = profile.groupby("month_label").apply(
+        lambda g: str(int(g.loc[g["total_kwh"].idxmax(), "year"]))
+    ).reindex(avg_by_month.index)
+    avg_by_month = avg_by_month.round(0).reset_index().rename(columns={"month_label": "Month"})
+
+    st.markdown("**Monthly averages across all years**")
+    st.dataframe(avg_by_month, hide_index=True, use_container_width=True)
+
+    # ── Pivot table: year × month ──
+    pivot = profile.pivot(index="year", columns="month_label", values="total_kwh")
+    pivot = pivot.reindex(columns=[f"{m}월" for m in range(1, 13)], fill_value=np.nan)
+    pivot["연간합계"] = pivot.sum(axis=1, min_count=1).round(0)
+    pivot = pivot.reset_index().rename(columns={"year": "Year"})
+    st.markdown("**Year × month pivot (kWh)**")
+    st.dataframe(st_safe(pivot), hide_index=True, use_container_width=True)
+    download_df_as_excel(pivot, "ehp_monthly_profile.xlsx", "profile")
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
@@ -362,13 +497,15 @@ def render_ehp_view(df: pd.DataFrame) -> None:
     year_dfs = make_year_dfs(agg)       # {year: tidy DataFrame per year}
     annual   = _annual_totals(year_dfs) # brand × year annual totals
 
-    tab_annual, tab_trend, tab_year = st.tabs(
-        ["Annual Summary", "Monthly Trend", "Year Detail"]
+    tab_annual, tab_year, tab_yoy, tab_profile = st.tabs(
+        ["Annual Summary", "Year Detail", "Year-over-Year", "Monthly Profile"]
     )
 
     with tab_annual:
         _annual_tab(annual)
-    with tab_trend:
-        _trend_tab(year_dfs)
     with tab_year:
         _year_tab(year_dfs)
+    with tab_yoy:
+        _yoy_tab(annual)
+    with tab_profile:
+        _profile_tab(year_dfs)
