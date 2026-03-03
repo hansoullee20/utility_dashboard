@@ -90,9 +90,24 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
 
     # Coerce numeric columns
+    # Cost/amount columns: blank or dash means no charge → fill with 0
+    # size_m2: keep NaN if missing (0 would break per-area calculations)
     str_cols = {"building", "floor", "unit", "brand"}
+    cost_cols = {
+        "water_excl", "water_comm", "water_total",
+        "elect_excl", "elect_comm", "elect_total",
+        "hotwater_excl", "hotwater_comm",
+        "hvac_excl", "hvac_comm",
+        "heat_total", "total_excl", "total_comm", "total",
+    }
+    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
     for c in df.columns:
-        if c not in str_cols:
+        if c in str_cols:
+            continue
+        if c in cost_cols:
+            cleaned = df[c].astype(str).str.strip().replace(_blank, "0")
+            df[c] = pd.to_numeric(cleaned.str.replace(",", "", regex=False), errors="coerce").fillna(0)
+        else:
             df[c] = to_numeric_series(df[c])
 
     # Clean string columns
