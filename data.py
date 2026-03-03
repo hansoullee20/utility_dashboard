@@ -188,48 +188,73 @@ def _parse_ehp_col_map(raw: pd.DataFrame) -> dict:
 
 @st.cache_data(show_spinner="Loading EHP sheet...")
 def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
-    """Parse EHP(OAC)검침자료 — OAC 전기 사용량 cumulative monthly readings.
+    """Parse only the ▣ OAC 전기 사용량 table inside EHP(OAC)검침자료.
 
     Returns a wide DataFrame with one row per EHP unit:
       building, panel_name, equipment_no, capacity_kw, brand,
       cum_YYYY_MM  (one column per year-month, derived from Excel headers)
     """
-    raw_orig = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
+    full = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
 
-    # Parse year-month column mapping from the ORIGINAL (unmodified) headers
+    # ── Locate the ▣ OAC 전기 사용량 section ──────────────────────────────────
+    table_start = None
+    for ri in range(len(full)):
+        row_vals = full.iloc[ri].astype(str)
+        if row_vals.str.contains("OAC 전기 사용량", na=False).any():
+            table_start = ri
+            break
+    if table_start is None:
+        return pd.DataFrame()
+
+    # Slice from that row onwards
+    raw_orig = full.iloc[table_start:].reset_index(drop=True)
+
+    # ── Parse year-month headers from the table slice ─────────────────────────
     col_to_ym = _parse_ehp_col_map(raw_orig)
+    if not col_to_ym:
+        return pd.DataFrame()
 
-    # Forward-fill merged cells in data rows so building / brand propagate down
+    # ── Forward-fill merged cells (building, brand etc. often merged) ─────────
     raw = raw_orig.ffill(axis=0)
 
-    valid_buildings = {"A", "B", "C", "D"}
+    # ── Identify data rows: rows where the first cum column has a numeric value ─
+    first_cum_col = min(col_to_ym.keys())
+    data_mask = pd.to_numeric(
+        raw[first_cum_col].astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    ).notna()
+    data_rows = raw[data_mask].copy()
 
-    # Auto-detect which column holds building letters (first col with ≥5 A/B/C/D values)
-    bldg_col = 0
-    for ci in range(min(8, raw.shape[1])):
-        if raw[ci].astype(str).str.strip().isin(valid_buildings).sum() >= 5:
-            bldg_col = ci
-            break
+    if data_rows.empty:
+        return pd.DataFrame()
 
-    data_rows = raw[raw[bldg_col].astype(str).str.strip().isin(valid_buildings)].copy()
+    # ── Detect info columns immediately left of the first cum column ──────────
+    # Layout: … building, panel_name, equipment_no, capacity_kw, brand | cum cols …
+    brand_col = first_cum_col - 1
+    cap_col   = first_cum_col - 2
+    equip_col = first_cum_col - 3
+    panel_col = first_cum_col - 4
+    bldg_col  = first_cum_col - 5
 
-    panel_col = bldg_col + 1
-    equip_col = bldg_col + 2
-    cap_col   = bldg_col + 3
-    brand_col = bldg_col + 4
+    def _col(ci):
+        return data_rows[ci].astype(str).str.strip().values if ci >= 0 and ci in data_rows.columns else ""
 
     df = pd.DataFrame(index=range(len(data_rows)))
-    df["building"]     = data_rows[bldg_col].astype(str).str.strip().values
-    df["panel_name"]   = data_rows[panel_col].astype(str).str.strip().values if panel_col in data_rows.columns else ""
-    df["equipment_no"] = data_rows[equip_col].astype(str).str.strip().values if equip_col in data_rows.columns else ""
-    df["capacity_kw"]  = pd.to_numeric(data_rows[cap_col], errors="coerce").values if cap_col in data_rows.columns else np.nan
-    df["brand"]        = data_rows[brand_col].astype(str).str.strip().values if brand_col in data_rows.columns else ""
+    df["building"]     = _col(bldg_col)
+    df["panel_name"]   = _col(panel_col)
+    df["equipment_no"] = _col(equip_col)
+    df["capacity_kw"]  = pd.to_numeric(data_rows[cap_col], errors="coerce").values if cap_col >= 0 and cap_col in data_rows.columns else np.nan
+    df["brand"]        = _col(brand_col)
+
+    # Clean strings
+    for c in ["building", "panel_name", "equipment_no", "brand"]:
+        df[c] = df[c].astype(str).str.strip()
 
     # Drop rows with missing brand
-    brand_str = df["brand"].astype(str).str.strip()
-    df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+    brand_str = df["brand"]
+    df = df[~brand_str.isin({"nan", "", "NaN"}) & brand_str.notna()].copy()
 
-    # Add cumulative reading columns using the header-derived mapping
+    # ── Add cumulative reading columns ────────────────────────────────────────
     for ci, (year, month) in sorted(col_to_ym.items()):
         col_name = f"cum_{year}_{month:02d}"
         if ci in data_rows.columns and col_name not in df.columns:
