@@ -25,7 +25,7 @@ def get_sheet_names(name: str, data: bytes) -> list:
     """Fast: only reads sheet names without loading any data."""
     name = name.lower()
     if name.endswith((".xlsx", ".xls", ".xlsm")):
-        return pd.ExcelFile(io.BytesIO(data)).sheet_names
+        return pd.ExcelFile(io.BytesIO(data), engine="calamine").sheet_names
     return ["__single__"]
 
 
@@ -41,7 +41,7 @@ def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
         return pd.read_parquet(io.BytesIO(data))
 
     if name.endswith((".xlsx", ".xls", ".xlsm")):
-        return pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=[2, 3, 4])
+        return pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=[2, 3, 4], engine="calamine")
 
     raise ValueError("Unsupported file type")
 
@@ -53,7 +53,7 @@ EHP_OAC_SHEET_NAME  = "EHP(OAC)검침자료"
 @st.cache_data(show_spinner="Loading billing sheet...")
 def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     """Parse 수도광열비 부과 내역 sheet into a clean flat DataFrame."""
-    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
 
     # Data rows start at index 5; filter to only rows where col 2 (building) is A/B/C/D
     data_rows = raw.iloc[5:].copy()
@@ -186,15 +186,81 @@ def _parse_ehp_col_map(raw: pd.DataFrame) -> dict:
     return col_to_ym
 
 
-@st.cache_data(show_spinner="Loading EHP sheet...")
+def _label_columns_with_year(headers: pd.Series) -> list[str]:
+    """Produce unique column names like '2018_1월', '2019_2월', etc.
+    For any group of month columns with no year label, the year is
+    (next labeled year - 1)."""
+    ym_pat = _re.compile(r'(20\d{2})')
+    m_pat  = _re.compile(r'(\d{1,2})월')
+    values = [str(v).strip() for v in headers]
+
+    # Pass 1: build a map of col_index -> explicit year label
+    explicit_year = {}
+    for i, s in enumerate(values):
+        m = ym_pat.search(s)
+        if m:
+            explicit_year[i] = int(m.group(1))
+
+    # Pass 2: for each position, resolve its year:
+    # - if it has an explicit year, use it
+    # - otherwise find the next explicit year and subtract 1
+    def resolve_year(i):
+        if i in explicit_year:
+            return explicit_year[i]
+        for j in sorted(explicit_year):
+            if j > i:
+                return explicit_year[j] - 1
+        return None
+
+    result = []
+    for i, s in enumerate(values):
+        m_m = m_pat.search(s)
+        if m_m:
+            yr = resolve_year(i)
+            result.append(f"{yr}_{int(m_m.group(1))}월" if yr else s)
+        else:
+            result.append(s)
+
+    return result
+
+
+def read_ehp_raw_slice(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Return the raw unprocessed slice: rows from OAC table start, columns M–DG.
+    Row 0 (section title) is skipped; row 1 becomes the header with year-prefixed names."""
+    full = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+    table_start = None
+    table_end = None
+    for ri in range(len(full)):
+        row_str = full.iloc[ri].astype(str)
+        if table_start is None:
+            if row_str.str.contains("OAC 전기 사용량", na=False).any():
+                table_start = ri
+        else:
+            if row_str.str.contains("▣", na=False).any():
+                table_end = ri
+                break
+    if table_start is None:
+        return pd.DataFrame()
+
+    sliced = full.iloc[table_start + 1:table_end, 12:111].reset_index(drop=True)
+    sliced.columns = _label_columns_with_year(sliced.iloc[0])
+    sliced = sliced.iloc[1:].reset_index(drop=True)
+    sliced = sliced.dropna(how="all").reset_index(drop=True)
+    # Keep only rows that have a 계량기 번호 (meter number) in the last column.
+    meter_no = sliced.iloc[:, 98].astype(str).str.strip()
+    valid = ~meter_no.isin({"nan", "", "NaN"})
+    sliced = sliced[valid].reset_index(drop=True)
+    return sliced
+
+
 def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     """Parse only the ▣ OAC 전기 사용량 table inside EHP(OAC)검침자료.
 
-    Returns a wide DataFrame with one row per EHP unit:
-      building, panel_name, equipment_no, capacity_kw, brand,
+    Returns a wide DataFrame with one row per meter (계량기번호):
+      meter_no, building, brand, panel_name, equipment_no, capacity_kw,
       cum_YYYY_MM  (one column per year-month, derived from Excel headers)
     """
-    full = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="openpyxl")
+    full = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
 
     # ── Locate the ▣ OAC 전기 사용량 section ──────────────────────────────────
     table_start = None
@@ -206,16 +272,37 @@ def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     if table_start is None:
         return pd.DataFrame()
 
-    # Slice from that row onwards
-    raw_orig = full.iloc[table_start:].reset_index(drop=True)
+    # ── Step 1: slice rows from table_start, columns M–DG (indices 12–110) ────
+    # The header rows are at the top of this slice; data rows follow below.
+    raw_orig = full.iloc[table_start:, 12:111].reset_index(drop=True)
+    del full
 
-    # ── Parse year-month headers from the table slice ─────────────────────────
+    # ── Parse year-month headers from the sliced columns ──────────────────────
+    # col_to_ym keys are now 0-based within the slice (0 = col M, 98 = col DG)
     col_to_ym = _parse_ehp_col_map(raw_orig)
     if not col_to_ym:
         return pd.DataFrame()
 
+    # ── Detect info columns by scanning header rows for Korean labels ─────────
+    _label_map = {
+        "계량기": "meter_no",
+        "판넬":   "panel_name",
+        "장비":   "equipment_no",
+        "용량":   "capacity_kw",
+        "상호":   "brand",
+        "브랜드": "brand",
+    }
+    key_to_col: dict[str, int] = {}
+    for ri in range(min(10, len(raw_orig))):
+        for ci, val in enumerate(raw_orig.iloc[ri]):
+            sv = str(val).strip()
+            for label, key in _label_map.items():
+                if label in sv and key not in key_to_col:
+                    key_to_col[key] = ci
+
     # ── Forward-fill merged cells (building, brand etc. often merged) ─────────
-    raw = raw_orig.ffill(axis=0)
+    raw_orig.ffill(axis=0, inplace=True)
+    raw = raw_orig
 
     # ── Identify data rows: rows where the first cum column has a numeric value ─
     first_cum_col = min(col_to_ym.keys())
@@ -223,47 +310,132 @@ def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
         raw[first_cum_col].astype(str).str.replace(",", "", regex=False),
         errors="coerce",
     ).notna()
-    data_rows = raw[data_mask].copy()
+    data_rows = raw[data_mask].reset_index(drop=True)
+    del raw, raw_orig
 
     if data_rows.empty:
         return pd.DataFrame()
 
-    # ── Detect info columns immediately left of the first cum column ──────────
-    # Layout: … building, panel_name, equipment_no, capacity_kw, brand | cum cols …
-    brand_col = first_cum_col - 1
-    cap_col   = first_cum_col - 2
-    equip_col = first_cum_col - 3
-    panel_col = first_cum_col - 4
-    bldg_col  = first_cum_col - 5
+    # ── Build output DataFrame all at once to avoid fragmentation ────────────
+    def _str_col(key):
+        ci = key_to_col.get(key)
+        if ci is not None and ci in data_rows.columns:
+            return data_rows[ci].astype(str).str.strip().values
+        return None
 
-    def _col(ci):
-        return data_rows[ci].astype(str).str.strip().values if ci >= 0 and ci in data_rows.columns else ""
+    cols: dict = {}
+    cols["meter_no"] = _str_col("meter_no") if "meter_no" in key_to_col else ""
+    for key, col_name in [
+        ("building",     "building"),
+        ("brand",        "brand"),
+        ("panel_name",   "panel_name"),
+        ("equipment_no", "equipment_no"),
+    ]:
+        vals = _str_col(key)
+        if vals is not None:
+            cols[col_name] = vals
 
-    df = pd.DataFrame(index=range(len(data_rows)))
-    df["building"]     = _col(bldg_col)
-    df["panel_name"]   = _col(panel_col)
-    df["equipment_no"] = _col(equip_col)
-    df["capacity_kw"]  = pd.to_numeric(data_rows[cap_col], errors="coerce").values if cap_col >= 0 and cap_col in data_rows.columns else np.nan
-    df["brand"]        = _col(brand_col)
+    cap_ci = key_to_col.get("capacity_kw")
+    if cap_ci is not None and cap_ci in data_rows.columns:
+        cols["capacity_kw"] = pd.to_numeric(data_rows[cap_ci], errors="coerce").values
 
-    # Clean strings
-    for c in ["building", "panel_name", "equipment_no", "brand"]:
-        df[c] = df[c].astype(str).str.strip()
-
-    # Drop rows with missing brand
-    brand_str = df["brand"]
-    df = df[~brand_str.isin({"nan", "", "NaN"}) & brand_str.notna()].copy()
-
-    # ── Add cumulative reading columns ────────────────────────────────────────
+    seen_cum: set = set()
     for ci, (year, month) in sorted(col_to_ym.items()):
         col_name = f"cum_{year}_{month:02d}"
-        if ci in data_rows.columns and col_name not in df.columns:
-            df[col_name] = pd.to_numeric(
+        if ci in data_rows.columns and col_name not in seen_cum:
+            seen_cum.add(col_name)
+            cols[col_name] = pd.to_numeric(
                 data_rows[ci].astype(str).str.replace(",", "", regex=False),
                 errors="coerce",
             ).values
 
+    df = pd.DataFrame(cols)
+
+    # ── Drop rows where meter_no is missing ───────────────────────────────────
+    meter_str = df["meter_no"].astype(str).str.strip()
+    df = df[~meter_str.isin({"nan", "", "NaN"}) & meter_str.notna()].copy()
+
+    # Clean string columns (only those that were actually created)
+    for c in ["meter_no", "building", "brand", "panel_name", "equipment_no"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+
     return df.reset_index(drop=True)
+
+
+_EHP_YEARS  = [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+_EHP_MONTHS = list(range(1, 13))
+
+
+@st.cache_data(show_spinner="Analyzing EHP data...", max_entries=1)
+def build_ehp_analysis(name: str, data: bytes, sheet: str) -> tuple[dict, pd.DataFrame]:
+    """Parse EHP sheet and return (year_dfs, annual) — cached by file identity."""
+    df = read_ehp_oac_sheet(name, data, sheet)
+    if df.empty:
+        return {}, pd.DataFrame()
+
+    # Compute monthly usage from cumulative readings
+    prev_col = None
+    usage_cols: dict = {}
+    for y in _EHP_YEARS:
+        for m in _EHP_MONTHS:
+            cum_col   = f"cum_{y}_{m:02d}"
+            usage_col = f"usage_{y}_{m:02d}"
+            if cum_col in df.columns:
+                if prev_col and prev_col in df.columns:
+                    usage_cols[usage_col] = (df[cum_col] - df[prev_col]).clip(lower=0).values
+                else:
+                    usage_cols[usage_col] = np.nan
+                prev_col = cum_col
+
+    if not usage_cols:
+        return {}, pd.DataFrame()
+
+    meta_cols = ["meter_no"] + [c for c in ["brand", "capacity_kw"] if c in df.columns]
+    df_unit = pd.concat([df[meta_cols], pd.DataFrame(usage_cols, index=df.index)], axis=1)
+    del df
+
+    # Build per-year DataFrames
+    year_dfs: dict[int, pd.DataFrame] = {}
+    for y in _EHP_YEARS:
+        avail = [m for m in _EHP_MONTHS if f"usage_{y}_{m:02d}" in df_unit.columns]
+        if not avail:
+            continue
+        src = [f"usage_{y}_{m:02d}" for m in avail]
+        ydf = df_unit[meta_cols + src].copy()
+        ydf = ydf.rename(columns={f"usage_{y}_{m:02d}": f"{m}월" for m in avail})
+        mon_cols = [f"{m}월" for m in avail]
+        ydf["연간합계"] = ydf[mon_cols].sum(axis=1, min_count=1).round(0)
+        year_dfs[y] = ydf.sort_values("연간합계", ascending=False).reset_index(drop=True)
+
+    del df_unit
+
+    # Build annual totals (meter × year)
+    if not year_dfs:
+        return {}, pd.DataFrame()
+
+    id_cols = ["meter_no"] + (["brand"] if "brand" in meta_cols else [])
+    all_meters = pd.concat(
+        [ydf[id_cols] for ydf in year_dfs.values()]
+    ).drop_duplicates().reset_index(drop=True)
+
+    if "capacity_kw" in meta_cols:
+        for ydf in year_dfs.values():
+            if "capacity_kw" in ydf.columns:
+                all_meters = all_meters.merge(ydf[id_cols + ["capacity_kw"]], on=id_cols, how="left")
+                break
+
+    for y, ydf in year_dfs.items():
+        all_meters = all_meters.merge(
+            ydf[id_cols + ["연간합계"]].rename(columns={"연간합계": str(y)}),
+            on=id_cols, how="left",
+        )
+
+    year_str_cols = [str(y) for y in year_dfs]
+    all_meters["Total"] = all_meters[year_str_cols].sum(axis=1, min_count=1).round(0)
+    annual = all_meters.sort_values("Total", ascending=False).reset_index(drop=True)
+
+    return year_dfs, annual
 
 
 def apply_header_rows(df: pd.DataFrame) -> pd.DataFrame:

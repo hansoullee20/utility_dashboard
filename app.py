@@ -5,7 +5,7 @@ import plotly.express as px
 from scipy import stats
 from typing import Dict
 
-from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, BILLING_SHEET_NAME, read_ehp_oac_sheet, EHP_OAC_SHEET_NAME
+from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME
 from billing import render_billing_view
 from ehp import render_ehp_view
 from features import (
@@ -75,7 +75,7 @@ def main():
         with b1:
             st.slider("Bins", 5, 200, step=1, key="bins", on_change=sync_bins_slider)
         with b2:
-            st.number_input("", 5, 200, step=1, key="bins_input", label_visibility="hidden", on_change=sync_bins_input)
+            st.number_input("Bins value", 5, 200, step=1, key="bins_input", label_visibility="hidden", on_change=sync_bins_input)
         bins = st.session_state["bins"]
 
         # ---- Tail % ----
@@ -98,7 +98,7 @@ def main():
                 help="Show the bottom N% and top N% of both change and pct values",
             )
         with t2:
-            st.number_input("", 1, 50, step=1, key="tail_input", label_visibility="hidden", on_change=sync_tail_input)
+            st.number_input("Tail value", 1, 50, step=1, key="tail_input", label_visibility="hidden", on_change=sync_tail_input)
         tail = st.session_state["tail"]
 
         # Convert tail % to quantile bounds (shared for both change and pct)
@@ -150,12 +150,7 @@ def main():
 
     # ── EHP sheet: separate pipeline ──────────────────────────────────────────
     if sheet_name.strip() == EHP_OAC_SHEET_NAME:
-        try:
-            ehp_df = read_ehp_oac_sheet(file_name, file_map[file_name], sheet_name)
-        except Exception as e:
-            st.error(f"Failed to parse EHP sheet: {e}")
-            st.stop()
-        render_ehp_view(ehp_df)
+        render_ehp_view(file_name, file_map[file_name], sheet_name)
         return
     # ─────────────────────────────────────────────────────────────────────────
 

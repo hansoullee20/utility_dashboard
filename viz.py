@@ -131,13 +131,13 @@ def plot_hist_with_tails(
         xaxis=dict(
             showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
             zeroline=False, showline=True, linecolor="#AAAAAA", linewidth=1,
-            tickfont=dict(size=11, color="#555555"),
+            tickfont=dict(size=11, color="#222222"),
         ),
         yaxis=dict(
-            title=dict(text="Count", font=dict(size=11, color="#555555")),
+            title=dict(text="Count", font=dict(size=11, color="#222222")),
             showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
             zeroline=False, showline=True, linecolor="#AAAAAA", linewidth=1,
-            tickfont=dict(size=11, color="#555555"),
+            tickfont=dict(size=11, color="#222222"),
         ),
         font=dict(family="Arial, sans-serif"),
         showlegend=True,
