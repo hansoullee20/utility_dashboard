@@ -186,8 +186,18 @@ def _tab_month(pivot: pd.DataFrame, key: str = "ehp_month_sel") -> None:
 # ─── Public entry point ───────────────────────────────────────────────────────
 
 def render_ehp_view(name: str, data: bytes, sheet: str) -> None:
-    st.subheader("EHP(OAC) 전기 사용량 분석")
-    st.caption("단위: kWh — 월별 누계 검침에서 월 사용량 산출")
+    st.subheader("EHP 전기 사용량 분석")
+
+    analysis_type = st.radio("분석 유형", ["OAC", "전용 EHP"], horizontal=True, key="ehp_analysis_type")
+
+    if analysis_type == "OAC":
+        _render_oac(name, data, sheet)
+    else:
+        _render_ehp_dedicated(name, data, sheet)
+
+
+def _render_oac(name: str, data: bytes, sheet: str) -> None:
+    st.caption("▣ OAC 전기 사용량 — 단위: kWh")
 
     raw_slice = read_ehp_raw_slice(name, data, sheet)
 
@@ -208,18 +218,6 @@ def render_ehp_view(name: str, data: bytes, sheet: str) -> None:
     with tab4:
         _tab_meter(usage)
 
-    with st.expander("🔍 전용 EHP 검침 자료 — raw diagnostic"):
-        import io as _io
-        _full = __import__('pandas').read_excel(_io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
-        for ri in range(len(_full)):
-            if _full.iloc[ri].astype(str).str.contains("전용 EHP", na=False).any():
-                st.write(f"Found at row {ri}")
-                _sliced = _full.iloc[ri+1:ri+60, :11].reset_index(drop=True)
-                _sliced.columns = _sliced.iloc[0]
-                _sliced = _sliced.iloc[1:].reset_index(drop=True)
-                st.dataframe(_sliced, use_container_width=True)
-                break
-
     with st.expander("Cumulative readings — grouped by year"):
         year_groups = group_raw_slice_by_year(raw_slice)
         yr_tabs = st.tabs([str(y) for y in year_groups])
@@ -233,3 +231,31 @@ def render_ehp_view(name: str, data: bytes, sheet: str) -> None:
         for tab, (yr, ydf) in zip(u_tabs, usage_groups.items()):
             with tab:
                 st.dataframe(ydf.rename(columns=lambda c: c.replace(f"{yr}_", "")), use_container_width=True)
+
+
+def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
+    st.caption("▣ 전용 EHP 검침 자료")
+
+    import io as _io
+    _full = __import__('pandas').read_excel(_io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+    for ri in range(len(_full)):
+        if _full.iloc[ri].astype(str).str.contains("전용 EHP", na=False).any():
+            _end = len(_full)
+            for _rj in range(ri + 1, len(_full)):
+                if _full.iloc[_rj].astype(str).str.contains("▣", na=False).any():
+                    _end = _rj
+                    break
+            _sliced = _full.iloc[ri+1:_end, :11].reset_index(drop=True)
+            _sliced.columns = _sliced.iloc[0]
+            _sliced = _sliced.iloc[1:].reset_index(drop=True)
+            _col0 = _sliced.columns[0]
+            _sliced[_col0] = _sliced[_col0].ffill()
+            if "판넬명" in _sliced.columns:
+                _sliced["판넬명"] = _sliced["판넬명"].ffill()
+            if "장비번호" in _sliced.columns:
+                _sliced["장비번호"] = _sliced["장비번호"].ffill()
+            _sliced = _sliced[_sliced[_col0].astype(str).str.endswith("동")].reset_index(drop=True)
+            st.dataframe(_sliced, use_container_width=True)
+            break
+    else:
+        st.error("전용 EHP 검침 자료 섹션을 찾을 수 없습니다.")
