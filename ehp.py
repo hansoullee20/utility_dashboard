@@ -208,6 +208,18 @@ def render_ehp_view(name: str, data: bytes, sheet: str) -> None:
     with tab4:
         _tab_meter(usage)
 
+    with st.expander("🔍 전용 EHP 검침 자료 — raw diagnostic"):
+        import io as _io
+        _full = __import__('pandas').read_excel(_io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+        for ri in range(len(_full)):
+            if _full.iloc[ri].astype(str).str.contains("전용 EHP", na=False).any():
+                st.write(f"Found at row {ri}")
+                _sliced = _full.iloc[ri+1:ri+60, :11].reset_index(drop=True)
+                _sliced.columns = _sliced.iloc[0]
+                _sliced = _sliced.iloc[1:].reset_index(drop=True)
+                st.dataframe(_sliced, use_container_width=True)
+                break
+
     with st.expander("Cumulative readings — grouped by year"):
         year_groups = group_raw_slice_by_year(raw_slice)
         yr_tabs = st.tabs([str(y) for y in year_groups])
