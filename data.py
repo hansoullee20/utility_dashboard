@@ -242,15 +242,52 @@ def read_ehp_raw_slice(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     if table_start is None:
         return pd.DataFrame()
 
-    sliced = full.iloc[table_start + 1:table_end, 12:111].reset_index(drop=True)
+    # Start from col N (13) — drops 전기 사용량 (col M)
+    sliced = full.iloc[table_start + 1:table_end, 13:111].reset_index(drop=True)
     sliced.columns = _label_columns_with_year(sliced.iloc[0])
     sliced = sliced.iloc[1:].reset_index(drop=True)
     sliced = sliced.dropna(how="all").reset_index(drop=True)
-    # Keep only rows that have a 계량기 번호 (meter number) in the last column.
-    meter_no = sliced.iloc[:, 98].astype(str).str.strip()
+    # Keep only rows that have a 계량기 번호 (meter number) in the last column (DG → index 97).
+    meter_no = sliced.iloc[:, 97].astype(str).str.strip()
     valid = ~meter_no.isin({"nan", "", "NaN"})
     sliced = sliced[valid].reset_index(drop=True)
     return sliced
+
+
+def compute_monthly_usage(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute monthly usage: current month reading − previous month reading.
+    Crosses year boundaries naturally. First month column → NaN.
+    계량기 번호 is preserved as the first column."""
+    yr_pat = _re.compile(r'^(20\d{2})_')
+    month_cols = [c for c in df.columns if yr_pat.match(str(c))]
+    readings = df[month_cols].apply(
+        lambda col: pd.to_numeric(col.astype(str).str.replace(",", "", regex=False), errors="coerce")
+    )
+    usage = readings.diff(axis=1)
+    usage.columns = month_cols
+    if "계량기 번호" in df.columns:
+        usage.insert(0, "계량기 번호", df["계량기 번호"].values)
+    return usage
+
+
+def group_raw_slice_by_year(df: pd.DataFrame) -> dict[int, pd.DataFrame]:
+    """Return {year: df} with 계량기 번호 prepended to each year's month columns."""
+    yr_pat = _re.compile(r'^(20\d{2})_')
+    years = [int(yr_pat.match(str(c)).group(1)) if yr_pat.match(str(c)) else None for c in df.columns]
+    key_col = ["계량기 번호"] if "계량기 번호" in df.columns else []
+    result: dict[int, pd.DataFrame] = {}
+    i = 0
+    while i < len(years):
+        yr = years[i]
+        if yr is None:
+            i += 1
+            continue
+        j = i
+        while j < len(years) and years[j] == yr:
+            j += 1
+        result[yr] = df[key_col + list(df.columns[i:j])]
+        i = j
+    return result
 
 
 def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
