@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -246,16 +247,63 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                     _end = _rj
                     break
             _sliced = _full.iloc[ri+1:_end, :11].reset_index(drop=True)
-            _sliced.columns = _sliced.iloc[0]
+            _sliced.columns = [re.sub(r"\s+", " ", str(c)).strip() for c in _sliced.iloc[0]]
             _sliced = _sliced.iloc[1:].reset_index(drop=True)
             _col0 = _sliced.columns[0]
             _sliced[_col0] = _sliced[_col0].ffill()
             if "판넬명" in _sliced.columns:
-                _sliced["판넬명"] = _sliced["판넬명"].ffill()
+                _sliced["판넬명"] = _sliced["판넬명"].ffill().astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
             if "장비번호" in _sliced.columns:
                 _sliced["장비번호"] = _sliced["장비번호"].ffill()
             _sliced = _sliced[_sliced[_col0].astype(str).str.endswith("동")].reset_index(drop=True)
-            st.dataframe(_sliced, use_container_width=True)
+
+            # ── Total 전기 사용량 analysis ──────────────────────────────────
+            usage_col = "전기 사용량" if "전기 사용량" in _sliced.columns else None
+            if usage_col:
+                _sliced[usage_col] = pd.to_numeric(_sliced[usage_col], errors="coerce")
+                has_panel = "판넬명" in _sliced.columns
+                all_dong  = sorted(_sliced[_col0].dropna().unique(), key=str)
+
+                view_mode = st.selectbox("보기 방식", ["건물별", "판넬별"], key="ehp_ded_view")
+
+                def _bar_chart(grouped, x_labels, title, x_title):
+                    fig = go.Figure(go.Bar(
+                        x=x_labels, y=grouped["전기 사용량 (kWh)"],
+                        marker_color="#4C72B0",
+                        text=[f"{v:,.0f}" for v in grouped["전기 사용량 (kWh)"]],
+                        textposition="outside", cliponaxis=False,
+                        hovertemplate="<b>%{x}</b>: %{y:,.0f} kWh<extra></extra>",
+                    ))
+                    fig.update_layout(
+                        **_BASE_LAYOUT,
+                        title=dict(text=title, font=dict(size=14, color="#111111"), x=0),
+                        height=420,
+                        xaxis=dict(title=dict(text=x_title, font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=False, zeroline=False),
+                        yaxis=dict(title=dict(text="kWh", font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=True, gridcolor="#AAAAAA", zeroline=False),
+                        margin=dict(l=60, r=20, t=70, b=80),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    st.dataframe(grouped, hide_index=True, use_container_width=True)
+
+                if view_mode == "건물별":
+                    grouped = _sliced.groupby(_col0)[usage_col].sum().reset_index()
+                    grouped.columns = [_col0, "전기 사용량 (kWh)"]
+                    _bar_chart(grouped, grouped[_col0].tolist(), "<b>건물별 전기 사용량 합계</b>", "동")
+                else:
+                    if not has_panel:
+                        st.info("판넬명 column not found.")
+                    else:
+                        sel_dong = st.selectbox("동 선택", ["전체"] + all_dong, key="ehp_ded_dong")
+                        filtered = _sliced if sel_dong == "전체" else _sliced[_sliced[_col0] == sel_dong]
+                        grouped = filtered.groupby("판넬명")[usage_col].sum().reset_index()
+                        grouped.columns = ["판넬명", "전기 사용량 (kWh)"]
+                        _bar_chart(grouped, grouped["판넬명"].tolist(), "<b>판넬별 전기 사용량 합계</b>", "판넬명")
+            else:
+                st.warning("전기 사용량 column not found.")
+
+            with st.expander("Raw data"):
+                st.dataframe(_sliced, use_container_width=True)
             break
     else:
         st.error("전용 EHP 검침 자료 섹션을 찾을 수 없습니다.")
