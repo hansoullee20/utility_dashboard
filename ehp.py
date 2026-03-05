@@ -323,13 +323,9 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                             _vals = _ts[metric_sel].dropna()
                             if not _vals.empty:
                                 _vmin, _vmax = float(_vals.min()), float(_vals.max())
-                                _hc1, _hc2, _hc3 = st.columns([2, 1, 1])
-                                with _hc1:
-                                    _n_bins = st.slider("bins", 2, min(50, len(_vals)), min(10, len(_vals)), key="ehp_hist_bins")
-                                with _hc2:
-                                    _lo_tail = st.slider("하위 tail %", 0, 30, 0, key="ehp_hist_lo")
-                                with _hc3:
-                                    _hi_tail = st.slider("상위 tail %", 0, 30, 10, key="ehp_hist_hi")
+                                _n_bins = st.session_state.get("bins", 50)
+                                _tail   = st.session_state.get("tail", 20)
+                                _lo_tail, _hi_tail = _tail, _tail
 
                                 _lo_cut = float(_np.percentile(_vals, _lo_tail)) if _lo_tail > 0 else None
                                 _hi_cut = float(_np.percentile(_vals, 100 - _hi_tail)) if _hi_tail > 0 else None
