@@ -322,13 +322,33 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                             import numpy as _np
                             _vals = _ts[metric_sel].dropna()
                             if not _vals.empty:
-                                _counts, _edges = _np.histogram(_vals, bins="auto")
+                                _vmin, _vmax = float(_vals.min()), float(_vals.max())
+                                _hc1, _hc2, _hc3 = st.columns([2, 1, 1])
+                                with _hc1:
+                                    _n_bins = st.slider("bins", 2, min(50, len(_vals)), min(10, len(_vals)), key="ehp_hist_bins")
+                                with _hc2:
+                                    _lo_tail = st.slider("하위 tail %", 0, 30, 0, key="ehp_hist_lo")
+                                with _hc3:
+                                    _hi_tail = st.slider("상위 tail %", 0, 30, 10, key="ehp_hist_hi")
+
+                                _lo_cut = float(_np.percentile(_vals, _lo_tail)) if _lo_tail > 0 else None
+                                _hi_cut = float(_np.percentile(_vals, 100 - _hi_tail)) if _hi_tail > 0 else None
+
+                                _counts, _edges = _np.histogram(_vals, bins=_n_bins)
                                 _centers = [(_edges[i] + _edges[i+1]) / 2 for i in range(len(_counts))]
-                                _median = float(_vals.median())
+                                _widths  = [_edges[i+1] - _edges[i] for i in range(len(_counts))]
+                                _median  = float(_vals.median())
+
+                                _colors = []
+                                for _c in _centers:
+                                    if (_lo_cut is not None and _c <= _lo_cut) or (_hi_cut is not None and _c >= _hi_cut):
+                                        _colors.append("#DD8A00")
+                                    else:
+                                        _colors.append("#4C72B0")
+
                                 _hfig = go.Figure(go.Bar(
-                                    x=_centers, y=_counts,
-                                    width=[_edges[i+1] - _edges[i] for i in range(len(_counts))],
-                                    marker_color="#4C72B0",
+                                    x=_centers, y=_counts, width=_widths,
+                                    marker_color=_colors,
                                     marker_line_color="white", marker_line_width=1,
                                     text=_counts, textposition="outside", cliponaxis=False,
                                     hovertemplate="<b>%{x:,.0f} hr</b>: %{y} 건<extra></extra>",
@@ -338,9 +358,20 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                                                 annotation_position="top right",
                                                 annotation=dict(font=dict(color="#C44E52", size=11),
                                                                 bgcolor="white", bordercolor="#C44E52", borderwidth=1))
+                                if _lo_cut is not None:
+                                    _hfig.add_vrect(x0=_vmin, x1=_lo_cut, fillcolor="#DD8A00", opacity=0.1, line_width=0)
+                                    _hfig.add_vline(x=_lo_cut, line_dash="dash", line_color="#DD8A00", line_width=1)
+                                if _hi_cut is not None:
+                                    _hfig.add_vrect(x0=_hi_cut, x1=_vmax, fillcolor="#DD8A00", opacity=0.1, line_width=0)
+                                    _hfig.add_vline(x=_hi_cut, line_dash="dash", line_color="#DD8A00", line_width=1)
+                                _lo_n = int((_vals <= _lo_cut).sum()) if _lo_cut is not None else 0
+                                _hi_n = int((_vals >= _hi_cut).sum()) if _hi_cut is not None else 0
+                                _title = f"<b>매장별 가동시간 분포</b>  n={len(_vals)}"
+                                if _lo_n or _hi_n:
+                                    _title += f"  |  tail: 하위 {_lo_n}건 / 상위 {_hi_n}건"
                                 _hfig.update_layout(
                                     **_BASE_LAYOUT,
-                                    title=dict(text="<b>매장별 가동시간 분포</b>", font=dict(size=14, color="#111111"), x=0),
+                                    title=dict(text=_title, font=dict(size=14, color="#111111"), x=0),
                                     height=380,
                                     xaxis=dict(title=dict(text="hr", font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=False, zeroline=False),
                                     yaxis=dict(title=dict(text="건수", font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot", zeroline=False),
