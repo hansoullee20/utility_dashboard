@@ -1,7 +1,31 @@
 import io
+import re as _re_billing
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+
+def get_billing_period(name: str, data: bytes, ehp_sheet: str = "EHP(OAC)검침자료") -> str | None:
+    """Extract the billing period from the EHP sheet's year-month column headers.
+
+    The EHP(OAC)검침자료 sheet has explicit headers like "2026.1월검침",
+    "2025.12월검침" etc. The most recent (largest) year-month = billing period.
+    Returns e.g. "2026년 1월", or None if the EHP sheet is not present.
+    """
+    try:
+        xl = pd.ExcelFile(io.BytesIO(data), engine="calamine")
+        if ehp_sheet not in xl.sheet_names:
+            return None
+        raw = xl.parse(ehp_sheet, header=None)
+    except Exception:
+        return None
+
+    col_to_ym = _parse_ehp_col_map(raw)
+    if not col_to_ym:
+        return None
+
+    year, month = max(col_to_ym.values())
+    return f"{year}년 {month}월"
 
 
 def to_numeric_series(s: pd.Series) -> pd.Series:

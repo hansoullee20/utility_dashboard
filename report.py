@@ -264,6 +264,56 @@ _STRINGS = {
         "cl_issue_critical": "Usage +{change} ({pct}) — high absolute & high % change",
         "cl_issue_alert":    "Usage +{change} ({pct}) — sharp % rise from smaller base",
         "cl_issue_watch":    "Usage +{change} ({pct}) — elevated absolute usage",
+        # building totals
+        "bldg_totals_title": "Usage by Building",
+        "col_bldg":   "Building",
+        "col_curr_t": "This Period",
+        "col_prev_t": "Last Period",
+        "col_chg_t":  "Change",
+        "col_pct_t":  "% Chg",
+        # data coverage
+        "coverage_title": "Data Coverage",
+        "col_utility_c":  "Utility",
+        "col_total_c":    "Total Tenants",
+        "col_with_data":  "With Data",
+        "col_no_data_c":  "No Prior Data",
+        "col_coverage":   "Coverage",
+        # top 10 consumers
+        "top10_title": "Top 10 Highest Current Usage",
+        "top10_note":  "Tenants with the highest absolute consumption this period, regardless of change status.",
+        "th_rank":     "#",
+        "th_curr_use": "Current Usage",
+        # critical profile cards
+        "profile_title": "Critical Tenant Profiles",
+        "profile_note":  (
+            "Cross-utility summary for each Critical tenant. "
+            "Each row shows their status and change for every utility in this report."
+        ),
+        "profile_none":  "No Critical tenants this period.",
+        # seasonal note
+        "seasonal_title":  "Seasonal Note",
+        "seasonal_spring": (
+            "This report covers a spring transition period (Mar–May). "
+            "Increases in cooling and decreases in heating are expected — "
+            "weight heating flags accordingly."
+        ),
+        "seasonal_summer": (
+            "This report covers a summer period (Jun–Aug). "
+            "Elevated electricity and cooling usage is expected due to air conditioning load."
+        ),
+        "seasonal_fall": (
+            "This report covers an autumn transition period (Sep–Nov). "
+            "Heating usage typically rises this period — verify that heat spikes "
+            "are not simply seasonal before escalating."
+        ),
+        "seasonal_winter": (
+            "This report covers a winter period (Dec–Feb). "
+            "Heating consumption is expected to be at its seasonal peak. "
+            "Compare against the same period last year for a more meaningful benchmark."
+        ),
+        # building comparison chart
+        "bldg_chart_title": "{name} — Average Usage by Building",
+        "bldg_chart_caption": "Figure: Average current-period usage per building. Darker bar = higher than building-wide average.",
         # critical alerts page
         "critical_title": "Critical Alerts",
         "critical_intro": (
@@ -471,6 +521,54 @@ _STRINGS = {
         "cl_issue_critical": "사용량 +{change} ({pct}) — 절대량 및 변화율 모두 높음",
         "cl_issue_alert":    "사용량 +{change} ({pct}) — 기준 대비 급격한 변화율 상승",
         "cl_issue_watch":    "사용량 +{change} ({pct}) — 전체 사용량 높음",
+        # building totals
+        "bldg_totals_title": "건물별 사용량",
+        "col_bldg":   "건물",
+        "col_curr_t": "이번 기간",
+        "col_prev_t": "이전 기간",
+        "col_chg_t":  "변화량",
+        "col_pct_t":  "변화율",
+        # data coverage
+        "coverage_title": "데이터 커버리지",
+        "col_utility_c":  "항목",
+        "col_total_c":    "전체 임차인",
+        "col_with_data":  "비교 가능",
+        "col_no_data_c":  "이전 데이터 없음",
+        "col_coverage":   "커버리지",
+        # top 10 consumers
+        "top10_title": "사용량 상위 10개 임차인",
+        "top10_note":  "이번 기간 절대 사용량 기준 상위 10개 임차인입니다. 변화 상태와 무관하게 표시됩니다.",
+        "th_rank":     "순위",
+        "th_curr_use": "이번 사용량",
+        # critical profile cards
+        "profile_title": "긴급 임차인 상세 현황",
+        "profile_note":  (
+            "긴급 등급 임차인의 항목별 상태를 한눈에 확인할 수 있습니다. "
+            "각 행은 해당 임차인의 모든 항목별 상태와 변화량을 나타냅니다."
+        ),
+        "profile_none":  "이번 기간 긴급 임차인이 없습니다.",
+        # seasonal note
+        "seasonal_title":  "계절 참고사항",
+        "seasonal_spring": (
+            "이번 보고서는 봄철 전환 기간(3~5월)을 포함합니다. "
+            "냉방 사용량 증가 및 난방 사용량 감소는 계절적 요인으로 예상되는 변화입니다."
+        ),
+        "seasonal_summer": (
+            "이번 보고서는 여름철(6~8월)을 포함합니다. "
+            "냉방 부하로 인한 전기 및 냉방 사용량 증가가 예상됩니다."
+        ),
+        "seasonal_fall": (
+            "이번 보고서는 가을철 전환 기간(9~11월)을 포함합니다. "
+            "난방 사용량이 증가하는 시기이므로, 열 사용량 급증은 계절적 요인을 먼저 확인하시기 바랍니다."
+        ),
+        "seasonal_winter": (
+            "이번 보고서는 겨울철(12~2월)을 포함합니다. "
+            "난방 사용량이 계절적으로 높은 시기입니다. "
+            "전년 동기와 비교하는 것이 더 의미 있는 기준이 될 수 있습니다."
+        ),
+        # building comparison chart
+        "bldg_chart_title":   "{name} — 건물별 평균 사용량",
+        "bldg_chart_caption": "그림: 건물별 이번 기간 평균 사용량. 진한 막대 = 전체 평균 이상.",
         # critical alerts page
         "critical_title": "긴급 알림",
         "critical_intro": (
@@ -1131,6 +1229,291 @@ def _vacancy_section(story, util_data, T, styles, content_w):
     story.append(PageBreak())
 
 
+def _seasonal_note(period_str, T):
+    """Return a seasonal context string based on the billing period month, or None.
+    Accepts '2024년 3월', '2024-03-01', or plain month integer."""
+    import re as _re_s
+    try:
+        m = _re_s.search(r'(\d{1,2})월', str(period_str))
+        if m:
+            month = int(m.group(1))
+        else:
+            month = int(str(period_str).split("-")[1])
+    except Exception:
+        return None
+    if month in (3, 4, 5):
+        return T["seasonal_spring"]
+    if month in (6, 7, 8):
+        return T["seasonal_summer"]
+    if month in (9, 10, 11):
+        return T["seasonal_fall"]
+    return T["seasonal_winter"]
+
+
+def _building_totals_table(util_data, T, styles, content_w):
+    """Table: per-building totals for each utility."""
+    # Collect buildings
+    all_bldgs = sorted({r["building"] for ud in util_data.values() for r in ud["rows"] if r.get("building")})
+    if not all_bldgs:
+        return None
+
+    prefixes = list(util_data.keys())
+    # Header row: Building | (util curr / prev / chg% per utility)
+    sub_hdrs = []
+    for p in prefixes:
+        unit = util_data[p]["unit"]
+        sub_hdrs += [
+            f"{util_data[p]['meta'].get('ko' if T.get('col_bldg') == '건물' else 'en', p)}\n{T['col_curr_t']} ({unit})",
+            T["col_chg_t"],
+            T["col_pct_t"],
+        ]
+    hdr = [Paragraph(T["col_bldg"], styles["table_hdr"])] + \
+          [Paragraph(h, styles["table_hdr"]) for h in sub_hdrs]
+
+    data = [hdr]
+    for bldg in all_bldgs:
+        row = [Paragraph(str(bldg), styles["table_cell"])]
+        for p in prefixes:
+            ud = util_data[p]
+            b_rows = [r for r in ud["rows"] if r.get("building") == bldg]
+            curr_total = sum(float(r["curr"]) for r in b_rows
+                             if r.get("curr") is not None and not pd.isna(r.get("curr", np.nan)))
+            prev_total = sum(float(r["prev"]) for r in b_rows
+                             if r.get("prev") is not None and not pd.isna(r.get("prev", np.nan)))
+            chg = curr_total - prev_total
+            pct = (chg / prev_total * 100) if prev_total > 0 else np.nan
+            row += [
+                Paragraph(_fmt(curr_total, ud["unit"]), styles["table_cell_c"]),
+                Paragraph(f"{chg:+,.1f}" if not pd.isna(chg) else "—", styles["table_cell_c"]),
+                Paragraph(_pct(pct), styles["table_cell_c"]),
+            ]
+        data.append(row)
+
+    n_util = len(prefixes)
+    bldg_w = 1.6 * cm
+    util_w = (content_w - bldg_w) / (n_util * 3)
+    col_w = [bldg_w] + [util_w] * (n_util * 3)
+
+    ts = TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  C_NAVY),
+        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_DIVIDER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+        ("ALIGN",         (1, 0), (-1, -1), "RIGHT"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#F5F7FA"), colors.white]),
+        ("FONTNAME",      (0, 0), (0, -1),  "NanumGothic-Bold"),
+    ])
+    # Color the % change cells
+    for ri, bldg in enumerate(all_bldgs, 1):
+        for ci, p in enumerate(prefixes):
+            pct_col = 1 + ci * 3 + 2  # pct is 3rd in each util group
+            cell_val = data[ri][pct_col].text if hasattr(data[ri][pct_col], "text") else ""
+            try:
+                pct_v = float(str(cell_val).replace("%", "").replace("+", ""))
+                if pct_v > 10:
+                    ts.add("TEXTCOLOR", (pct_col, ri), (pct_col, ri), C_CRITICAL)
+                    ts.add("FONTNAME",  (pct_col, ri), (pct_col, ri), "NanumGothic-Bold")
+                elif pct_v < -10:
+                    ts.add("TEXTCOLOR", (pct_col, ri), (pct_col, ri), C_STABLE)
+                    ts.add("FONTNAME",  (pct_col, ri), (pct_col, ri), "NanumGothic-Bold")
+            except (ValueError, TypeError):
+                pass
+
+    return Table(data, colWidths=col_w, style=ts, repeatRows=1)
+
+
+def _data_coverage_table(util_data, T, styles, content_w):
+    """Small table showing data availability per utility."""
+    hdr = [T["col_utility_c"], T["col_total_c"], T["col_with_data"],
+           T["col_no_data_c"], T["col_coverage"]]
+    data = [[Paragraph(h, styles["table_hdr"]) for h in hdr]]
+    for prefix, ud in util_data.items():
+        n_total   = len(ud["rows"])
+        n_nodata  = ud["status_counts"].get("No Data", 0)
+        n_with    = n_total - n_nodata
+        coverage  = f"{100 * n_with / n_total:.0f}%" if n_total > 0 else "—"
+        lang_key = "ko" if T.get("col_bldg") == "건물" else "en"
+        name = ud["meta"].get(lang_key, ud["meta"].get("en", prefix))
+        data.append([
+            Paragraph(name,             styles["table_cell"]),
+            Paragraph(str(n_total),     styles["table_cell_c"]),
+            Paragraph(str(n_with),      styles["table_cell_c"]),
+            Paragraph(str(n_nodata),    styles["table_cell_c"]),
+            Paragraph(coverage,         styles["table_cell_c"]),
+        ])
+    col_w = [4.0*cm, 2.5*cm, 2.5*cm, 3.0*cm, 2.5*cm]
+    ts = TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  C_NAVY),
+        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_DIVIDER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#F5F7FA"), colors.white]),
+    ])
+    return Table(data, colWidths=col_w, style=ts, repeatRows=1)
+
+
+def _chart_building_comparison(util_data, T, prefix):
+    """Horizontal bar chart: average current usage per building for one utility."""
+    ud = util_data[prefix]
+    bldg_data = {}
+    for r in ud["rows"]:
+        b = r.get("building", "")
+        cu = r.get("curr")
+        if b and cu is not None and not pd.isna(cu):
+            bldg_data.setdefault(b, []).append(float(cu))
+    if not bldg_data:
+        return None
+
+    bldgs = sorted(bldg_data.keys())
+    avgs  = [np.mean(bldg_data[b]) for b in bldgs]
+    overall_avg = np.mean(avgs)
+
+    bar_colors = [M_CRITICAL if a > overall_avg * 1.1 else M_BAR for a in avgs]
+
+    fig, ax = plt.subplots(figsize=(7.0, max(2.5, len(bldgs) * 0.55 + 0.8)), facecolor="white")
+    ax.barh(bldgs, avgs, color=bar_colors, edgecolor="white", linewidth=0.5, height=0.6)
+    ax.axvline(overall_avg, color="#555555", linewidth=1.2, linestyle="--",
+               label=f"Avg: {overall_avg:,.1f}")
+    xlim = ax.get_xlim()
+    x_off = 0.01 * (xlim[1] - xlim[0])
+    for i, (b, v) in enumerate(zip(bldgs, avgs)):
+        ax.text(v + x_off, i, f"{v:,.1f}", va="center", ha="left", fontsize=9, color="#333333")
+    ax.set_xlabel(f"({ud['unit']})", fontsize=10)
+    ax.set_title(T["bldg_chart_title"].format(name=ud["name"]), fontsize=11, fontweight="bold",
+                 color="#1B2A3B", pad=6)
+    ax.legend(fontsize=9, framealpha=0.9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", labelsize=10, length=0)
+    ax.tick_params(axis="x", labelsize=10)
+    ax.set_facecolor("white")
+    ax.grid(axis="x", color="#DDDDDD", linewidth=0.5, linestyle="--")
+    fig.tight_layout(pad=0.8)
+    return _png(fig)
+
+
+def _top10_section(story, rows, unit, name, T, styles, content_w):
+    """Append Top 10 highest current usage table to story."""
+    valid = [r for r in rows if r.get("curr") is not None and not pd.isna(r.get("curr", np.nan))]
+    if not valid:
+        return
+    top10 = sorted(valid, key=lambda r: float(r["curr"]), reverse=True)[:10]
+
+    story.append(Spacer(1, 0.5 * cm))
+    story.append(Paragraph(T["top10_title"], styles["sub_title"]))
+    story.append(Paragraph(T["top10_note"], styles["note"]))
+    story.append(Spacer(1, 0.2 * cm))
+
+    hdr = [T["th_rank"], T["th_tenant"], T["th_bldg"], T["th_floor"],
+           T["th_curr_use"], T["th_pct"]]
+    data = [[Paragraph(h, styles["table_hdr"]) for h in hdr]]
+    ts = TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  C_NAVY),
+        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_DIVIDER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#F5F7FA"), colors.white]),
+        ("ALIGN",         (4, 0), (5, -1),  "RIGHT"),
+    ])
+    for i, r in enumerate(top10, 1):
+        status = r.get("status", "Normal")
+        data.append([
+            Paragraph(str(i),                                              styles["table_cell_c"]),
+            Paragraph(textwrap.shorten(r.get("brand",""), 22, placeholder="…"), styles["table_cell"]),
+            Paragraph(str(r.get("building", "")),                          styles["table_cell_c"]),
+            Paragraph(str(r.get("floor", "")),                             styles["table_cell_c"]),
+            Paragraph(_fmt(float(r["curr"]), unit),                        styles["table_cell_c"]),
+            Paragraph(_pct(r.get("pct")),                                  styles["table_cell_c"]),
+        ])
+        if status in STATUS_COLOR_RL:
+            ts.add("BACKGROUND", (0, i), (0, i), STATUS_COLOR_RL[status])
+            if status == "Critical":
+                ts.add("TEXTCOLOR", (0, i), (0, i), colors.white)
+
+    col_w = [1.0*cm, 4.5*cm, 1.5*cm, 1.5*cm, 3.0*cm, 2.0*cm]
+    story.append(Table(data, colWidths=col_w, style=ts))
+
+
+def _critical_profile_cards(story, util_data, T, styles, content_w):
+    """Cross-utility status card for every Critical tenant."""
+    # Gather all Critical tenants
+    critical_set = {}
+    for prefix, ud in util_data.items():
+        for r in ud["rows"]:
+            if r.get("status") == "Critical":
+                key = (r["brand"], r["building"])
+                critical_set.setdefault(key, {})
+                critical_set[key][prefix] = r
+
+    if not critical_set:
+        story.append(Paragraph(T["profile_none"], styles["note"]))
+        return
+
+    prefixes = list(util_data.keys())
+    lang_key = "ko" if T.get("col_bldg") == "건물" else "en"
+
+    # Build header
+    util_names = [util_data[p]["meta"].get(lang_key, p) for p in prefixes]
+    hdr = ([Paragraph(T["th_tenant"], styles["table_hdr"]),
+             Paragraph(T["th_bldg"],   styles["table_hdr"])] +
+           [Paragraph(n, styles["table_hdr"]) for n in util_names])
+
+    data = [hdr]
+    ts = TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0),  C_NAVY),
+        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_DIVIDER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#F5F7FA"), colors.white]),
+    ])
+
+    for ri, ((brand, bldg), util_rows) in enumerate(sorted(critical_set.items()), 1):
+        row = [
+            Paragraph(textwrap.shorten(str(brand), 20, placeholder="…"), styles["table_cell"]),
+            Paragraph(str(bldg), styles["table_cell_c"]),
+        ]
+        for ci, p in enumerate(prefixes):
+            r = util_rows.get(p)
+            if r is None:
+                cell_txt = "—"
+                cell_color = None
+            else:
+                status = r.get("status", "Normal")
+                ch = _v(r)
+                pt = r.get("pct")
+                cell_txt = f"{ch:+,.1f}\n{_pct(pt)}"
+                cell_color = STATUS_COLOR_RL.get(status)
+            row.append(Paragraph(cell_txt, styles["table_cell_c"]))
+            if cell_color:
+                col_idx = 2 + ci
+                ts.add("BACKGROUND", (col_idx, ri), (col_idx, ri), cell_color)
+                if cell_color == C_CRITICAL:
+                    ts.add("TEXTCOLOR", (col_idx, ri), (col_idx, ri), colors.white)
+        data.append(row)
+
+    fixed_w = [4.5*cm, 1.5*cm]
+    util_w  = (content_w - sum(fixed_w)) / len(prefixes)
+    col_w   = fixed_w + [util_w] * len(prefixes)
+    story.append(Table(data, colWidths=col_w, style=ts, repeatRows=1))
+
+
 def _executive_summary(util_data, T, n_total):
     """Return a plain-language summary string for the cover page."""
     total_critical = sum(ud["status_counts"].get("Critical", 0) for ud in util_data.values())
@@ -1410,9 +1793,10 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
     story.append(Paragraph(T["report_subtitle"], styles["cover_sub"]))
     story.append(Spacer(1, 0.4 * cm))
 
-    buildings = ctx.get("buildings", "All")
-    floors    = ctx.get("floors",    "All")
-    rep_date  = ctx.get("date",      str(date.today()))
+    buildings      = ctx.get("buildings", "All")
+    floors         = ctx.get("floors",    "All")
+    rep_date       = ctx.get("date",      str(date.today()))
+    billing_period = ctx.get("period",    rep_date)
 
     def _meta_name(prefix):
         m = UTILITY_META.get(prefix, {"en": prefix, "ko": prefix})
@@ -1420,6 +1804,7 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
 
     meta_data = [
         (T["date"],            rep_date),
+        (T.get("period_label", "Billing Period" if lang == "en" else "청구 기간"), billing_period),
         (T["buildings"],       buildings),
         (T["floors"],          floors),
         (T["tenants_n"],       str(len(cur_df))),
@@ -1504,6 +1889,31 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
     story.append(Paragraph(T["cover_note"].format(pct=tail_pct), styles["note"]))
     story.append(Spacer(1, 0.8 * cm))
 
+    # Building totals
+    bldg_tbl = _building_totals_table(util_data, T, styles, content_w)
+    if bldg_tbl:
+        story.append(Paragraph(T["bldg_totals_title"], styles["sub_title"]))
+        story.append(bldg_tbl)
+        story.append(Spacer(1, 0.6 * cm))
+
+    # Data coverage
+    story.append(Paragraph(T["coverage_title"], styles["sub_title"]))
+    story.append(_data_coverage_table(util_data, T, styles, content_w))
+    story.append(Spacer(1, 0.6 * cm))
+
+    # Seasonal note
+    seasonal = _seasonal_note(billing_period, T)
+    if seasonal:
+        seasonal_style = ParagraphStyle(
+            "Seasonal", parent=styles["note"],
+            fontSize=9, leading=14,
+            borderPad=8, borderColor=C_ALERT, borderWidth=1.2,
+            backColor=colors.HexColor("#FFFBF0"),
+            leftIndent=8, rightIndent=8,
+        )
+        story.append(Paragraph(f"<b>{T['seasonal_title']}:</b> {seasonal}", seasonal_style))
+        story.append(Spacer(1, 0.6 * cm))
+
     # Executive summary
     exec_style = ParagraphStyle(
         "ExecSummary", parent=styles["note"],
@@ -1525,6 +1935,16 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
     # PAGE 2: CRITICAL ALERTS SUMMARY
     # ═════════════════════════════════════════════════════════════════════════
     _critical_alerts_page(story, util_data, T, styles, content_w, tail_pct)
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # CRITICAL TENANT PROFILES
+    # ═════════════════════════════════════════════════════════════════════════
+    story.append(_section_bar(T["profile_title"], styles, content_w))
+    story.append(Spacer(1, 0.3 * cm))
+    story.append(Paragraph(T["profile_note"], styles["note"]))
+    story.append(Spacer(1, 0.3 * cm))
+    _critical_profile_cards(story, util_data, T, styles, content_w)
+    story.append(PageBreak())
 
     # ═════════════════════════════════════════════════════════════════════════
     # PAGE 3: VACANCY & UNUSUAL ACTIVITY
@@ -1630,6 +2050,13 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
                 caption=T["chart_bar_caption"],
             )
 
+        bldg_chart_buf = _chart_building_comparison(util_data, T, prefix)
+        if bldg_chart_buf:
+            story += _img_flowable(
+                bldg_chart_buf, width_cm=12, styles=styles,
+                caption=T["bldg_chart_caption"],
+            )
+
         story.append(PageBreak())
 
         # ── Tenant Detail ────────────────────────────────────────────────────
@@ -1649,6 +2076,9 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
             ))
             story.append(_detail_table(alert_rows, unit, cw, styles, T))
             story.append(Spacer(1, 0.6 * cm))
+
+        # Top 10 highest consumers
+        _top10_section(story, rows, unit, name, T, styles, content_w)
 
         # Status legend
         leg_hdr = [T["th_leg_status"], T["th_leg_meaning"], T["th_leg_action"]]

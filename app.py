@@ -7,7 +7,7 @@ import plotly.express as px
 from scipy import stats
 from typing import Dict
 
-from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME
+from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, get_billing_period, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME
 from billing import render_billing_view
 from ehp import render_ehp_view
 from features import (
@@ -163,6 +163,8 @@ def main():
         st.error(f"Failed to read {file_name}: {e}")
         st.stop()
 
+    billing_period = get_billing_period(file_name, file_map[file_name])  # e.g. "2026년 1월"
+
     # ---------------- Preprocess ----------------
     try:
         df = apply_header_rows(raw_df)
@@ -181,6 +183,39 @@ def main():
         if col not in df.columns:
             st.error(f"Missing required column: {col}")
             st.stop()
+
+    # ---------------- Backward meter reading detection ----------------
+    _meter_pairs = [
+        ("water",  "water_previous",  "water_current",  "m³"),
+        ("hwater", "hwater_previous", "hwater_current", "m³"),
+        ("elect",  "elect_previous",  "elect_current",  "kWh"),
+        ("heat",   "heat_previous",   "heat_current",   "m³/MWh"),
+    ]
+    backward_rows = []
+    for prefix, prev_col, curr_col, unit in _meter_pairs:
+        if prev_col not in df.columns or curr_col not in df.columns:
+            continue
+        prev_s = to_numeric_series(df[prev_col])
+        curr_s = to_numeric_series(df[curr_col])
+        mask = curr_s.notna() & prev_s.notna() & (curr_s < prev_s)
+        for idx in df[mask].index:
+            backward_rows.append({
+                "Brand":    df.at[idx, "brand"]    if "brand"    in df.columns else "",
+                "Building": df.at[idx, "building"] if "building" in df.columns else "",
+                "Floor":    df.at[idx, "floor"]    if "floor"    in df.columns else "",
+                "Utility":  prefix,
+                "Previous": round(float(prev_s.at[idx]), 2),
+                "Current":  round(float(curr_s.at[idx]), 2),
+                "Drop":     round(float(curr_s.at[idx] - prev_s.at[idx]), 2),
+            })
+    if backward_rows:
+        with st.expander(f"⚠️ Data Quality — {len(backward_rows)} backward meter reading(s) detected", expanded=True):
+            st.warning(
+                "The following tenants have a **current meter reading lower than the previous reading**. "
+                "This is physically impossible without a meter reset and likely indicates a data entry error. "
+                "These rows are still included in the analysis but their change values will appear negative."
+            )
+            st.dataframe(pd.DataFrame(backward_rows), hide_index=True, use_container_width=True)
 
     # ---------------- Building & Floor filters ----------------
     all_buildings = sorted(df["building"].dropna().unique().tolist())
@@ -340,6 +375,50 @@ def main():
     q_LH = q_LH.sort_values([pct_col, change_col], ascending=False)
     q_LL = q_LL.sort_values([pct_col, change_col], ascending=False)
 
+    # ---------------- Summary KPI bar ----------------
+    _status_counts = {"Critical": set(), "Watch": set(), "Alert": set(),
+                      "Stable": set(), "No Data": set()}
+    _q = tail / 100.0
+    for _p in present:
+        _cc = f"{_p}_change"; _pc = f"{_p}_pct"
+        if _cc not in cur_df.columns or _pc not in cur_df.columns:
+            continue
+        _sc = to_numeric_series(cur_df[_cc]); _sp = to_numeric_series(cur_df[_pc])
+        _valid = _sc.notna() & _sp.notna()
+        if not _valid.any():
+            continue
+        _hi_c = float(_sc[_valid].quantile(1 - _q)); _lo_c = float(_sc[_valid].quantile(_q))
+        _hi_p = float(_sp[_valid].quantile(1 - _q)); _lo_p = float(_sp[_valid].quantile(_q))
+        for _idx in cur_df.index:
+            _ch = _sc.at[_idx] if _idx in _sc.index else float("nan")
+            _pt = _sp.at[_idx] if _idx in _sp.index else float("nan")
+            _key = (str(cur_df.at[_idx, "brand"]), str(cur_df.at[_idx, "building"]))
+            import math
+            if math.isnan(_ch) or math.isnan(_pt):
+                _status_counts["No Data"].add(_key)
+            elif _ch >= _hi_c and _pt >= _hi_p:
+                _status_counts["Critical"].add(_key)
+            elif _ch >= _hi_c or _pt >= _hi_p:
+                _status_counts["Watch"].add(_key)
+            elif _ch <= _lo_c and _pt <= _lo_p:
+                _status_counts["Stable"].add(_key)
+            elif _ch <= _lo_c or _pt <= _lo_p:
+                _status_counts["Alert"].add(_key)
+
+    _n_critical  = len(_status_counts["Critical"])
+    _n_watch     = len(_status_counts["Watch"])
+    _n_alert     = len(_status_counts["Alert"])
+    _n_vacancy   = int(cur_df["brand"].astype(str).str.contains("공실", na=False).sum())
+    _n_backward  = len(backward_rows)
+
+    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
+    _k1.metric("Tenants", len(cur_df))
+    _k2.metric("🔴 Critical",  _n_critical,  delta=None if _n_critical  == 0 else f"across any utility")
+    _k3.metric("🟠 Watch",     _n_watch,     delta=None if _n_watch     == 0 else f"elevated usage")
+    _k4.metric("🟡 Alert",     _n_alert,     delta=None if _n_alert     == 0 else f"sharp % rise")
+    _k5.metric("🏚 공실 / ⚠ Data", f"{_n_vacancy} / {_n_backward}")
+    st.divider()
+
     # ---------------- Histograms (always visible) ----------------
     def render_stats(stats: dict):
         stats_row = pd.DataFrame([{
@@ -381,6 +460,86 @@ def main():
         key="gongshil_mode_radio",
     )
 
+    # ---------------- Billing ↔ Meter reconciliation ----------------
+    _sheet_names = get_sheet_names(file_name, file_map[file_name])
+    if BILLING_SHEET_NAME in _sheet_names:
+        with st.expander("Billing ↔ Meter Reconciliation", expanded=False):
+            st.caption(
+                "Compares the billing sheet (수도광열비 부과 내역) against meter readings. "
+                "Flags tenants present in one source but missing in the other."
+            )
+            try:
+                _bill_df = read_billing_sheet(file_name, file_map[file_name], BILLING_SHEET_NAME)
+                _bill_key = (
+                    _bill_df[["brand", "building"]]
+                    .dropna(subset=["brand"])
+                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
+                            building=lambda d: d["building"].astype(str).str.strip())
+                    .drop_duplicates()
+                )
+                _meter_key = (
+                    cur_df[["brand", "building"]]
+                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
+                            building=lambda d: d["building"].astype(str).str.strip())
+                    .drop_duplicates()
+                )
+                _bill_set  = set(zip(_bill_key["brand"],  _bill_key["building"]))
+                _meter_set = set(zip(_meter_key["brand"], _meter_key["building"]))
+
+                _billed_not_metered = sorted(_bill_set  - _meter_set)
+                _metered_not_billed = sorted(_meter_set - _bill_set)
+
+                _rc1, _rc2 = st.columns(2)
+                with _rc1:
+                    st.markdown(f"**Billed but no meter reading** — {len(_billed_not_metered)}")
+                    if _billed_not_metered:
+                        st.dataframe(
+                            pd.DataFrame(_billed_not_metered, columns=["Brand", "Building"]),
+                            hide_index=True, use_container_width=True,
+                        )
+                    else:
+                        st.success("All billed tenants have meter readings.")
+                with _rc2:
+                    st.markdown(f"**Metered but not billed** — {len(_metered_not_billed)}")
+                    if _metered_not_billed:
+                        st.dataframe(
+                            pd.DataFrame(_metered_not_billed, columns=["Brand", "Building"]),
+                            hide_index=True, use_container_width=True,
+                        )
+                    else:
+                        st.success("All metered tenants appear on the billing sheet.")
+
+                # Shared tenants: compare billed total vs any zero-usage flag
+                _shared = _bill_set & _meter_set
+                _zero_billed = []
+                for _br, _bl in sorted(_shared):
+                    _brow = _bill_df[
+                        (_bill_df["brand"].astype(str).str.strip() == _br) &
+                        (_bill_df["building"].astype(str).str.strip() == _bl)
+                    ]
+                    _mrow = cur_df[
+                        (cur_df["brand"].astype(str).str.strip() == _br) &
+                        (cur_df["building"].astype(str).str.strip() == _bl)
+                    ]
+                    if _brow.empty or _mrow.empty:
+                        continue
+                    _total = to_numeric_series(_brow["total"].iloc[[0]]).iloc[0] if "total" in _brow.columns else float("nan")
+                    _has_usage = any(
+                        not pd.isna(to_numeric_series(_mrow[f"{_px}_current"]).iloc[0])
+                        and to_numeric_series(_mrow[f"{_px}_current"]).iloc[0] > 0
+                        for _px in present
+                        if f"{_px}_current" in _mrow.columns
+                    )
+                    if not pd.isna(_total) and _total > 0 and not _has_usage:
+                        _zero_billed.append({"Brand": _br, "Building": _bl, "Billed Total (₩)": f"{int(_total):,}"})
+
+                if _zero_billed:
+                    st.markdown(f"**Billed non-zero but zero meter usage** — {len(_zero_billed)}")
+                    st.dataframe(pd.DataFrame(_zero_billed), hide_index=True, use_container_width=True)
+
+            except Exception as _e:
+                st.warning(f"Reconciliation failed: {_e}")
+
     # ---------------- Summary Report download ----------------
     with st.expander("Download Summary Report", expanded=False):
         st.caption(
@@ -398,6 +557,7 @@ def main():
         if st.button("Generate Report", key="gen_report"):
             report_context = {
                 "date":      str(date.today()),
+                "period":    billing_period or str(date.today()),
                 "buildings": ", ".join(active_buildings) if active_buildings else "All",
                 "floors":    ", ".join(active_floors) if floors_filtered else "All",
             }
