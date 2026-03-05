@@ -834,8 +834,6 @@ All three normalized to [0, 1], then averaged:
 
     # ---------------- Correlation tab ----------------
     with tab_corr:
-        st.subheader("Correlation — Interactive Scatter")
-
         _all_numeric = sorted([
             c for c in cur_df.columns
             if pd.api.types.is_numeric_dtype(cur_df[c])
@@ -893,9 +891,163 @@ All three normalized to [0, 1], then averaged:
             return -1
         _cat_cols = {cat: sorted(cols, key=_col_sort_key) for cat, cols in _cat_cols.items()}
 
+        # ── helper: map a column back to its display category ──────────────
+        def _find_cat(col):
+            for cat, cols in _cat_cols.items():
+                if col in cols:
+                    return cat
+            return None
+
+        # ── helper: which utility prefix owns a column ─────────────────────
+        _UTIL_PREFIXES = ["water_", "hwater_", "elect_", "heat_"]
+        def _col_util(col):
+            for p in _UTIL_PREFIXES:
+                if col.startswith(p):
+                    return p
+            return col   # size columns are their own "group"
+
         if sum(len(v) for v in _cat_cols.values()) < 2:
             st.info("Not enough numeric columns for correlation.")
         else:
+            # ── AUTO-DISCOVERY ────────────────────────────────────────────
+            st.subheader("Auto-Discover Correlations")
+
+            # Columns worth scanning: change, pct, current + size
+            _SCAN_SUFFIXES = {"change", "pct", "current"}
+            _scan_cols = [
+                c for c in _all_numeric
+                if any(c.endswith(f"_{s}") for s in _SCAN_SUFFIXES)
+                or c in ("size_m2", "size_py")
+            ]
+
+            _disc_rows = []
+            for _i, _ca in enumerate(_scan_cols):
+                for _cb in _scan_cols[_i + 1:]:
+                    if _col_util(_ca) == _col_util(_cb):   # skip same-utility pairs
+                        continue
+                    _dp = cur_df[[_ca, _cb]].dropna()
+                    if len(_dp) < 5:
+                        continue
+                    _r, _p = stats.pearsonr(_dp[_ca].values, _dp[_cb].values)
+                    _disc_rows.append({
+                        "X":         _ca,
+                        "Y":         _cb,
+                        "r":         round(_r, 3),
+                        "R²":        round(_r ** 2, 3),
+                        "p-value":   round(_p, 4),
+                        "n":         len(_dp),
+                        "Direction": "positive" if _r > 0 else "negative",
+                        "Strength":  (
+                            "Strong"   if abs(_r) >= 0.6 else
+                            "Moderate" if abs(_r) >= 0.35 else
+                            "Weak"
+                        ),
+                    })
+
+            if not _disc_rows:
+                st.info("Not enough cross-category data to run discovery.")
+            else:
+                _disc_df = (
+                    pd.DataFrame(_disc_rows)
+                    .sort_values("R²", ascending=False)
+                    .reset_index(drop=True)
+                )
+
+                # Filter controls
+                _dc1, _dc2, _dc3 = st.columns([2, 2, 3])
+                with _dc1:
+                    _min_r2 = st.slider(
+                        "Min R²", 0.0, 1.0, 0.05, 0.05, key="disc_min_r2",
+                        help="Only show pairs where R² is at least this value",
+                    )
+                with _dc2:
+                    _show_nonsig = st.checkbox(
+                        "Include p ≥ 0.05", value=False, key="disc_show_nonsig",
+                        help="Also show pairs that are not statistically significant",
+                    )
+                with _dc3:
+                    _strength_filter = st.multiselect(
+                        "Strength filter", ["Strong", "Moderate", "Weak"],
+                        default=["Strong", "Moderate"], key="disc_strength",
+                    )
+
+                _shown = _disc_df[
+                    (_disc_df["R²"] >= _min_r2) &
+                    (_disc_df["Strength"].isin(_strength_filter)) &
+                    (_show_nonsig | (_disc_df["p-value"] < 0.05))
+                ].reset_index(drop=True)
+
+                if _shown.empty:
+                    st.info("No pairs match the current filters.")
+                else:
+                    st.caption(
+                        f"{len(_shown)} pair(s) found · "
+                        "Select a row to load it into the scatter below"
+                    )
+                    _disc_event = st.dataframe(
+                        _shown,
+                        hide_index=True,
+                        use_container_width=True,
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        column_config={
+                            "r":       st.column_config.NumberColumn("r",   format="%.3f"),
+                            "R²":      st.column_config.NumberColumn("R²",  format="%.3f"),
+                            "p-value": st.column_config.NumberColumn("p",   format="%.4f"),
+                            "X":       st.column_config.TextColumn("X Column",  width="medium"),
+                            "Y":       st.column_config.TextColumn("Y Column",  width="medium"),
+                        },
+                    )
+
+                    # Load selected row into scatter selectors
+                    _sel_rows = (
+                        _disc_event.selection.rows
+                        if _disc_event and hasattr(_disc_event, "selection")
+                        else []
+                    )
+                    if _sel_rows:
+                        _sel = _shown.iloc[_sel_rows[0]]
+                        _xc  = _sel["X"];  _yc = _sel["Y"]
+                        _xct = _find_cat(_xc); _yct = _find_cat(_yc)
+                        if _xct and _yct:
+                            st.session_state["corr_x_cat"]        = _xct
+                            st.session_state[f"corr_x_{_xct}"]   = _xc
+                            st.session_state["corr_y_cat"]        = _yct
+                            st.session_state[f"corr_y_{_yct}"]   = _yc
+                            st.success(
+                                f"Loaded **{_col_label(_xc)}** vs **{_col_label(_yc)}** "
+                                f"(R² = {_sel['R²']:.3f}) — scroll down to scatter"
+                            )
+
+                # Correlation heatmap of change + pct columns
+                _hm_cols = [c for c in _scan_cols if c in cur_df.columns
+                            and (c.endswith("_change") or c.endswith("_pct"))]
+                if len(_hm_cols) >= 3:
+                    _hm_data = cur_df[_hm_cols].dropna()
+                    if len(_hm_data) >= 3:
+                        _corr_mat = _hm_data.corr()
+                        _labels   = [_col_label(c) for c in _corr_mat.columns]
+                        _fig_hm   = px.imshow(
+                            _corr_mat,
+                            x=_labels, y=_labels,
+                            color_continuous_scale="RdBu_r",
+                            zmin=-1, zmax=1,
+                            text_auto=".2f",
+                            title="Correlation Matrix — Change & % Change",
+                            aspect="auto",
+                        )
+                        _fig_hm.update_layout(
+                            height=420,
+                            margin=dict(l=10, r=10, t=50, b=10),
+                            coloraxis_colorbar=dict(title="r"),
+                            font=dict(size=11),
+                        )
+                        _fig_hm.update_traces(textfont_size=10)
+                        st.plotly_chart(_fig_hm, use_container_width=True)
+
+            st.divider()
+            st.subheader("Manual Scatter")
+
             xc1, xc2, yc1, yc2, cc3 = st.columns(5)
             with xc1:
                 x_cat = st.selectbox("X Category", categories, index=0, key="corr_x_cat")
