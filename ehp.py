@@ -274,11 +274,6 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                     "전기 사용량": ("전기 사용량 (kWh)", "kWh"),
                     "매장별 가동시간": ("가동시간 (hr)", "hr"),
                 }
-                metric_sel = st.radio("지표 선택", _metric_options, horizontal=True, key="ehp_ded_metric")
-                usage_col = metric_sel
-                val_col_label, y_unit = _metric_label_map[metric_sel]
-
-                _sliced[usage_col] = pd.to_numeric(_sliced[usage_col], errors="coerce")
                 has_panel = "판넬명" in _sliced.columns
                 all_dong  = sorted(_sliced[_col0].dropna().unique(), key=str)
 
@@ -293,51 +288,58 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                 if sel_jangbi != "전체" and all_jangbi:
                     _sliced = _sliced[_sliced["장비번호"] == sel_jangbi]
 
-                def _bar_chart(grouped, x_labels, title, x_title):
-                    fig = go.Figure(go.Bar(
-                        x=x_labels, y=grouped[val_col_label],
-                        marker_color="#4C72B0",
-                        text=[f"{v:,.0f}" for v in grouped[val_col_label]],
-                        textposition="outside", cliponaxis=False,
-                        hovertemplate=f"<b>%{{x}}</b>: %{{y:,.0f}} {y_unit}<extra></extra>",
-                    ))
-                    fig.update_layout(
-                        **_BASE_LAYOUT,
-                        title=dict(text=title, font=dict(size=14, color="#111111"), x=0),
-                        height=420,
-                        xaxis=dict(title=dict(text=x_title, font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=False, zeroline=False),
-                        yaxis=dict(title=dict(text=y_unit, font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=True, gridcolor="#AAAAAA", zeroline=False),
-                        margin=dict(l=60, r=20, t=70, b=80),
-                        showlegend=False,
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.dataframe(grouped, hide_index=True, use_container_width=True)
+                _metric_tabs = st.tabs(_metric_options)
+                for _mtab, metric_sel in zip(_metric_tabs, _metric_options):
+                    with _mtab:
+                        val_col_label, y_unit = _metric_label_map[metric_sel]
+                        _ts = _sliced.copy()
+                        _ts[metric_sel] = pd.to_numeric(_ts[metric_sel], errors="coerce")
 
-                total_val = _sliced[usage_col].sum(min_count=1)
-                st.metric(f"합계 {val_col_label}", f"{total_val:,.0f} {y_unit}" if pd.notna(total_val) else "N/A")
+                        def _bar_chart(grouped, x_labels, title, x_title, _vcl=val_col_label, _yu=y_unit):
+                            fig = go.Figure(go.Bar(
+                                x=x_labels, y=grouped[_vcl],
+                                marker_color="#4C72B0",
+                                text=[f"{v:,.0f}" for v in grouped[_vcl]],
+                                textposition="outside", cliponaxis=False,
+                                hovertemplate=f"<b>%{{x}}</b>: %{{y:,.0f}} {_yu}<extra></extra>",
+                            ))
+                            fig.update_layout(
+                                **_BASE_LAYOUT,
+                                title=dict(text=title, font=dict(size=14, color="#111111"), x=0),
+                                height=420,
+                                xaxis=dict(title=dict(text=x_title, font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=False, zeroline=False),
+                                yaxis=dict(title=dict(text=_yu, font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=True, gridcolor="#AAAAAA", zeroline=False),
+                                margin=dict(l=60, r=20, t=70, b=80),
+                                showlegend=False,
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                            st.dataframe(grouped, hide_index=True, use_container_width=True)
 
-                if sel_jangbi != "전체" and "상호" in _sliced.columns:
-                    grouped = _sliced.groupby("상호")[usage_col].sum().reset_index()
-                    grouped.columns = ["상호", val_col_label]
-                    parts = [p for p in [sel_dong if sel_dong != "전체" else None, sel_jangbi] if p]
-                    title = "<b>" + " · ".join(parts) + f" — 상호별 {metric_sel}</b>"
-                    _bar_chart(grouped, grouped["상호"].tolist(), title, "상호")
-                elif view_mode == "건물별":
-                    if sel_dong != "전체" and sel_jangbi == "전체" and "장비번호" in _sliced.columns:
-                        grouped = _sliced.groupby("장비번호")[usage_col].sum().reset_index()
-                        grouped.columns = ["장비번호", val_col_label]
-                        _bar_chart(grouped, grouped["장비번호"].tolist(), f"<b>{sel_dong} — 장비별 {metric_sel}</b>", "장비번호")
-                    else:
-                        grouped = _sliced.groupby(_col0)[usage_col].sum().reset_index()
-                        grouped.columns = [_col0, val_col_label]
-                        _bar_chart(grouped, grouped[_col0].tolist(), f"<b>건물별 {metric_sel} 합계</b>", "동")
-                else:
-                    if not has_panel:
-                        st.info("판넬명 column not found.")
-                    else:
-                        grouped = _sliced.groupby("판넬명")[usage_col].sum().reset_index()
-                        grouped.columns = ["판넬명", val_col_label]
-                        _bar_chart(grouped, grouped["판넬명"].tolist(), f"<b>판넬별 {metric_sel} 합계</b>", "판넬명")
+                        total_val = _ts[metric_sel].sum(min_count=1)
+                        st.metric(f"합계 {val_col_label}", f"{total_val:,.0f} {y_unit}" if pd.notna(total_val) else "N/A")
+
+                        if sel_jangbi != "전체" and "상호" in _ts.columns:
+                            grouped = _ts.groupby("상호")[metric_sel].sum().reset_index()
+                            grouped.columns = ["상호", val_col_label]
+                            parts = [p for p in [sel_dong if sel_dong != "전체" else None, sel_jangbi] if p]
+                            title = "<b>" + " · ".join(parts) + f" — 상호별 {metric_sel}</b>"
+                            _bar_chart(grouped, grouped["상호"].tolist(), title, "상호")
+                        elif view_mode == "건물별":
+                            if sel_dong != "전체" and sel_jangbi == "전체" and "장비번호" in _ts.columns:
+                                grouped = _ts.groupby("장비번호")[metric_sel].sum().reset_index()
+                                grouped.columns = ["장비번호", val_col_label]
+                                _bar_chart(grouped, grouped["장비번호"].tolist(), f"<b>{sel_dong} — 장비별 {metric_sel}</b>", "장비번호")
+                            else:
+                                grouped = _ts.groupby(_col0)[metric_sel].sum().reset_index()
+                                grouped.columns = [_col0, val_col_label]
+                                _bar_chart(grouped, grouped[_col0].tolist(), f"<b>건물별 {metric_sel} 합계</b>", "동")
+                        else:
+                            if not has_panel:
+                                st.info("판넬명 column not found.")
+                            else:
+                                grouped = _ts.groupby("판넬명")[metric_sel].sum().reset_index()
+                                grouped.columns = ["판넬명", val_col_label]
+                                _bar_chart(grouped, grouped["판넬명"].tolist(), f"<b>판넬별 {metric_sel} 합계</b>", "판넬명")
 
             with st.expander("Raw data"):
                 st.dataframe(_sliced, use_container_width=True)
