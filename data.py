@@ -46,8 +46,9 @@ def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     raise ValueError("Unsupported file type")
 
 
-BILLING_SHEET_NAME  = "수도광열비 부과 내역"
-EHP_OAC_SHEET_NAME  = "EHP(OAC)검침자료"
+BILLING_SHEET_NAME     = "수도광열비 부과 내역"
+EHP_OAC_SHEET_NAME     = "EHP(OAC)검침자료"
+EHP_BILLING_SHEET_NAME = "관리비 고지서 EHP 열(냉난방)"
 
 
 @st.cache_data(show_spinner="Loading billing sheet...")
@@ -116,6 +117,69 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     for c in str_cols:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
+
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner="Loading EHP billing sheet...")
+def read_ehp_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Parse 관리비 고지서 EHP 열(냉난방) sheet into a clean flat DataFrame."""
+    import re as _re2
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+
+    # Read from row 5 onward, trim trailing summary rows by finding last row with a
+    # numeric 순번 (col 1) — data rows all have sequential numbers; stats rows have NaN.
+    _all = raw.iloc[5:].copy().reset_index(drop=True)
+    _has_seq = pd.to_numeric(_all[1], errors="coerce").notna()
+    _last = int(_has_seq[_has_seq].index.max()) if _has_seq.any() else -1
+    data_rows = _all.iloc[:_last + 1].copy()
+
+    col_map = {
+        0:  "구분",
+        1:  "순번",
+        2:  "건물",
+        3:  "층수",
+        4:  "호수",
+        5:  "전용면적_m2",
+        6:  "공용면적_m2",
+        7:  "합계면적_m2",
+        8:  "전용면적_평",
+        9:  "브랜드",
+        10: "기본요금",
+        11: "FCU_사용량",
+        12: "FCU_사용요금",
+        13: "FCU_전용",
+        14: "FCU_공용요금",
+        15: "FCU_소계",
+        16: "EHP_사용량_kwh",
+        17: "EHP_전용요금",
+        18: "부과금액_전용",
+        19: "부과금액_공용",
+    }
+    present_cols = [c for c in col_map if c in data_rows.columns]
+    df = data_rows[present_cols].copy()
+    df.columns = [col_map[c] for c in present_cols]
+
+    # ffill 구분 and extract building letter
+    df["구분"] = df["구분"].ffill()
+    def _extract_building(v):
+        m = _re2.search(r"([A-Za-z])동", str(v))
+        return m.group(1).upper() if m else None
+    df["건물"] = df["구분"].map(_extract_building)
+
+    # Drop rows with no 브랜드
+    brand_str = df["브랜드"].astype(str).str.strip()
+    df = df[~brand_str.isin({"nan", "", "NaN"}) & df["브랜드"].notna()].copy()
+
+    # Coerce numeric columns
+    str_cols = {"구분", "건물", "층수", "호수", "브랜드", "비고"}
+    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+    for c in df.columns:
+        if c in str_cols:
+            df[c] = df[c].astype(str).str.strip()
+        else:
+            cleaned = df[c].astype(str).str.strip().replace(_blank, "0")
+            df[c] = pd.to_numeric(cleaned.str.replace(",", "", regex=False), errors="coerce")
 
     return df.reset_index(drop=True)
 

@@ -385,3 +385,106 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
             break
     else:
         st.error("전용 EHP 검침 자료 섹션을 찾을 수 없습니다.")
+
+
+# ─── 관리비 고지서 EHP 열(냉난방) View ────────────────────────────────────────
+
+_USAGE_METRICS = [
+    ("기본요금",         "기본요금",        "원"),   # K
+    ("FCU 사용량",       "FCU_사용량",      ""),     # L
+    ("FCU 사용요금",     "FCU_사용요금",    "원"),   # M
+    ("FCU 전용",         "FCU_전용",        "원"),   # N
+    ("FCU 공용요금",     "FCU_공용요금",    "원"),   # O
+    ("FCU 소계",         "FCU_소계",        "원"),   # P = K+M+O
+    ("EHP 사용량 (kWh)", "EHP_사용량_kwh",  "kWh"),  # Q
+    ("EHP 전용요금",     "EHP_전용요금",    "원"),   # R
+]
+_STRUCT_COLS = ["구분", "건물", "층수", "호수", "전용면적_m2", "공용면적_m2", "합계면적_m2", "전용면적_평", "브랜드"]
+
+
+def render_ehp_billing_view(df: pd.DataFrame) -> None:
+    import numpy as _np
+
+    st.subheader("관리비 고지서 — EHP 열(냉난방)")
+
+    all_buildings = sorted(df["건물"].dropna().unique().tolist())
+    sel_building = st.selectbox("건물 선택", ["전체"] + all_buildings, key="ehpb_building")
+    _df = df if sel_building == "전체" else df[df["건물"] == sel_building].copy()
+
+    (tab_brand,) = st.tabs(["브랜드별 사용량"])
+
+    with tab_brand:
+        _render_ehpb_brand_tab(_df, _np)
+
+    with st.expander("Raw data"):
+        st.dataframe(_df, use_container_width=True)
+
+
+def _render_ehpb_brand_tab(df: pd.DataFrame, _np) -> None:
+    all_brands = sorted(df["브랜드"].dropna().unique().tolist())
+    sel_brand = st.selectbox("브랜드 선택", all_brands, key="ehpb_brand")
+
+    row = df[df["브랜드"] == sel_brand].iloc[0]
+
+    # Structural info
+    struct_cols = [c for c in ["건물", "층수", "호수", "전용면적_m2", "공용면적_m2", "합계면적_m2", "전용면적_평"] if c in df.columns]
+    st.dataframe(
+        df[df["브랜드"] == sel_brand][struct_cols].reset_index(drop=True),
+        hide_index=True, use_container_width=True,
+    )
+
+    st.divider()
+
+    def _get(col):
+        if col not in df.columns:
+            return None
+        v = pd.to_numeric(row[col], errors="coerce")
+        return float(v) if pd.notna(v) else None
+
+    # ── Panel 1: Usage quantities ─────────────────────────────────────────────
+    st.markdown("**사용량**")
+    fcu_usage = _get("FCU_사용량")
+    ehp_usage = _get("EHP_사용량_kwh")
+    c1, c2 = st.columns(2)
+    c1.metric("FCU 사용량 (m³/MWh)", f"{fcu_usage:,.2f}" if fcu_usage is not None else "N/A")
+    c2.metric("EHP 사용량 (kWh)",    f"{ehp_usage:,.0f}"  if ehp_usage  is not None else "N/A")
+
+    st.divider()
+
+    # ── Panel 2: Monetary breakdown ───────────────────────────────────────────
+    st.markdown("**요금 내역 (원)**")
+
+    # 부과금액_전용 (S) = N + R
+    # 부과금액_공용  (P) = K + M + O
+    n = _get("FCU_전용")     or 0.0
+    r = _get("EHP_전용요금") or 0.0
+    k = _get("기본요금")     or 0.0
+    m = _get("FCU_사용요금") or 0.0
+    o = _get("FCU_공용요금") or 0.0
+
+    fig2 = go.Figure()
+    for name, x_label, val, color in [
+        ("FCU 전용 (N)",     "부과금액 전용", n, _PALETTE[0]),
+        ("EHP 전용요금 (R)",  "부과금액 전용", r, _PALETTE[1]),
+        ("기본요금 (K)",     "부과금액 공용", k, _PALETTE[2]),
+        ("FCU 사용요금 (M)", "부과금액 공용", m, _PALETTE[3]),
+        ("FCU 공용요금 (O)", "부과금액 공용", o, _PALETTE[4]),
+    ]:
+        fig2.add_trace(go.Bar(
+            name=name, x=[x_label], y=[val],
+            marker_color=color, marker_line_color="white", marker_line_width=0.8,
+            text=[f"{val:,.0f}"], textposition="inside",
+        ))
+
+    fig2.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(text=f"<b>{sel_brand}</b> — 요금 내역", font=dict(size=13), x=0),
+        barmode="stack",
+        height=420,
+        xaxis=dict(showgrid=False, zeroline=False, tickfont=dict(color="#111111")),
+        yaxis=dict(title=dict(text="원"), showgrid=True, gridcolor="#AAAAAA",
+                   zeroline=False, tickfont=dict(color="#111111")),
+        margin=dict(l=60, r=20, t=70, b=60),
+        legend=dict(orientation="h", y=-0.2, font=dict(size=10)),
+    )
+    st.plotly_chart(fig2, use_container_width=True)

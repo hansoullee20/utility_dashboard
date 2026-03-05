@@ -5,9 +5,9 @@ import plotly.express as px
 from scipy import stats
 from typing import Dict
 
-from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME
+from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, EHP_BILLING_SHEET_NAME, read_ehp_billing_sheet
 from billing import render_billing_view
-from ehp import render_ehp_view
+from ehp import render_ehp_view, render_ehp_billing_view
 from features import (
     create_change_columns,
     aggregate_by_brand,
@@ -129,7 +129,7 @@ def main():
     file_name = st.selectbox("Select file", list(file_map.keys()))
     all_sheet_keys = sheet_map[file_name]
 
-    SUPPORTED_SHEETS = {"검침 내역", BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME}
+    SUPPORTED_SHEETS = {"검침 내역", BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, EHP_BILLING_SHEET_NAME}
     sheet_keys = [s for s in all_sheet_keys if s.strip() in SUPPORTED_SHEETS]
     if not sheet_keys:
         st.warning("No supported sheets found in this file. Expected '검침 내역' or '수도광열비 부과 내역'.")
@@ -151,6 +151,16 @@ def main():
     # ── EHP sheet: separate pipeline ──────────────────────────────────────────
     if sheet_name.strip() == EHP_OAC_SHEET_NAME:
         render_ehp_view(file_name, file_map[file_name], sheet_name)
+        return
+
+    # ── EHP Billing sheet ─────────────────────────────────────────────────────
+    if sheet_name.strip() == EHP_BILLING_SHEET_NAME:
+        try:
+            ehp_billing_df = read_ehp_billing_sheet(file_name, file_map[file_name], sheet_name)
+        except Exception as e:
+            st.error(f"Failed to parse EHP billing sheet: {e}")
+            st.stop()
+        render_ehp_billing_view(ehp_billing_df)
         return
     # ─────────────────────────────────────────────────────────────────────────
 
