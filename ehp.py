@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from data import read_ehp_oac_sheet, read_ehp_raw_slice, compute_monthly_usage, group_raw_slice_by_year
+from viz import plot_hist_with_tails
 
 _PALETTE = [
     "#4C72B0", "#DD8A00", "#C44E52", "#55A868",
@@ -274,19 +275,37 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                     "전기 사용량": ("전기 사용량 (kWh)", "kWh"),
                     "매장별 가동시간": ("가동시간 (hr)", "hr"),
                 }
-                has_panel = "판넬명" in _sliced.columns
                 all_dong  = sorted(_sliced[_col0].dropna().unique(), key=str)
 
-                view_mode = st.selectbox("보기 방식", ["건물별", "판넬별"], key="ehp_ded_view")
+                # Build chart type options based on available columns
+                _chart_opts = ["건물별"]
+                if "장비번호" in _sliced.columns:
+                    _chart_opts.append("장비별")
+                if "판넬명" in _sliced.columns:
+                    _chart_opts.append("판넬별")
+                if "상호" in _sliced.columns:
+                    _chart_opts.append("상호별")
+
+                chart_type = st.selectbox("차트 유형", _chart_opts, key="ehp_ded_chart")
 
                 sel_dong = st.selectbox("동 선택", ["전체"] + all_dong, key="ehp_ded_dong")
                 if sel_dong != "전체":
                     _sliced = _sliced[_sliced[_col0] == sel_dong]
 
-                all_jangbi = sorted(_sliced["장비번호"].dropna().unique(), key=str) if "장비번호" in _sliced.columns else []
-                sel_jangbi = st.selectbox("장비번호 선택", ["전체"] + all_jangbi, key="ehp_ded_jangbi")
-                if sel_jangbi != "전체" and all_jangbi:
-                    _sliced = _sliced[_sliced["장비번호"] == sel_jangbi]
+                with st.expander("검색"):
+                    _sc1, _sc2, _sc3 = st.columns(3)
+                    with _sc1:
+                        _q_panel = st.text_input("판넬명", key="ehp_search_panel")
+                    with _sc2:
+                        _q_jangbi = st.text_input("장비번호", key="ehp_search_jangbi")
+                    with _sc3:
+                        _q_sangho = st.text_input("상호", key="ehp_search_sangho")
+                if _q_panel and "판넬명" in _sliced.columns:
+                    _sliced = _sliced[_sliced["판넬명"].astype(str).str.contains(_q_panel, case=False, na=False)]
+                if _q_jangbi and "장비번호" in _sliced.columns:
+                    _sliced = _sliced[_sliced["장비번호"].astype(str).str.contains(_q_jangbi, case=False, na=False)]
+                if _q_sangho and "상호" in _sliced.columns:
+                    _sliced = _sliced[_sliced["상호"].astype(str).str.contains(_q_sangho, case=False, na=False)]
 
                 _metric_tabs = st.tabs(_metric_options)
                 for _mtab, metric_sel in zip(_metric_tabs, _metric_options):
@@ -296,6 +315,8 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                         _ts[metric_sel] = pd.to_numeric(_ts[metric_sel], errors="coerce")
 
                         def _bar_chart(grouped, x_labels, title, x_title, _vcl=val_col_label, _yu=y_unit):
+                            grouped = grouped.sort_values(_vcl, ascending=False).reset_index(drop=True)
+                            x_labels = grouped[grouped.columns[0]].tolist()
                             fig = go.Figure(go.Bar(
                                 x=x_labels, y=grouped[_vcl],
                                 marker_color="#4C72B0",
@@ -318,86 +339,46 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                         total_val = _ts[metric_sel].sum(min_count=1)
                         st.metric(f"합계 {val_col_label}", f"{total_val:,.0f} {y_unit}" if pd.notna(total_val) else "N/A")
 
-                        if metric_sel == "매장별 가동시간":
+                        _graph_sel = st.radio("그래프", ["바 차트", "히스토그램"], horizontal=True, key=f"ehp_graph_{metric_sel}")
+
+                        if _graph_sel == "히스토그램":
                             import numpy as _np
-                            _vals = _ts[metric_sel].dropna()
-                            if not _vals.empty:
-                                _vmin, _vmax = float(_vals.min()), float(_vals.max())
-                                _n_bins = st.session_state.get("bins", 50)
-                                _tail   = st.session_state.get("tail", 20)
-                                _lo_tail, _hi_tail = _tail, _tail
-
-                                _lo_cut = float(_np.percentile(_vals, _lo_tail)) if _lo_tail > 0 else None
-                                _hi_cut = float(_np.percentile(_vals, 100 - _hi_tail)) if _hi_tail > 0 else None
-
-                                _counts, _edges = _np.histogram(_vals, bins=_n_bins)
-                                _centers = [(_edges[i] + _edges[i+1]) / 2 for i in range(len(_counts))]
-                                _widths  = [_edges[i+1] - _edges[i] for i in range(len(_counts))]
-                                _median  = float(_vals.median())
-
-                                _colors = []
-                                for _c in _centers:
-                                    if (_lo_cut is not None and _c <= _lo_cut) or (_hi_cut is not None and _c >= _hi_cut):
-                                        _colors.append("#DD8A00")
-                                    else:
-                                        _colors.append("#4C72B0")
-
-                                _hfig = go.Figure(go.Bar(
-                                    x=_centers, y=_counts, width=_widths,
-                                    marker_color=_colors,
-                                    marker_line_color="white", marker_line_width=1,
-                                    text=_counts, textposition="outside", cliponaxis=False,
-                                    hovertemplate="<b>%{x:,.0f} hr</b>: %{y} 건<extra></extra>",
-                                ))
-                                _hfig.add_vline(x=_median, line_dash="dash", line_color="#C44E52", line_width=2,
-                                                annotation_text=f"중앙값 {_median:,.0f} hr",
-                                                annotation_position="top right",
-                                                annotation=dict(font=dict(color="#C44E52", size=11),
-                                                                bgcolor="white", bordercolor="#C44E52", borderwidth=1))
-                                if _lo_cut is not None:
-                                    _hfig.add_vrect(x0=_vmin, x1=_lo_cut, fillcolor="#DD8A00", opacity=0.1, line_width=0)
-                                    _hfig.add_vline(x=_lo_cut, line_dash="dash", line_color="#DD8A00", line_width=1)
-                                if _hi_cut is not None:
-                                    _hfig.add_vrect(x0=_hi_cut, x1=_vmax, fillcolor="#DD8A00", opacity=0.1, line_width=0)
-                                    _hfig.add_vline(x=_hi_cut, line_dash="dash", line_color="#DD8A00", line_width=1)
-                                _lo_n = int((_vals <= _lo_cut).sum()) if _lo_cut is not None else 0
-                                _hi_n = int((_vals >= _hi_cut).sum()) if _hi_cut is not None else 0
-                                _title = f"<b>매장별 가동시간 분포</b>  n={len(_vals)}"
-                                if _lo_n or _hi_n:
-                                    _title += f"  |  tail: 하위 {_lo_n}건 / 상위 {_hi_n}건"
-                                _hfig.update_layout(
-                                    **_BASE_LAYOUT,
-                                    title=dict(text=_title, font=dict(size=14, color="#111111"), x=0),
-                                    height=380,
-                                    xaxis=dict(title=dict(text="hr", font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=False, zeroline=False),
-                                    yaxis=dict(title=dict(text="건수", font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot", zeroline=False),
-                                    margin=dict(l=60, r=20, t=70, b=50),
-                                    showlegend=False,
+                            import numpy as _np
+                            _bins = st.session_state.get("bins", 50)
+                            _tail = st.session_state.get("tail", 20)
+                            _s    = _ts[metric_sel]
+                            _v    = _s.dropna()
+                            if not _v.empty:
+                                _lo = float(_np.percentile(_v, _tail))
+                                _hi = float(_np.percentile(_v, 100 - _tail))
+                                _display_cols = [c for c in [_col0, "판넬명", "장비번호", "상호", metric_sel] if c in _ts.columns]
+                                plot_hist_with_tails(
+                                    _s, _bins, _lo, _hi,
+                                    title=metric_sel,
+                                    tail_pct=_tail,
+                                    key=f"ehp_hist_{metric_sel}",
+                                    source_df=_ts,
+                                    val_col=metric_sel,
+                                    display_cols=_display_cols,
                                 )
-                                st.plotly_chart(_hfig, use_container_width=True)
 
-                        if sel_jangbi != "전체" and "상호" in _ts.columns:
-                            grouped = _ts.groupby("상호")[metric_sel].sum().reset_index()
-                            grouped.columns = ["상호", val_col_label]
-                            parts = [p for p in [sel_dong if sel_dong != "전체" else None, sel_jangbi] if p]
-                            title = "<b>" + " · ".join(parts) + f" — 상호별 {metric_sel}</b>"
-                            _bar_chart(grouped, grouped["상호"].tolist(), title, "상호")
-                        elif view_mode == "건물별":
-                            if sel_dong != "전체" and sel_jangbi == "전체" and "장비번호" in _ts.columns:
-                                grouped = _ts.groupby("장비번호")[metric_sel].sum().reset_index()
-                                grouped.columns = ["장비번호", val_col_label]
-                                _bar_chart(grouped, grouped["장비번호"].tolist(), f"<b>{sel_dong} — 장비별 {metric_sel}</b>", "장비번호")
-                            else:
+                        else:
+                            if chart_type == "건물별":
                                 grouped = _ts.groupby(_col0)[metric_sel].sum().reset_index()
                                 grouped.columns = [_col0, val_col_label]
                                 _bar_chart(grouped, grouped[_col0].tolist(), f"<b>건물별 {metric_sel} 합계</b>", "동")
-                        else:
-                            if not has_panel:
-                                st.info("판넬명 column not found.")
-                            else:
+                            elif chart_type == "장비별":
+                                grouped = _ts.groupby("장비번호")[metric_sel].sum().reset_index()
+                                grouped.columns = ["장비번호", val_col_label]
+                                _bar_chart(grouped, grouped["장비번호"].tolist(), f"<b>장비별 {metric_sel}</b>", "장비번호")
+                            elif chart_type == "판넬별":
                                 grouped = _ts.groupby("판넬명")[metric_sel].sum().reset_index()
                                 grouped.columns = ["판넬명", val_col_label]
                                 _bar_chart(grouped, grouped["판넬명"].tolist(), f"<b>판넬별 {metric_sel} 합계</b>", "판넬명")
+                            elif chart_type == "상호별":
+                                grouped = _ts.groupby("상호")[metric_sel].sum().reset_index()
+                                grouped.columns = ["상호", val_col_label]
+                                _bar_chart(grouped, grouped["상호"].tolist(), f"<b>상호별 {metric_sel}</b>", "상호")
 
             with st.expander("Raw data"):
                 st.dataframe(_sliced, use_container_width=True)
