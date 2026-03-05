@@ -22,6 +22,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen.canvas import Canvas as _CanvasBase
 from reportlab.platypus import (
     BaseDocTemplate, Frame, PageTemplate,
     Paragraph, Spacer, Table, TableStyle,
@@ -122,7 +123,7 @@ _STRINGS = {
         "col_utility":  "Utility",
         "col_tenants":  "Tenants w/ Data",
         "col_avg_use":  "Avg Usage",
-        "col_avg_pct":  "Avg % Change",
+        "col_avg_pct":  "Avg Change (%)",
         "col_critical": "Critical",
         "col_watch":    "Watch",
         "col_alert":    "Alert",
@@ -197,7 +198,7 @@ _STRINGS = {
         "th_last":   "Last ({unit})",
         "th_this":   "This ({unit})",
         "th_change": "Change ({unit})",
-        "th_pct":    "% Chg",
+        "th_pct":    "Chg (%)",
         "th_status": "Status",
         # legend headers
         "th_leg_status":  "Status",
@@ -218,7 +219,7 @@ _STRINGS = {
         "act_No Data":   "Confirm new tenant or first full billing period",
         # footer / back
         "footer_left": "Utility Analysis Report  ·  Confidential",
-        "footer_page": "Page {n}",
+        "footer_page": "Page {n} of {total}",
         "end_title":   "End of Report",
         "end_note":    (
             "Generated on {date}. This report is intended for internal management use only. "
@@ -270,7 +271,7 @@ _STRINGS = {
         "col_curr_t": "This Period",
         "col_prev_t": "Last Period",
         "col_chg_t":  "Change",
-        "col_pct_t":  "% Chg",
+        "col_pct_t":  "Chg (%)",
         # data coverage
         "coverage_title": "Data Coverage",
         "col_utility_c":  "Utility",
@@ -352,9 +353,13 @@ _STRINGS = {
         "sub_new_tenants":"New Tenants / First Billing Period",
         "new_tenants_note": "Tenants with no prior-period data (first occupancy or first full billing cycle). "
                             "Flagged as 'No Data' — no change analysis is possible yet.",
-        "new_none":       "No new tenants detected.",
+        "new_none":         "No new tenants detected.",
+        "sub_missing_data": "Missing Meter Data",
+        "missing_data_note":"Tenants with no current-period reading recorded for at least one utility. "
+                            "Verify whether the meter was skipped during collection or the unit is inactive.",
+        "missing_none":     "No missing data detected.",
         "sub_multi_flag": "Multi-Utility Alerts",
-        "multi_flag_note":"Tenants flagged Critical or Alert in two or more utility categories simultaneously. "
+        "multi_flag_note":"Tenants flagged Critical, Watch, or Alert in two or more utility categories simultaneously. "
                           "A simultaneous spike across water, electricity, and heating may indicate a systematic issue.",
         "multi_flag_none":"No tenants are flagged across multiple utilities simultaneously.",
         "sub_sharp_drop": "Tenants with Sudden Usage Drop",
@@ -392,7 +397,7 @@ _STRINGS = {
         "col_utility":  "항목",
         "col_tenants":  "비교 가능 임차인",
         "col_avg_use":  "평균 사용량",
-        "col_avg_pct":  "평균 변화율",
+        "col_avg_pct":  "평균 변화율 (%)",
         "col_critical": "긴급",
         "col_watch":    "주의",
         "col_alert":    "경보",
@@ -458,7 +463,7 @@ _STRINGS = {
         "th_last":   "이전({unit})",
         "th_this":   "이번({unit})",
         "th_change": "변화량({unit})",
-        "th_pct":    "변화율",
+        "th_pct":    "변화율 (%)",
         "th_status": "상태",
         "th_leg_status":  "상태",
         "th_leg_meaning": "의미",
@@ -476,7 +481,7 @@ _STRINGS = {
         "act_Normal":    "조치 불필요",
         "act_No Data":   "신규 임차인 또는 첫 청구 기간 여부 확인",
         "footer_left": "관리비 분석 보고서  ·  대외비",
-        "footer_page": "{n}페이지",
+        "footer_page": "{n} / {total} 페이지",
         "end_title":   "보고서 끝",
         "end_note":    (
             "작성일: {date}. 본 보고서는 내부 관리 목적으로만 사용하시기 바랍니다. "
@@ -527,7 +532,7 @@ _STRINGS = {
         "col_curr_t": "이번 기간",
         "col_prev_t": "이전 기간",
         "col_chg_t":  "변화량",
-        "col_pct_t":  "변화율",
+        "col_pct_t":  "변화율 (%)",
         # data coverage
         "coverage_title": "데이터 커버리지",
         "col_utility_c":  "항목",
@@ -606,9 +611,13 @@ _STRINGS = {
         "sub_new_tenants": "신규 임차인 / 첫 청구 기간",
         "new_tenants_note":"이전 기간 데이터가 없는 임차인입니다(신규 입주 또는 첫 청구 기간). "
                            "'데이터 없음'으로 표시되며 변화 분석이 불가합니다.",
-        "new_none":        "신규 임차인이 없습니다.",
+        "new_none":         "신규 임차인이 없습니다.",
+        "sub_missing_data": "검침 데이터 누락",
+        "missing_data_note":"이번 기간 검침값이 기록되지 않은 임차인입니다. "
+                            "검침 누락 또는 비사용 공간 여부를 확인하십시오.",
+        "missing_none":     "누락된 검침 데이터가 없습니다.",
         "sub_multi_flag":  "복수 항목 경보 임차인",
-        "multi_flag_note": "두 개 이상의 항목(수도, 전기, 냉난방 등)에서 동시에 긴급 또는 경보로 분류된 임차인입니다. "
+        "multi_flag_note": "두 개 이상의 항목(수도, 전기, 냉난방 등)에서 동시에 긴급·주의·경보로 분류된 임차인입니다. "
                            "복수 항목 동시 이상은 설비 이상 등 구조적 문제를 시사할 수 있습니다.",
         "multi_flag_none": "복수 항목에서 동시에 이상이 감지된 임차인이 없습니다.",
         "sub_sharp_drop":  "급격한 사용량 감소 임차인",
@@ -659,6 +668,10 @@ def _fmt(val, unit="", sign=False):
 
 def _pct(val):
     return f"{val:+.1f}%" if not pd.isna(val) else "—"
+
+def _pct_val(val):
+    """Numeric-only percent for table cells (unit shown in header)."""
+    return f"{val:+.1f}" if not pd.isna(val) else "—"
 
 
 def _png(fig, dpi=150):
@@ -924,10 +937,10 @@ def _detail_table(rows, unit, col_widths, styles, T):
             Paragraph(textwrap.shorten(r.get("brand", ""), 28, placeholder="…"), styles["table_cell"]),
             Paragraph(r.get("building", ""), styles["table_cell_c"]),
             Paragraph(r.get("floor", ""),    styles["table_cell_c"]),
-            Paragraph(_fmt(r.get("prev"), unit),            styles["table_cell_c"]),
-            Paragraph(_fmt(r.get("curr"), unit),            styles["table_cell_c"]),
-            Paragraph(_fmt(r.get("change"), unit, sign=True), styles["table_cell_c"]),
-            Paragraph(_pct(r.get("pct")),                   styles["table_cell_c"]),
+            Paragraph(_fmt(r.get("prev")),                  styles["table_cell_c"]),
+            Paragraph(_fmt(r.get("curr")),                  styles["table_cell_c"]),
+            Paragraph(_fmt(r.get("change"), sign=True),     styles["table_cell_c"]),
+            Paragraph(_pct_val(r.get("pct")),               styles["table_cell_c"]),
             Paragraph(T.get(status, status),                styles["table_cell_c"]),
         ])
         ts.add("BACKGROUND", (0, i), (-1, i), rc)
@@ -964,7 +977,8 @@ def _critical_alerts_page(story, util_data, T, styles, content_w, tail_pct):
         story.append(PageBreak())
         return
 
-    cw = [v * cm for v in [0.7, 4.0, 1.1, 1.2, 2.0, 2.0, 2.0, 1.4]]
+    _fixed_cw = (0.7 + 1.1 + 1.2 + 2.0 + 2.0 + 2.0 + 1.4) * cm
+    cw = [0.7*cm, content_w - _fixed_cw, 1.1*cm, 1.2*cm, 2.0*cm, 2.0*cm, 2.0*cm, 1.4*cm]
 
     for prefix, ud in util_data.items():
         crit_rows = [r for r in ud["rows"] if r["status"] == "Critical"]
@@ -1044,10 +1058,10 @@ def _critical_alerts_page(story, util_data, T, styles, content_w, tail_pct):
                 Paragraph(textwrap.shorten(r.get("brand",""), 28, placeholder="…"), styles["table_cell"]),
                 Paragraph(r.get("building", ""),                                styles["table_cell_c"]),
                 Paragraph(r.get("floor",    ""),                                styles["table_cell_c"]),
-                Paragraph(_fmt(r.get("prev"),   unit),                          styles["table_cell_c"]),
-                Paragraph(_fmt(r.get("curr"),   unit),                          styles["table_cell_c"]),
-                Paragraph(_fmt(r.get("change"), unit, sign=True),               styles["table_cell_c"]),
-                Paragraph(_pct(r.get("pct")),                                   styles["table_cell_c"]),
+                Paragraph(_fmt(r.get("prev")),                                  styles["table_cell_c"]),
+                Paragraph(_fmt(r.get("curr")),                                  styles["table_cell_c"]),
+                Paragraph(_fmt(r.get("change"), sign=True),                     styles["table_cell_c"]),
+                Paragraph(_pct_val(r.get("pct")),                               styles["table_cell_c"]),
             ])
         story.append(Table(data, colWidths=cw, style=ts, repeatRows=1))
 
@@ -1139,7 +1153,7 @@ def _vacancy_section(story, util_data, T, styles, content_w):
         story.append(_mini_table(vac_rows, [5.5*cm, 1.8*cm, content_w - 7.3*cm], styles))
     story.append(Spacer(1, 0.6 * cm))
 
-    # ── 2. New tenants ───────────────────────────────────────────────────
+    # ── 2a. New tenants (first reading) ──────────────────────────────────
     story.append(Paragraph(T["sub_new_tenants"], styles["sub_title"]))
     story.append(Paragraph(T["new_tenants_note"], styles["note"]))
     story.append(Spacer(1, 0.2 * cm))
@@ -1156,6 +1170,7 @@ def _vacancy_section(story, util_data, T, styles, content_w):
             and (r.get("prev") is None or pd.isna(r.get("prev", np.nan)))
             and r.get("curr") is not None
             and not pd.isna(r.get("curr", np.nan))
+            and float(r["curr"]) > 0.01
         ]
         if new_utils:
             new_rows.append([
@@ -1167,6 +1182,33 @@ def _vacancy_section(story, util_data, T, styles, content_w):
         story.append(Paragraph(T["new_none"], styles["note"]))
     else:
         story.append(_mini_table(new_rows, [5.5*cm, 1.8*cm, content_w - 7.3*cm], styles))
+    story.append(Spacer(1, 0.5 * cm))
+
+    # ── 2b. Missing data (no readings at all) ────────────────────────────
+    story.append(Paragraph(T["sub_missing_data"], styles["sub_title"]))
+    story.append(Paragraph(T["missing_data_note"], styles["note"]))
+    story.append(Spacer(1, 0.2 * cm))
+
+    miss_rows = [[
+        Paragraph(T["th_tenant"],    styles["table_hdr"]),
+        Paragraph(T["th_bldg"],      styles["table_hdr"]),
+        Paragraph(T["th_utilities"], styles["table_hdr"]),
+    ]]
+    for (brand, bldg), util_rows in sorted(all_brands.items()):
+        miss_utils = [
+            p for p, r in util_rows.items()
+            if (r.get("curr") is None or pd.isna(r.get("curr", np.nan)))
+        ]
+        if miss_utils:
+            miss_rows.append([
+                Paragraph(str(brand), styles["table_cell"]),
+                Paragraph(str(bldg),  styles["table_cell"]),
+                Paragraph(_util_names(miss_utils, lang_key), styles["table_cell"]),
+            ])
+    if len(miss_rows) == 1:
+        story.append(Paragraph(T["missing_none"], styles["note"]))
+    else:
+        story.append(_mini_table(miss_rows, [5.5*cm, 1.8*cm, content_w - 7.3*cm], styles))
     story.append(Spacer(1, 0.6 * cm))
 
     # ── 3. Multi-utility alerts ──────────────────────────────────────────
@@ -1183,7 +1225,7 @@ def _vacancy_section(story, util_data, T, styles, content_w):
     for (brand, bldg), util_rows in sorted(all_brands.items()):
         flagged = [
             (p, r["status"]) for p, r in util_rows.items()
-            if r.get("status") in ("Critical", "Alert")
+            if r.get("status") in ("Critical", "Watch", "Alert")
         ]
         if len(flagged) >= 2:
             util_str = ", ".join(
@@ -1283,9 +1325,9 @@ def _building_totals_table(util_data, T, styles, content_w):
             chg = curr_total - prev_total
             pct = (chg / prev_total * 100) if prev_total > 0 else np.nan
             row += [
-                Paragraph(_fmt(curr_total, ud["unit"]), styles["table_cell_c"]),
+                Paragraph(_fmt(curr_total), styles["table_cell_c"]),
                 Paragraph(f"{chg:+,.1f}" if not pd.isna(chg) else "—", styles["table_cell_c"]),
-                Paragraph(_pct(pct), styles["table_cell_c"]),
+                Paragraph(_pct_val(pct), styles["table_cell_c"]),
             ]
         data.append(row)
 
@@ -1414,7 +1456,7 @@ def _top10_section(story, rows, unit, name, T, styles, content_w):
     story.append(Spacer(1, 0.2 * cm))
 
     hdr = [T["th_rank"], T["th_tenant"], T["th_bldg"], T["th_floor"],
-           T["th_curr_use"], T["th_pct"]]
+           f"{T['th_curr_use']} ({unit})", T["th_pct"]]
     data = [[Paragraph(h, styles["table_hdr"]) for h in hdr]]
     ts = TableStyle([
         ("BACKGROUND",    (0, 0), (-1, 0),  C_NAVY),
@@ -1435,15 +1477,16 @@ def _top10_section(story, rows, unit, name, T, styles, content_w):
             Paragraph(textwrap.shorten(r.get("brand",""), 22, placeholder="…"), styles["table_cell"]),
             Paragraph(str(r.get("building", "")),                          styles["table_cell_c"]),
             Paragraph(str(r.get("floor", "")),                             styles["table_cell_c"]),
-            Paragraph(_fmt(float(r["curr"]), unit),                        styles["table_cell_c"]),
-            Paragraph(_pct(r.get("pct")),                                  styles["table_cell_c"]),
+            Paragraph(_fmt(float(r["curr"])),                              styles["table_cell_c"]),
+            Paragraph(_pct_val(r.get("pct")),                              styles["table_cell_c"]),
         ])
         if status in STATUS_COLOR_RL:
             ts.add("BACKGROUND", (0, i), (0, i), STATUS_COLOR_RL[status])
             if status == "Critical":
                 ts.add("TEXTCOLOR", (0, i), (0, i), colors.white)
 
-    col_w = [1.0*cm, 4.5*cm, 1.5*cm, 1.5*cm, 3.0*cm, 2.0*cm]
+    _fixed_top10 = (1.0 + 1.5 + 1.5 + 3.0 + 2.0) * cm
+    col_w = [1.0*cm, content_w - _fixed_top10, 1.5*cm, 1.5*cm, 3.0*cm, 2.0*cm]
     story.append(Table(data, colWidths=col_w, style=ts))
 
 
@@ -1498,7 +1541,7 @@ def _critical_profile_cards(story, util_data, T, styles, content_w):
                 status = r.get("status", "Normal")
                 ch = _v(r)
                 pt = r.get("pct")
-                cell_txt = f"{ch:+,.1f}\n{_pct(pt)}"
+                cell_txt = f"{ch:+,.1f}\n{_pct_val(pt)}"
                 cell_color = STATUS_COLOR_RL.get(status)
             row.append(Paragraph(cell_txt, styles["table_cell_c"]))
             if cell_color:
@@ -1654,6 +1697,42 @@ def _action_checklist_page(story, util_data, T, styles, content_w):
     story.append(Table(data, colWidths=col_w, style=ts, repeatRows=1))
 
 
+def _make_numbered_canvas(T):
+    """Return a Canvas subclass that writes 'Page X of Y' in the right footer."""
+    _margin   = 2 * cm
+    _fmt_str  = T["footer_page"]
+
+    class NumberedCanvas(_CanvasBase):
+        def __init__(self, *args, **kwargs):
+            _CanvasBase.__init__(self, *args, **kwargs)
+            self._saved_page_states = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                self._draw_page_number(total)
+                _CanvasBase.showPage(self)
+            _CanvasBase.save(self)
+
+        def _draw_page_number(self, total):
+            page_w = self._pagesize[0]
+            self.saveState()
+            self.setFont("NanumGothic", 7.5)
+            self.setFillColor(C_SUBTEXT)
+            self.drawRightString(
+                page_w - _margin, 1.2 * cm,
+                _fmt_str.format(n=self._pageNumber, total=total),
+            )
+            self.restoreState()
+
+    return NumberedCanvas
+
+
 def _make_page_template(doc, T):
     page_w, _ = A4
     margin = 2 * cm
@@ -1663,10 +1742,7 @@ def _make_page_template(doc, T):
         canvas.setFont("NanumGothic", 7.5)
         canvas.setFillColor(C_SUBTEXT)
         canvas.drawString(margin, 1.2 * cm, T["footer_left"])
-        canvas.drawRightString(
-            page_w - margin, 1.2 * cm,
-            T["footer_page"].format(n=canvas.getPageNumber()),
-        )
+        # page number is drawn by _make_numbered_canvas (needs total page count)
         canvas.setStrokeColor(C_DIVIDER)
         canvas.setLineWidth(0.4)
         canvas.line(margin, 1.5 * cm, page_w - margin, 1.5 * cm)
@@ -1870,8 +1946,8 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
         ov_data.append([
             Paragraph(_meta_name(prefix),                           styles["table_cell"]),
             Paragraph(str(ud["n_data"]),                            styles["table_cell_c"]),
-            Paragraph(_fmt(s_cu.mean() if not s_cu.empty else np.nan, ud["unit"]), styles["table_cell_c"]),
-            Paragraph(_pct(avg_pct),                                styles["table_cell_c"]),
+            Paragraph(_fmt(s_cu.mean()) + f" ({ud['unit']})" if not s_cu.empty else "—", styles["table_cell_c"]),
+            Paragraph(_pct_val(avg_pct),                            styles["table_cell_c"]),
             Paragraph(str(n_cr) if n_cr > 0 else "—",              styles["table_cell_c"]),
             Paragraph(str(n_wt) if n_wt > 0 else "—",              styles["table_cell_c"]),
             Paragraph(str(n_al) if n_al > 0 else "—",              styles["table_cell_c"]),
@@ -1972,21 +2048,21 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
         story.append(Paragraph(T["dist_title"], styles["sub_title"]))
         story.append(Paragraph(T["dist_note"],  styles["note"]))
 
-        hdr = [T["col_metric"], T["col_value"], T["col_meaning"]]
+        hdr = [T["col_metric"], f"{T['col_value']} ({unit})", T["col_meaning"]]
         stat_rows = [hdr]
         if not s_cu.empty:
             stat_rows += [
                 (T["stat_n"],   str(ud["n_data"]),               T["stat_n_m"]),
-                (T["stat_med"], _fmt(s_cu.median(), unit),        T["stat_med_m"]),
-                (T["stat_avg"], _fmt(s_cu.mean(),   unit),        T["stat_avg_m"]),
-                (T["stat_std"], _fmt(s_cu.std(),    unit),        T["stat_std_m"]),
-                (T["stat_p80"], _fmt(s_cu.quantile(0.80), unit),  T["stat_p80_m"]),
-                (T["stat_p20"], _fmt(s_cu.quantile(0.20), unit),  T["stat_p20_m"]),
+                (T["stat_med"], _fmt(s_cu.median()),              T["stat_med_m"]),
+                (T["stat_avg"], _fmt(s_cu.mean()),                T["stat_avg_m"]),
+                (T["stat_std"], _fmt(s_cu.std()),                 T["stat_std_m"]),
+                (T["stat_p80"], _fmt(s_cu.quantile(0.80)),        T["stat_p80_m"]),
+                (T["stat_p20"], _fmt(s_cu.quantile(0.20)),        T["stat_p20_m"]),
                 (T["stat_hi"].format(pct=tail_pct),
-                 _fmt(hi_c, unit, sign=True),
+                 _fmt(hi_c, sign=True),
                  T["stat_hi_m"].format(pct=tail_pct)),
                 (T["stat_lo"].format(pct=tail_pct),
-                 _fmt(lo_c, unit, sign=True),
+                 _fmt(lo_c, sign=True),
                  T["stat_lo_m"].format(pct=tail_pct)),
             ]
 
@@ -2065,10 +2141,11 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
         ))
         story.append(Spacer(1, 0.3 * cm))
 
-        cw = [v * cm for v in [0.7, 4.2, 1.0, 1.0, 2.0, 2.0, 2.0, 1.4, 2.1]]
+        _fixed_w = (0.7 + 1.0 + 1.0 + 2.0 + 2.0 + 2.0 + 1.4 + 2.1) * cm
+        cw = [0.7*cm, content_w - _fixed_w, 1.0*cm, 1.0*cm, 2.0*cm, 2.0*cm, 2.0*cm, 1.4*cm, 2.1*cm]
 
-        # Critical + Alert only (Watch excluded from printed table)
-        alert_rows = [r for r in rows if r["status"] in ("Critical", "Alert")]
+        # Critical + Watch + Alert (sorted by STATUS_ORDER: Critical → Watch → Alert)
+        alert_rows = [r for r in rows if r["status"] in ("Critical", "Watch", "Alert")]
         if alert_rows:
             story.append(Paragraph(T["flagged_title"], styles["sub_title"]))
             story.append(Paragraph(
@@ -2128,6 +2205,6 @@ def generate_report_pdf(cur_df: pd.DataFrame, present: list,
     story.append(Paragraph(T["end_title"], styles["sub_title"]))
     story.append(Paragraph(T["end_note"].format(date=rep_date), styles["note"]))
 
-    doc.build(story)
+    doc.build(story, canvasmaker=_make_numbered_canvas(T))
     buf.seek(0)
     return buf.read()
