@@ -1,3 +1,5 @@
+from datetime import date
+
 import numpy as np
 import streamlit as st
 import pandas as pd
@@ -21,6 +23,7 @@ from features import (
     download_df_as_excel
 )
 from viz import plot_hist_with_tails
+from report import generate_report_pdf
 
 
 def main():
@@ -377,6 +380,40 @@ def main():
         disabled=not has_gongshil,
         key="gongshil_mode_radio",
     )
+
+    # ---------------- Summary Report download ----------------
+    with st.expander("Download Summary Report", expanded=False):
+        st.caption(
+            "Generates a business-ready PDF report covering all utility types — "
+            "with charts, plain-language explanations, and flagged tenants."
+        )
+        report_lang = st.radio(
+            "Report language / 보고서 언어",
+            ["English", "한국어"],
+            horizontal=True,
+            key="report_lang",
+        )
+        lang_code = "en" if report_lang == "English" else "ko"
+
+        if st.button("Generate Report", key="gen_report"):
+            report_context = {
+                "date":      str(date.today()),
+                "buildings": ", ".join(active_buildings) if active_buildings else "All",
+                "floors":    ", ".join(active_floors) if floors_filtered else "All",
+            }
+            with st.spinner("보고서 생성 중…" if lang_code == "ko" else "Building PDF report…"):
+                report_bytes = generate_report_pdf(
+                    cur_df, present, tail,
+                    context=report_context, lang=lang_code,
+                )
+            bldg_tag_rpt = "all" if "All" in selected_buildings else "_".join(selected_buildings)
+            st.download_button(
+                label="PDF 다운로드" if lang_code == "ko" else "Download PDF Report",
+                data=report_bytes,
+                file_name=f"utility_report_{bldg_tag_rpt}_{date.today()}.pdf",
+                mime="application/pdf",
+                key="dl_report",
+            )
 
     tab_change, tab_pct, tab_overlap, tab_ranking, tab_corr = st.tabs([
         "Quantitative Change", "Percentage Change", "Quadrant Analysis", "Brand Ranking", "Correlation"
