@@ -336,6 +336,7 @@ def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     # ── Step 1: slice rows from table_start, columns M–DG (indices 12–110) ────
     # The header rows are at the top of this slice; data rows follow below.
     raw_orig = full.iloc[table_start:, 12:111].reset_index(drop=True)
+    raw_orig.columns = range(len(raw_orig.columns))   # normalise to 0-based so col_to_ym keys match
     del full
 
     # ── Parse year-month headers from the sliced columns ──────────────────────
