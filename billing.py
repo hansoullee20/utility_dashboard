@@ -170,8 +170,9 @@ def render_billing_view(df: pd.DataFrame) -> None:
         return
 
     # ── Tabs ──
-    tab_rank, tab_hist, tab_bldg = st.tabs([
+    tab_rank, tab_hist, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
         "Billing Ranking", "Histogram", "Building Summary",
+        "Composition", "공용/전용 Ratio", "Per m²",
     ])
 
     with tab_rank:
@@ -180,6 +181,12 @@ def render_billing_view(df: pd.DataFrame) -> None:
         _histogram_tab(bldg_df)  # passes unfiltered-by-공실 so tab can control it
     with tab_bldg:
         _building_tab(fdf)
+    with tab_comp:
+        _composition_tab(fdf)
+    with tab_ratio:
+        _ratio_tab(fdf)
+    with tab_perm2:
+        _per_m2_tab(fdf)
 
 
 # ─── Tab renderers ────────────────────────────────────────────────────────────
@@ -432,3 +439,346 @@ def _building_tab(df: pd.DataFrame) -> None:
     st.markdown("**Building totals**")
     st.dataframe(st_safe(agg), hide_index=True, use_container_width=True)
     download_df_as_excel(agg, filename="billing_building_summary.xlsx", sheet_name="building")
+
+
+# ─── Composition tab ──────────────────────────────────────────────────────────
+
+_COMP_COLS = [
+    ("water_total", "상하수도", _WATER_COLOR),
+    ("elect_total", "전기요금", _ELECT_COLOR),
+    ("heat_total",  "열요금",   _HEAT_COLOR),
+]
+
+
+def _composition_tab(df: pd.DataFrame) -> None:
+    """Show each brand's cost split by utility (absolute stacked bar + % table)."""
+    st.subheader("Cost Composition by Brand")
+
+    present = [(c, lbl, clr) for c, lbl, clr in _COMP_COLS if c in df.columns]
+    if not present:
+        st.warning("No utility cost columns found.")
+        return
+
+    seg_cols = [c for c, _, _ in present]
+
+    mode = st.radio("Chart mode", ["100% stacked (share)", "Absolute (만원)"],
+                    horizontal=True, key="comp_mode")
+
+    _n = len(df)
+    top_n = st.slider("Show top N brands", min(10, _n), _n, min(40, _n), key="comp_n") if _n > 1 else _n
+
+    sort_col = next((c for c in ["total"] + seg_cols if c in df.columns), seg_cols[0])
+    plot_df = df.sort_values(sort_col, ascending=False).head(top_n).iloc[::-1].copy()
+
+    if mode.startswith("100%"):
+        row_sums = plot_df[seg_cols].fillna(0).sum(axis=1).replace(0, float("nan"))
+        for c in seg_cols:
+            plot_df[f"_{c}_pct"] = (plot_df[c].fillna(0) / row_sums * 100).round(1)
+        x_col   = lambda c: f"_{c}_pct"
+        x_title = "% of total bill"
+        x_range = [0, 100]
+        htmpl   = lambda lbl: f"<b>%{{y}}</b><br>{lbl}: %{{x:.1f}}%<extra></extra>"
+    else:
+        x_col   = lambda c: c
+        x_title = "만원"
+        x_range = None
+        htmpl   = lambda lbl: f"<b>%{{y}}</b><br>{lbl}: %{{x:,.0f}} 만원<extra></extra>"
+
+    fig = go.Figure()
+    for col, label, color in present:
+        fig.add_trace(go.Bar(
+            y=plot_df["brand"],
+            x=plot_df[x_col(col)].fillna(0),
+            name=label,
+            orientation="h",
+            marker_color=color,
+            marker_line_color="white",
+            marker_line_width=0.5,
+            hovertemplate=htmpl(label),
+        ))
+
+    max_label_len = plot_df["brand"].astype(str).str.len().max() if len(plot_df) else 20
+    left_margin = min(max(max_label_len * 7, 120), 320)
+    fig.update_layout(
+        **_BASE_LAYOUT,
+        barmode="stack",
+        title=dict(text=f"<b>Utility Cost Composition — Top {top_n}</b>",
+                   font=dict(size=13, color="#222222"), x=0),
+        height=max(420, top_n * 22 + 100),
+        xaxis=dict(
+            title=x_title,
+            showgrid=True, gridcolor=_GRID, griddash="dot",
+            zeroline=False, tickfont=dict(size=10, color="#555555"),
+            **( {"range": x_range} if x_range else {} ),
+        ),
+        yaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=10, color="#555555"),
+                   automargin=True),
+        legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom",
+                    font=dict(size=11, color="#333333")),
+        margin=dict(l=left_margin, r=20, t=70, b=40),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Composition table
+    tbl = df.sort_values(sort_col, ascending=False).copy()
+    row_sums_all = tbl[seg_cols].fillna(0).sum(axis=1).replace(0, float("nan"))
+    for col, lbl, _ in present:
+        tbl[f"{col}_pct"] = (tbl[col].fillna(0) / row_sums_all * 100).round(1)
+
+    pct_cols = [f"{c}_pct" for c, _, _ in present]
+    show_cols = ["brand", "building", "floor"] + seg_cols + pct_cols + (["total"] if "total" in tbl.columns else [])
+    show_cols = [c for c in show_cols if c in tbl.columns]
+    out = add_display_index(tbl[show_cols].copy())
+    st.markdown(f"**{len(out)} brands** — sorted by total cost (high → low)")
+    st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
+                 height=min(35 * len(out) + 38, 700))
+    download_df_as_excel(out, filename="billing_composition.xlsx", sheet_name="composition")
+
+
+# ─── 공용/전용 Ratio tab ──────────────────────────────────────────────────────
+
+_RATIO_PAIRS = [
+    ("water_comm",    "water_excl",   "water_total",  "상하수도",  "#89AAD4", _WATER_COLOR),
+    ("elect_comm",    "elect_excl",   "elect_total",  "전기요금",  "#EDB96A", _ELECT_COLOR),
+    ("hvac_comm",     "hvac_excl",    "heat_total",   "냉난방",    "#E08080", _HEAT_COLOR),
+    ("hotwater_comm", "hotwater_excl","heat_total",   "급탕",      "#C47C7C", "#8B3A3A"),
+    ("total_comm",    "total_excl",   "total",        "총 합계",   "#B0A8F0", _TOTAL_COLOR),
+]
+
+
+def _ratio_tab(df: pd.DataFrame) -> None:
+    """공용 vs 전용 ratio analysis — flag brands with disproportionate common charges."""
+    st.subheader("공용 / 전용 Cost Ratio")
+    st.caption("Brands where 공용 (common area) charges represent an unusually large share of their bill.")
+
+    # Only show utilities where both comm and excl columns exist
+    available = [(comm, excl, tot, lbl, c_comm, c_excl)
+                 for comm, excl, tot, lbl, c_comm, c_excl in _RATIO_PAIRS
+                 if comm in df.columns and excl in df.columns]
+    if not available:
+        st.warning("No 공용/전용 columns found.")
+        return
+
+    util_labels = [lbl for _, _, _, lbl, _, _ in available]
+    sel = st.radio("Utility", util_labels, horizontal=True, key="ratio_util")
+    comm, excl, tot_col, lbl, c_comm, c_excl = next(r for r in available if r[3] == sel)
+
+    wdf = df.copy()
+    denom = wdf[comm].fillna(0) + wdf[excl].fillna(0)
+    wdf["comm_ratio"] = (wdf[comm].fillna(0) / denom.replace(0, float("nan")) * 100).round(1)
+    wdf["excl_ratio"] = (100 - wdf["comm_ratio"]).round(1)
+
+    # Outlier threshold: p75 + 1.5 * IQR (upper fence)
+    ratios = wdf["comm_ratio"].dropna()
+    q25, q75 = ratios.quantile(0.25), ratios.quantile(0.75)
+    iqr = q75 - q25
+    upper_fence = min(q75 + 1.5 * iqr, 100.0)
+    median_ratio = ratios.median()
+
+    _n = len(wdf)
+    top_n = st.slider("Show top N brands", min(10, _n), _n, min(40, _n), key="ratio_n") if _n > 1 else _n
+    sort_col_r = tot_col if tot_col in wdf.columns else comm
+    plot_df = wdf.sort_values(sort_col_r, ascending=False).head(top_n).copy()
+    plot_df = plot_df.sort_values("comm_ratio", ascending=True)  # sort by ratio for chart
+
+    colors = ["#C44E52" if r >= upper_fence else c_comm
+              for r in plot_df["comm_ratio"].fillna(0)]
+
+    fig = go.Figure(go.Bar(
+        y=plot_df["brand"],
+        x=plot_df["comm_ratio"].fillna(0),
+        orientation="h",
+        marker_color=colors,
+        marker_line_color="white",
+        marker_line_width=0.5,
+        text=[f"{v:.1f}%" for v in plot_df["comm_ratio"].fillna(0)],
+        textposition="outside",
+        textfont=dict(size=9, color="#666666"),
+        hovertemplate="<b>%{y}</b><br>공용 ratio: %{x:.1f}%<extra></extra>",
+        name="공용 비율",
+    ))
+
+    fig.add_vline(x=float(median_ratio), line_dash="dot", line_color=_HEAT_COLOR,
+                  line_width=1.5, annotation_text=f"Median {median_ratio:.1f}%",
+                  annotation_position="top right",
+                  annotation_font=dict(size=10, color=_HEAT_COLOR))
+    fig.add_vline(x=float(upper_fence), line_dash="dash", line_color="#C44E52",
+                  line_width=1.5, annotation_text=f"Outlier fence {upper_fence:.1f}%",
+                  annotation_position="top left",
+                  annotation_font=dict(size=10, color="#C44E52"))
+
+    max_label_len = plot_df["brand"].astype(str).str.len().max() if len(plot_df) else 20
+    left_margin = min(max(max_label_len * 7, 120), 320)
+    fig.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(text=f"<b>{lbl} — 공용 비율 (%) · red = outlier ≥ {upper_fence:.1f}%</b>",
+                   font=dict(size=13, color="#222222"), x=0),
+        height=max(420, top_n * 22 + 100),
+        xaxis=dict(title="공용 비율 (%)", range=[0, 105],
+                   showgrid=True, gridcolor=_GRID, griddash="dot",
+                   zeroline=False, tickfont=dict(size=10, color="#555555")),
+        yaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=10, color="#555555"),
+                   automargin=True),
+        showlegend=False,
+        margin=dict(l=left_margin, r=60, t=60, b=40),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Summary stats
+    n_outliers = int((wdf["comm_ratio"] >= upper_fence).sum())
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Brands analyzed", len(wdf.dropna(subset=["comm_ratio"])))
+    c2.metric("Median 공용 ratio", f"{median_ratio:.1f}%")
+    c3.metric("Outlier fence", f"{upper_fence:.1f}%")
+    c4.metric("Outlier brands", n_outliers)
+
+    # Table: all brands with flag
+    tbl = wdf.sort_values("comm_ratio", ascending=False).copy()
+    tbl["outlier"] = tbl["comm_ratio"] >= upper_fence
+    show_cols = ["brand", "building", "floor", comm, excl, "comm_ratio", "outlier"]
+    if tot_col in tbl.columns:
+        show_cols.insert(4, tot_col)
+    show_cols = [c for c in show_cols if c in tbl.columns]
+    out = add_display_index(tbl[show_cols].copy())
+    st.markdown(f"**{n_outliers} outlier brand(s)** with 공용 ratio ≥ {upper_fence:.1f}%")
+    st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
+                 height=min(35 * len(out) + 38, 700))
+    download_df_as_excel(out, filename=f"billing_ratio_{lbl}.xlsx", sheet_name="ratio")
+
+
+# ─── Per m² tab ───────────────────────────────────────────────────────────────
+
+_PERM2_COLS = [
+    ("total",       "총 합계",  _TOTAL_COLOR),
+    ("water_total", "상하수도", _WATER_COLOR),
+    ("elect_total", "전기요금", _ELECT_COLOR),
+    ("heat_total",  "열요금",   _HEAT_COLOR),
+]
+
+
+def _per_m2_tab(df: pd.DataFrame) -> None:
+    """Cost per m² — normalise billing by floor area for fair cross-tenant comparison."""
+    st.subheader("Cost per m² (평당 요금 분석)")
+    st.caption("단위: 만원/m² · Normalises cost by tenant floor area for fair comparison.")
+
+    if "size_m2" not in df.columns:
+        st.warning("size_m2 column not found — cannot compute per-m² metrics.")
+        return
+
+    wdf = df[df["size_m2"].notna() & (df["size_m2"] > 0)].copy()
+    if wdf.empty:
+        st.warning("No rows with valid size_m2 found.")
+        return
+
+    present_perm2 = [(c, lbl, clr) for c, lbl, clr in _PERM2_COLS if c in wdf.columns]
+    if not present_perm2:
+        st.warning("No cost columns found.")
+        return
+
+    # Compute per-m² columns
+    for col, _, _ in present_perm2:
+        wdf[f"{col}_pm2"] = (wdf[col].fillna(0) / wdf["size_m2"]).round(4)
+
+    util_labels = [lbl for _, lbl, _ in present_perm2]
+    sel = st.radio("Utility", util_labels, horizontal=True, key="perm2_util")
+    col, lbl, clr = next(r for r in present_perm2 if r[1] == sel)
+    pm2_col = f"{col}_pm2"
+
+    _n = len(wdf)
+    top_n = st.slider("Show top N brands", min(10, _n), _n, min(40, _n), key="perm2_n") if _n > 1 else _n
+
+    sort_df = wdf.sort_values(pm2_col, ascending=False)
+    plot_df = sort_df.head(top_n).iloc[::-1].copy()
+
+    # Outlier fences
+    vals = wdf[pm2_col].dropna()
+    q25, q75 = vals.quantile(0.25), vals.quantile(0.75)
+    iqr = q75 - q25
+    upper_fence = q75 + 1.5 * iqr
+    lower_fence = max(q25 - 1.5 * iqr, 0.0)
+    median_pm2 = vals.median()
+    mean_pm2   = vals.mean()
+
+    def _bar_color(v):
+        if v >= upper_fence:
+            return "#C44E52"   # red — abnormally high
+        if 0 < lower_fence and v <= lower_fence:
+            return "#55A868"   # green — abnormally low (unusually cheap)
+        return clr
+
+    bar_colors = [_bar_color(v) for v in plot_df[pm2_col].fillna(0)]
+
+    fig = go.Figure(go.Bar(
+        y=plot_df["brand"],
+        x=plot_df[pm2_col].fillna(0),
+        orientation="h",
+        marker_color=bar_colors,
+        marker_line_color="white",
+        marker_line_width=0.5,
+        text=[f"{v:.4f}" for v in plot_df[pm2_col].fillna(0)],
+        textposition="outside",
+        textfont=dict(size=9, color="#666666"),
+        customdata=plot_df[["size_m2", col]].fillna(0).values,
+        hovertemplate=(
+            "<b>%{y}</b><br>"
+            f"{lbl}/m²: %{{x:.4f}} 만원/m²<br>"
+            "Floor area: %{customdata[0]:,.1f} m²<br>"
+            f"{lbl}: %{{customdata[1]:,.0f}} 만원<extra></extra>"
+        ),
+        name=f"{lbl}/m²",
+    ))
+
+    fig.add_vline(x=float(median_pm2), line_dash="dot", line_color=_HEAT_COLOR,
+                  line_width=1.5, annotation_text=f"Median {median_pm2:.4f}",
+                  annotation_position="top right",
+                  annotation_font=dict(size=10, color=_HEAT_COLOR))
+    fig.add_vline(x=float(upper_fence), line_dash="dash", line_color="#C44E52",
+                  line_width=1.5, annotation_text=f"High fence {upper_fence:.4f}",
+                  annotation_position="top left",
+                  annotation_font=dict(size=10, color="#C44E52"))
+    if lower_fence > 0:
+        fig.add_vline(x=float(lower_fence), line_dash="dash", line_color="#55A868",
+                      line_width=1.5, annotation_text=f"Low fence {lower_fence:.4f}",
+                      annotation_position="bottom right",
+                      annotation_font=dict(size=10, color="#55A868"))
+
+    max_label_len = plot_df["brand"].astype(str).str.len().max() if len(plot_df) else 20
+    left_margin = min(max(max_label_len * 7, 120), 320)
+    fig.update_layout(
+        **_BASE_LAYOUT,
+        title=dict(
+            text=f"<b>{lbl} per m² · red = high outlier · green = low outlier</b>",
+            font=dict(size=13, color="#222222"), x=0,
+        ),
+        height=max(420, top_n * 22 + 100),
+        xaxis=dict(title="만원 / m²", showgrid=True, gridcolor=_GRID, griddash="dot",
+                   zeroline=False, tickfont=dict(size=10, color="#555555")),
+        yaxis=dict(showgrid=False, zeroline=False, tickfont=dict(size=10, color="#555555"),
+                   automargin=True),
+        showlegend=False,
+        margin=dict(l=left_margin, r=60, t=60, b=40),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Summary metrics
+    n_high = int((wdf[pm2_col] >= upper_fence).sum())
+    n_low  = int((lower_fence > 0) and (wdf[pm2_col] <= lower_fence).sum())
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Brands (with size)", len(vals))
+    c2.metric("Median (만원/m²)", f"{median_pm2:.4f}")
+    c3.metric("Mean (만원/m²)",   f"{mean_pm2:.4f}")
+    c4.metric("High outliers",    n_high)
+    c5.metric("Low outliers",     n_low)
+
+    # Full ranked table with per-m² column + flag
+    tbl = wdf.sort_values(pm2_col, ascending=False).copy()
+    tbl["high_outlier"] = tbl[pm2_col] >= upper_fence
+    tbl["low_outlier"]  = (lower_fence > 0) & (tbl[pm2_col] <= lower_fence)
+    show_cols = ["brand", "building", "floor", "size_m2", col, pm2_col,
+                 "high_outlier", "low_outlier"]
+    show_cols = [c for c in show_cols if c in tbl.columns]
+    out = add_display_index(tbl[show_cols].copy())
+    st.markdown(f"**{len(out)} brands** with floor area — sorted by {lbl}/m² (high → low)")
+    st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
+                 height=min(35 * len(out) + 38, 700))
+    download_df_as_excel(out, filename=f"billing_per_m2_{lbl}.xlsx", sheet_name="per_m2")
