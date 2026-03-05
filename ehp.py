@@ -318,6 +318,37 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                         total_val = _ts[metric_sel].sum(min_count=1)
                         st.metric(f"합계 {val_col_label}", f"{total_val:,.0f} {y_unit}" if pd.notna(total_val) else "N/A")
 
+                        if metric_sel == "매장별 가동시간":
+                            import numpy as _np
+                            _vals = _ts[metric_sel].dropna()
+                            if not _vals.empty:
+                                _counts, _edges = _np.histogram(_vals, bins="auto")
+                                _centers = [(_edges[i] + _edges[i+1]) / 2 for i in range(len(_counts))]
+                                _median = float(_vals.median())
+                                _hfig = go.Figure(go.Bar(
+                                    x=_centers, y=_counts,
+                                    width=[_edges[i+1] - _edges[i] for i in range(len(_counts))],
+                                    marker_color="#4C72B0",
+                                    marker_line_color="white", marker_line_width=1,
+                                    text=_counts, textposition="outside", cliponaxis=False,
+                                    hovertemplate="<b>%{x:,.0f} hr</b>: %{y} 건<extra></extra>",
+                                ))
+                                _hfig.add_vline(x=_median, line_dash="dash", line_color="#C44E52", line_width=2,
+                                                annotation_text=f"중앙값 {_median:,.0f} hr",
+                                                annotation_position="top right",
+                                                annotation=dict(font=dict(color="#C44E52", size=11),
+                                                                bgcolor="white", bordercolor="#C44E52", borderwidth=1))
+                                _hfig.update_layout(
+                                    **_BASE_LAYOUT,
+                                    title=dict(text="<b>매장별 가동시간 분포</b>", font=dict(size=14, color="#111111"), x=0),
+                                    height=380,
+                                    xaxis=dict(title=dict(text="hr", font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=False, zeroline=False),
+                                    yaxis=dict(title=dict(text="건수", font=dict(color="#111111")), tickfont=dict(color="#111111"), showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot", zeroline=False),
+                                    margin=dict(l=60, r=20, t=70, b=50),
+                                    showlegend=False,
+                                )
+                                st.plotly_chart(_hfig, use_container_width=True)
+
                         if sel_jangbi != "전체" and "상호" in _ts.columns:
                             grouped = _ts.groupby("상호")[metric_sel].sum().reset_index()
                             grouped.columns = ["상호", val_col_label]
