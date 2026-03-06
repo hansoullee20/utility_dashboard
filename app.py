@@ -217,12 +217,16 @@ def main():
             )
             st.dataframe(pd.DataFrame(backward_rows), hide_index=True, use_container_width=True)
 
-    # ---------------- Building & Floor filters ----------------
+    # ---------------- Filters ─────────────────────────────────────────────────
     all_buildings = sorted(df["building"].dropna().unique().tolist())
     all_floors = get_simple_floors(df)
 
     building_options = ["All"] + all_buildings
     floor_options    = ["All"] + all_floors
+
+    allowed = ["water", "hwater", "elect", "heat"]
+    present_all = [p for p in allowed if f"{p}_change" in df.columns]
+    has_gongshil_any = df["brand"].astype(str).str.contains("공실", na=False).any()
 
     def on_building_change():
         sel = st.session_state["building_select"]
@@ -242,7 +246,7 @@ def main():
         elif "All" in sel:
             st.session_state["floor_select"] = [s for s in sel if s != "All"]
 
-    fc1, fc2 = st.columns(2)
+    fc1, fc2, fc3, fc4 = st.columns([2, 2, 1, 2])
     with fc1:
         selected_buildings = st.multiselect(
             "Building", building_options, default=["All"],
@@ -252,6 +256,15 @@ def main():
         selected_floors = st.multiselect(
             "Floor", floor_options, default=["All"],
             key="floor_select", on_change=on_floor_change,
+        )
+    with fc3:
+        prefix = st.selectbox("Category", present_all)
+    with fc4:
+        gongshil_mode = st.radio(
+            "공실", ["All", "Exclude 공실", "공실 only"],
+            index=0, horizontal=True,
+            disabled=not has_gongshil_any,
+            key="gongshil_mode_radio",
         )
 
     active_buildings = all_buildings if "All" in selected_buildings else selected_buildings
@@ -301,11 +314,8 @@ def main():
         st.write("active_floors:", active_floors)
         st.write("ref_df floors (unique):", sorted(ref_df["floor"].dropna().unique().tolist()) if "floor" in ref_df.columns else "no floor col")
         st.dataframe(st_safe(cur_df.head(20)), width="stretch", hide_index=True)
-        
 
-    # ---------------- 공실 filter (logic; widget rendered just above tabs) ----------------
-    has_gongshil = cur_df["brand"].astype(str).str.contains("공실", na=False).any()
-    gongshil_mode = st.session_state.get("gongshil_mode_radio", "All")
+    # ---------------- Apply 공실 filter ----------------
     if gongshil_mode == "공실 only":
         cur_df = cur_df[cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
         if cur_df.empty:
@@ -317,16 +327,16 @@ def main():
             st.warning("No entries remaining after excluding 공실.")
             st.stop()
 
-    # ---------------- Category selection ----------------
-    allowed = ["water", "hwater", "elect", "heat"]
-    present = [p for p in allowed if f"{p}_change" in cur_df.columns]
+    # ---------------- Category column setup ----------------
+    change_col, pct_col = f"{prefix}_change", f"{prefix}_pct"
 
+    present = [p for p in allowed if f"{p}_change" in cur_df.columns]
     if not present:
         st.error("No utility categories found.")
         st.stop()
-
-    prefix = st.selectbox("Category", present)
-    change_col, pct_col = f"{prefix}_change", f"{prefix}_pct"
+    if change_col not in cur_df.columns or pct_col not in cur_df.columns:
+        st.error(f"Category '{prefix}' not available for the current filter.")
+        st.stop()
 
     cur_df[change_col] = to_numeric_series(cur_df[change_col])
     cur_df[pct_col] = to_numeric_series(cur_df[pct_col])
@@ -419,128 +429,7 @@ def main():
     _k5.metric("🏚 공실 / ⚠ Data", f"{_n_vacancy} / {_n_backward}")
     st.divider()
 
-    # ---------------- Histograms (always visible) ----------------
-    def render_stats(stats: dict):
-        stats_row = pd.DataFrame([{
-            "n":      stats["n"],
-            "min":    round(stats["min"],    4),
-            "p20":    round(stats["p20"],    4),
-            "median": round(stats["median"], 4),
-            "mean":   round(stats["mean"],   4),
-            "std":    round(stats["std"],    4),
-            "p80":    round(stats["p80"],    4),
-            "max":    round(stats["max"],    4),
-        }])
-        st.dataframe(stats_row, hide_index=True, width="stretch")
-
-    hist_view = st.radio(
-        "Histogram", ["Quantitative Change", "Percentage Change"],
-        horizontal=True, key="hist_view",
-    )
-
-    if hist_view == "Quantitative Change":
-        plot_hist_with_tails(
-            s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}",
-            source_df=cur_df, val_col=change_col, key="hist_change",
-            display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
-            tail_pct=tail,
-        )
-    else:
-        plot_hist_with_tails(
-            s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}",
-            source_df=cur_df, val_col=pct_col, key="hist_pct",
-            display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
-            tail_pct=tail,
-        )
-
-    st.radio(
-        "공실 filter", ["All", "Exclude 공실", "공실 only"],
-        index=0, horizontal=True,
-        disabled=not has_gongshil,
-        key="gongshil_mode_radio",
-    )
-
-    # ---------------- Billing ↔ Meter reconciliation ----------------
-    _sheet_names = get_sheet_names(file_name, file_map[file_name])
-    if BILLING_SHEET_NAME in _sheet_names:
-        with st.expander("Billing ↔ Meter Reconciliation", expanded=False):
-            st.caption(
-                "Compares the billing sheet (수도광열비 부과 내역) against meter readings. "
-                "Flags tenants present in one source but missing in the other."
-            )
-            try:
-                _bill_df = read_billing_sheet(file_name, file_map[file_name], BILLING_SHEET_NAME)
-                _bill_key = (
-                    _bill_df[["brand", "building"]]
-                    .dropna(subset=["brand"])
-                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
-                            building=lambda d: d["building"].astype(str).str.strip())
-                    .drop_duplicates()
-                )
-                _meter_key = (
-                    cur_df[["brand", "building"]]
-                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
-                            building=lambda d: d["building"].astype(str).str.strip())
-                    .drop_duplicates()
-                )
-                _bill_set  = set(zip(_bill_key["brand"],  _bill_key["building"]))
-                _meter_set = set(zip(_meter_key["brand"], _meter_key["building"]))
-
-                _billed_not_metered = sorted(_bill_set  - _meter_set)
-                _metered_not_billed = sorted(_meter_set - _bill_set)
-
-                _rc1, _rc2 = st.columns(2)
-                with _rc1:
-                    st.markdown(f"**Billed but no meter reading** — {len(_billed_not_metered)}")
-                    if _billed_not_metered:
-                        st.dataframe(
-                            pd.DataFrame(_billed_not_metered, columns=["Brand", "Building"]),
-                            hide_index=True, use_container_width=True,
-                        )
-                    else:
-                        st.success("All billed tenants have meter readings.")
-                with _rc2:
-                    st.markdown(f"**Metered but not billed** — {len(_metered_not_billed)}")
-                    if _metered_not_billed:
-                        st.dataframe(
-                            pd.DataFrame(_metered_not_billed, columns=["Brand", "Building"]),
-                            hide_index=True, use_container_width=True,
-                        )
-                    else:
-                        st.success("All metered tenants appear on the billing sheet.")
-
-                # Shared tenants: compare billed total vs any zero-usage flag
-                _shared = _bill_set & _meter_set
-                _zero_billed = []
-                for _br, _bl in sorted(_shared):
-                    _brow = _bill_df[
-                        (_bill_df["brand"].astype(str).str.strip() == _br) &
-                        (_bill_df["building"].astype(str).str.strip() == _bl)
-                    ]
-                    _mrow = cur_df[
-                        (cur_df["brand"].astype(str).str.strip() == _br) &
-                        (cur_df["building"].astype(str).str.strip() == _bl)
-                    ]
-                    if _brow.empty or _mrow.empty:
-                        continue
-                    _total = to_numeric_series(_brow["total"].iloc[[0]]).iloc[0] if "total" in _brow.columns else float("nan")
-                    _has_usage = any(
-                        not pd.isna(to_numeric_series(_mrow[f"{_px}_current"]).iloc[0])
-                        and to_numeric_series(_mrow[f"{_px}_current"]).iloc[0] > 0
-                        for _px in present
-                        if f"{_px}_current" in _mrow.columns
-                    )
-                    if not pd.isna(_total) and _total > 0 and not _has_usage:
-                        _zero_billed.append({"Brand": _br, "Building": _bl, "Billed Total (₩)": f"{int(_total):,}"})
-
-                if _zero_billed:
-                    st.markdown(f"**Billed non-zero but zero meter usage** — {len(_zero_billed)}")
-                    st.dataframe(pd.DataFrame(_zero_billed), hide_index=True, use_container_width=True)
-
-            except Exception as _e:
-                st.warning(f"Reconciliation failed: {_e}")
-
-    # ---------------- Summary Report download ----------------
+    # ---------------- Summary Report download ─────────────────────────────────
     with st.expander("Download Summary Report", expanded=False):
         st.caption(
             "Generates a business-ready PDF report covering all utility types — "
@@ -574,6 +463,45 @@ def main():
                 mime="application/pdf",
                 key="dl_report",
             )
+
+    # ---------------- Histograms ─────────────────────────────────────────────
+    hist_layout = st.radio(
+        "Histogram view",
+        ["Side by Side", "Change only", "% Change only"],
+        horizontal=True,
+        key="hist_layout",
+    )
+
+    if hist_layout == "Side by Side":
+        hc1, hc2 = st.columns(2)
+        with hc1:
+            plot_hist_with_tails(
+                s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}",
+                source_df=cur_df, val_col=change_col, key="hist_change",
+                display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
+                tail_pct=tail,
+            )
+        with hc2:
+            plot_hist_with_tails(
+                s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}",
+                source_df=cur_df, val_col=pct_col, key="hist_pct",
+                display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
+                tail_pct=tail,
+            )
+    elif hist_layout == "Change only":
+        plot_hist_with_tails(
+            s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}",
+            source_df=cur_df, val_col=change_col, key="hist_change",
+            display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
+            tail_pct=tail,
+        )
+    else:
+        plot_hist_with_tails(
+            s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}",
+            source_df=cur_df, val_col=pct_col, key="hist_pct",
+            display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
+            tail_pct=tail,
+        )
 
     tab_change, tab_pct, tab_overlap, tab_ranking, tab_corr = st.tabs([
         "Quantitative Change", "Percentage Change", "Quadrant Analysis", "Brand Ranking", "Correlation"
@@ -1215,6 +1143,87 @@ The model explains **{r2*100:.1f}%** of the variance in {y_col}. The relationshi
 
 For every 1-unit increase in {x_col}, {y_col} changes by **{slope:.4f}** on average.
 """)
+
+    # ---------------- Billing ↔ Meter reconciliation ─────────────────────────
+    _sheet_names = get_sheet_names(file_name, file_map[file_name])
+    if BILLING_SHEET_NAME in _sheet_names:
+        with st.expander("Billing ↔ Meter Reconciliation", expanded=False):
+            st.caption(
+                "Compares the billing sheet (수도광열비 부과 내역) against meter readings. "
+                "Flags tenants present in one source but missing in the other."
+            )
+            try:
+                _bill_df = read_billing_sheet(file_name, file_map[file_name], BILLING_SHEET_NAME)
+                _bill_key = (
+                    _bill_df[["brand", "building"]]
+                    .dropna(subset=["brand"])
+                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
+                            building=lambda d: d["building"].astype(str).str.strip())
+                    .drop_duplicates()
+                )
+                _meter_key = (
+                    cur_df[["brand", "building"]]
+                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
+                            building=lambda d: d["building"].astype(str).str.strip())
+                    .drop_duplicates()
+                )
+                _bill_set  = set(zip(_bill_key["brand"],  _bill_key["building"]))
+                _meter_set = set(zip(_meter_key["brand"], _meter_key["building"]))
+
+                _billed_not_metered = sorted(_bill_set  - _meter_set)
+                _metered_not_billed = sorted(_meter_set - _bill_set)
+
+                _rc1, _rc2 = st.columns(2)
+                with _rc1:
+                    st.markdown(f"**Billed but no meter reading** — {len(_billed_not_metered)}")
+                    if _billed_not_metered:
+                        st.dataframe(
+                            pd.DataFrame(_billed_not_metered, columns=["Brand", "Building"]),
+                            hide_index=True, use_container_width=True,
+                        )
+                    else:
+                        st.success("All billed tenants have meter readings.")
+                with _rc2:
+                    st.markdown(f"**Metered but not billed** — {len(_metered_not_billed)}")
+                    if _metered_not_billed:
+                        st.dataframe(
+                            pd.DataFrame(_metered_not_billed, columns=["Brand", "Building"]),
+                            hide_index=True, use_container_width=True,
+                        )
+                    else:
+                        st.success("All metered tenants appear on the billing sheet.")
+
+                # Shared tenants: compare billed total vs any zero-usage flag
+                _shared = _bill_set & _meter_set
+                _zero_billed = []
+                for _br, _bl in sorted(_shared):
+                    _brow = _bill_df[
+                        (_bill_df["brand"].astype(str).str.strip() == _br) &
+                        (_bill_df["building"].astype(str).str.strip() == _bl)
+                    ]
+                    _mrow = cur_df[
+                        (cur_df["brand"].astype(str).str.strip() == _br) &
+                        (cur_df["building"].astype(str).str.strip() == _bl)
+                    ]
+                    if _brow.empty or _mrow.empty:
+                        continue
+                    _total = to_numeric_series(_brow["total"].iloc[[0]]).iloc[0] if "total" in _brow.columns else float("nan")
+                    _has_usage = any(
+                        not pd.isna(to_numeric_series(_mrow[f"{_px}_current"]).iloc[0])
+                        and to_numeric_series(_mrow[f"{_px}_current"]).iloc[0] > 0
+                        for _px in present
+                        if f"{_px}_current" in _mrow.columns
+                    )
+                    if not pd.isna(_total) and _total > 0 and not _has_usage:
+                        _zero_billed.append({"Brand": _br, "Building": _bl, "Billed Total (₩)": f"{int(_total):,}"})
+
+                if _zero_billed:
+                    st.markdown(f"**Billed non-zero but zero meter usage** — {len(_zero_billed)}")
+                    st.dataframe(pd.DataFrame(_zero_billed), hide_index=True, use_container_width=True)
+
+            except Exception as _e:
+                st.warning(f"Reconciliation failed: {_e}")
+
 
 if __name__ == "__main__":
     try:

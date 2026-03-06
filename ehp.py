@@ -1,4 +1,6 @@
 import re
+from datetime import date
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -392,6 +394,26 @@ def _render_oac(name: str, data: bytes, sheet: str) -> None:
 
     usage = compute_monthly_usage(raw_slice)
 
+    with st.expander("Download Report (PDF)", expanded=False):
+        st.caption("OAC 사용량 분석 결과를 업무용 PDF로 생성합니다.")
+        lang_oac = st.radio("Language", ["한국어 (ko)", "English (en)"],
+                            horizontal=True, key="ehp_oac_report_lang")
+        if st.button("Generate PDF Report", key="ehp_oac_gen_report"):
+            from ehp_report import generate_ehp_oac_pdf
+            with st.spinner("Generating PDF…"):
+                pdf_bytes = generate_ehp_oac_pdf(
+                    pivot, usage,
+                    context={"date": date.today(), "sheet_name": sheet},
+                    lang="ko" if lang_oac.startswith("한") else "en",
+                )
+            st.download_button(
+                label="Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"ehp_oac_report_{date.today()}.pdf",
+                mime="application/pdf",
+                key="ehp_oac_dl_report",
+            )
+
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "Yearly Usage", "Year Comparison", "Month Comparison", "계량기별",
         "이상 탐지", "판넬별 추세",
@@ -713,6 +735,26 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                         st.info("상호 column not found in 전용 EHP data — cannot join with billing.")
                 except Exception as _be:
                     st.info(f"부과 내역 시트를 불러올 수 없습니다: {_be}")
+
+            with st.expander("Download Report (PDF)", expanded=False):
+                st.caption("전용 EHP 분석 결과를 업무용 PDF로 생성합니다.")
+                lang_ded = st.radio("Language", ["한국어 (ko)", "English (en)"],
+                                    horizontal=True, key="ehp_ded_report_lang")
+                if st.button("Generate PDF Report", key="ehp_ded_gen_report"):
+                    from ehp_report import generate_ehp_dedicated_pdf
+                    with st.spinner("Generating PDF…"):
+                        _pdf_bytes = generate_ehp_dedicated_pdf(
+                            _sliced, _col0,
+                            context={"date": date.today()},
+                            lang="ko" if lang_ded.startswith("한") else "en",
+                        )
+                    st.download_button(
+                        label="Download PDF Report",
+                        data=_pdf_bytes,
+                        file_name=f"ehp_dedicated_report_{date.today()}.pdf",
+                        mime="application/pdf",
+                        key="ehp_ded_dl_report",
+                    )
 
             with st.expander("Raw data"):
                 st.dataframe(_sliced, use_container_width=True)

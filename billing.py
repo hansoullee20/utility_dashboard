@@ -1,3 +1,5 @@
+from datetime import date
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -168,6 +170,28 @@ def render_billing_view(df: pd.DataFrame) -> None:
     if fdf.empty:
         st.warning("No data for the selected filters.")
         return
+
+    # ── Report download ────────────────────────────────────────────────────────
+    with st.expander("Download Report (PDF)", expanded=False):
+        st.caption("현재 필터가 적용된 청구 데이터를 기반으로 업무용 PDF 보고서를 생성합니다.")
+        lang_billing = st.radio("Language", ["한국어 (ko)", "English (en)"],
+                                horizontal=True, key="billing_report_lang")
+        if st.button("Generate PDF Report", key="billing_gen_report"):
+            from billing_report import generate_billing_pdf
+            with st.spinner("Generating PDF…"):
+                pdf_bytes = generate_billing_pdf(
+                    fdf,
+                    context={"date": date.today(), "buildings": sel_bldg},
+                    lang="ko" if lang_billing.startswith("한") else "en",
+                )
+            bldg_tag = "all" if "All" in sel_bldg else "_".join(sel_bldg)
+            st.download_button(
+                label="Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"billing_report_{bldg_tag}_{date.today()}.pdf",
+                mime="application/pdf",
+                key="billing_dl_report",
+            )
 
     # ── Tabs ──
     tab_rank, tab_hist, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
