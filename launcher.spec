@@ -15,8 +15,6 @@ app_datas = [
     ('ehp.py',                    '.'),
     ('ehp_report.py',             '.'),
     ('report.py',                 '.'),
-    ('utility_report_pipeline.py','.'),
-    ('utils_plot.py',             '.'),
 ]
 
 a = Analysis(
