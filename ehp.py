@@ -76,14 +76,14 @@ def _tab_meter(usage: pd.DataFrame) -> None:
     pivot = rdf.pivot(index="month", columns="year", values="total")
     pivot.index = [f"{m}월" for m in pivot.index]
     pivot.columns.name = None
-    _tab_yearly(pivot)
+    _tab_yearly(pivot, key="ehp_yearly_meter")
     st.divider()
     _tab_month(pivot, key="ehp_month_sel_meter")
 
 
 # ─── Tab 1: Yearly Usage ──────────────────────────────────────────────────────
 
-def _tab_yearly(pivot: pd.DataFrame) -> None:
+def _tab_yearly(pivot: pd.DataFrame, key: str = "ehp_yearly") -> None:
     year_totals = pivot.sum(min_count=1)
     years  = [str(y) for y in year_totals.index]
     values = year_totals.values
@@ -104,7 +104,7 @@ def _tab_yearly(pivot: pd.DataFrame) -> None:
         margin=dict(l=60, r=20, t=70, b=50),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
     summary = pd.DataFrame({"Year": years, "Total kWh": [f"{v:,.0f}" for v in values]})
     st.dataframe(summary, hide_index=True, use_container_width=True)
@@ -148,7 +148,7 @@ def _tab_compare(pivot: pd.DataFrame) -> None:
         legend=dict(orientation="h", x=0, y=1.05, yanchor="bottom"),
         margin=dict(l=60, r=20, t=65, b=50),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="ehp_compare_chart")
 
     tbl = pd.DataFrame({
         "Month": months,
@@ -185,7 +185,7 @@ def _tab_month(pivot: pd.DataFrame, key: str = "ehp_month_sel") -> None:
         margin=dict(l=60, r=20, t=70, b=50),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"ehp_month_chart_{key}")
 
     tbl = pd.DataFrame({"Year": years, "kWh": [f"{v:,.0f}" if pd.notna(v) else "" for v in values]})
     st.dataframe(tbl, hide_index=True, use_container_width=True)
@@ -263,7 +263,7 @@ def _tab_anomaly(pivot: pd.DataFrame) -> None:
         yaxis=dict(title="Month", tickfont=dict(color="#111111"), autorange="reversed"),
         margin=dict(l=60, r=40, t=60, b=50),
     )
-    st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat, use_container_width=True, key="ehp_anomaly_heatmap")
 
     if records:
         anom_df = pd.DataFrame(records).sort_values(["Month", "Year"])
@@ -344,7 +344,7 @@ def _tab_panel_trend(name: str, data: bytes, sheet: str) -> None:
                     font=dict(size=10, color="#111111")),
         margin=dict(l=60, r=160, t=60, b=80),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="ehp_panel_trend_chart")
 
     # Table: yearly totals per selected panel
     yearly: dict = {}
@@ -535,7 +535,7 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                         _ts = _sliced.copy()
                         _ts[metric_sel] = pd.to_numeric(_ts[metric_sel], errors="coerce")
 
-                        def _bar_chart(grouped, x_labels, title, x_title, _vcl=val_col_label, _yu=y_unit):
+                        def _bar_chart(grouped, x_labels, title, x_title, _vcl=val_col_label, _yu=y_unit, _key=metric_sel):
                             grouped = grouped.sort_values(_vcl, ascending=False).reset_index(drop=True)
                             x_labels = grouped[grouped.columns[0]].tolist()
                             fig = go.Figure(go.Bar(
@@ -554,7 +554,7 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                                 margin=dict(l=60, r=20, t=70, b=80),
                                 showlegend=False,
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, use_container_width=True, key=f"ehp_ded_bar_{_key}")
                             st.dataframe(grouped, hide_index=True, use_container_width=True)
 
                         total_val = _ts[metric_sel].sum(min_count=1)
@@ -668,7 +668,7 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                                 font=dict(size=10, color="#333333")),
                     margin=dict(l=60, r=160, t=60, b=50),
                 )
-                st.plotly_chart(_sc_fig, use_container_width=True)
+                st.plotly_chart(_sc_fig, use_container_width=True, key="ehp_ded_scatter")
 
             # ── 전기요금 연계 (Billing cross-reference) ─────────────────────
             with st.expander("전기요금 연계 — EHP 사용량 vs 부과 요금"):
@@ -725,7 +725,7 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                                 showlegend=False,
                                 margin=dict(l=min(max(_max_lbl * 7, 120), 300), r=60, t=60, b=40),
                             )
-                            st.plotly_chart(_bc_fig, use_container_width=True)
+                            st.plotly_chart(_bc_fig, use_container_width=True, key="ehp_ded_billing_chart")
 
                             _show_cols = ["brand", "ehp_kwh", "elect_total", "원/kWh", "size_m2"]
                             _show_cols = [c for c in _show_cols if c in _joined.columns]
