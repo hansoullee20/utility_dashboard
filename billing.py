@@ -469,6 +469,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
     # ── Report download ────────────────────────────────────────────────────────
     with st.expander("PDF 보고서 다운로드", expanded=False):
         st.caption("현재 데이터를 기반으로 FCU 냉난방 요금 분석 PDF 보고서를 생성합니다.")
+        _hvac_lang = st.radio("언어", ["한국어 (ko)", "English (en)"],
+                              horizontal=True, key="hvac_report_lang")
         if st.button("PDF 생성", key="hvac_gen_pdf"):
             from hvac_report import generate_hvac_pdf
             with st.spinner("PDF 생성 중…"):
@@ -481,6 +483,7 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     fee_col=total_col or amount_col,
                     area_col=area_col,
                     context={"date": __import__("datetime").date.today()},
+                    lang="ko" if _hvac_lang.startswith("한") else "en",
                 )
             st.session_state["hvac_pdf_bytes"] = _pdf_bytes
         if "hvac_pdf_bytes" in st.session_state:
