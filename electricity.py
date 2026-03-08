@@ -128,12 +128,12 @@ def render_electricity_view(df: pd.DataFrame) -> None:
         )
         st.plotly_chart(fig_r, use_container_width=True, key="elec_rank_chart")
 
-        _s = df[_col]
+        _s = _df_r[_col]
         sc = st.columns(4)
-        sc[0].metric("합계",   f"{_s.sum():,.0f} {_unit}")
+        sc[0].metric("합계",   f"{_s.sum():,.0f} {_unit}" if _metric != "실효 단가 (원/KWH)" else f"{_s.mean():,.0f} {_unit}")
         sc[1].metric("평균",   f"{_s.mean():,.0f} {_unit}")
         sc[2].metric("중앙값", f"{_s.median():,.0f} {_unit}")
-        sc[3].metric("1위",    df.loc[df[_col].idxmax(), "brand"])
+        sc[3].metric("1위",    _df_r.loc[_df_r[_col].idxmax(), "brand"])
 
     # ═══════════════════════════ 사용량 구성 ══════════════════════════════════
     with tab_usage:
