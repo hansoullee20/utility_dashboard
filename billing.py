@@ -154,7 +154,7 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
     base_col      = next((c for c in df.columns if "기본요금" in c), None)
     usage_fee_col = next((c for c in df.columns if "사용요금" in c), None)
     comm_fee_col  = next((c for c in df.columns if "공용요금" in c), None)
-    amount_col    = next((c for c in df.columns if "전용" in c and "면적" not in c and "부과" not in c and "요금" not in c), None)
+    amount_col    = next((c for c in df.columns if "전용" in c and "면적" not in c and "부과" not in c and "전용요금" not in c and "FCU" in c), None)
     total_col     = next((c for c in df.columns if "소계" in c), None)
     numeric_cols  = [c for c in [usage_col, base_col, usage_fee_col, comm_fee_col, amount_col, total_col] if c]
 
