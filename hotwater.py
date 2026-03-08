@@ -38,6 +38,18 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
     _avg = df["fee_excl"].sum() / df["usage_m3"].replace(0, np.nan).sum()
     mc[4].metric("평균 단가",   f"{_avg:,.0f} 원/m³" if pd.notna(_avg) else "-")
 
+    # ── Revenue leakage estimate ───────────────────────────────────────────────
+    if n_unmet > 0:
+        _met = df[df["usage_m3"] > 0]
+        if len(_met) >= 2:
+            _med_rate = (_met["total"] / _met["size_m2"].replace(0, np.nan)).median()
+            _leakage = (df[df["usage_m3"] == 0]["size_m2"] * _med_rate).sum()
+            if pd.notna(_leakage) and _leakage > 0:
+                st.error(
+                    f"💸 미계량 {n_unmet}개 브랜드 — 추정 월 미청구 손실: "
+                    f"**{_leakage:,.0f} 원** (계량 브랜드 중앙 원/m² 기준, 행동 필요)"
+                )
+
     # ── Anomaly flags ─────────────────────────────────────────────────────────
     _flags = pd.DataFrame(index=df["brand"].values)
     _flags["총부과 이상치"]    = df["total"].values > _iqr_upper(df["total"])

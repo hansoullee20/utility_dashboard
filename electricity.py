@@ -56,6 +56,19 @@ def render_electricity_view(df: pd.DataFrame) -> None:
     mc[3].metric("총 사용량",   f"{int(df['kwh_total'].sum()):,} KWH")
     mc[4].metric("공용 부과",   f"{df['grand_comm'].sum()/1e6:.2f}M 원")
 
+    # ── Revenue leakage estimate (unmetered brands) ────────────────────────────
+    _n_unmet_el = int((df["kwh_total"] == 0).sum())
+    if _n_unmet_el > 0:
+        _met_el = df[df["kwh_total"] > 0]
+        if len(_met_el) >= 2:
+            _el_med_rate = (_met_el["grand_total"] / _met_el["size_m2"].replace(0, np.nan)).median()
+            _el_leakage = (df[df["kwh_total"] == 0]["size_m2"] * _el_med_rate).sum()
+            if pd.notna(_el_leakage) and _el_leakage > 0:
+                st.error(
+                    f"💸 미계량 {_n_unmet_el}개 브랜드 — 추정 월 미청구 손실: "
+                    f"**{_el_leakage:,.0f} 원** (계량 브랜드 중앙 원/m² 기준, 행동 필요)"
+                )
+
     # ── Anomaly flags ─────────────────────────────────────────────────────────
     _flags = pd.DataFrame(index=df["brand"].values)
 

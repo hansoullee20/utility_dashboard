@@ -69,8 +69,8 @@ def render_summary_view(
     mc[3].metric("온수",           f"{merged['hw_total'].sum()/1e6:.2f}M ({merged['hw_total'].sum()/merged['util_total'].sum()*100:.0f}%)")
     mc[4].metric("전기",           f"{merged['elec_total'].sum()/1e6:.2f}M ({merged['elec_total'].sum()/merged['util_total'].sum()*100:.0f}%)")
 
-    tab_rank, tab_mix, tab_area, tab_bld = st.tabs(
-        ["총 유틸리티 순위", "유틸리티 구성", "면적당 총비용", "건물별 비교"]
+    tab_rank, tab_mix, tab_area, tab_bld, tab_mgmt = st.tabs(
+        ["총 유틸리티 순위", "유틸리티 구성", "면적당 총비용", "건물별 비교", "📋 경영 보고"]
     )
 
     # ═══════════════════════════ 총 유틸리티 순위 ═════════════════════════════
@@ -293,3 +293,187 @@ def render_summary_view(
                                                "수도":"수도 (원)","온수":"온수 (원)",
                                                "전기":"전기 (원)","합계":"합계 (원)"})
         st.dataframe(_bld_disp, use_container_width=True, hide_index=True)
+
+    # ═══════════════════════════ 경영 보고 ════════════════════════════════════
+    with tab_mgmt:
+        st.subheader("수익성 분석 — 경영 보고")
+        st.caption("미청구 손실 추정, 이상 징후 브랜드, 비용 집중도를 종합한 경영용 보고서입니다.")
+
+        # ── Leakage computation per sheet ──────────────────────────────────────
+        def _leakage_for(source_df, usage_col, fee_col):
+            met = source_df[source_df[usage_col] > 0]
+            if len(met) < 2: return {}, 0.0
+            med_rate = (met[fee_col] / met["size_m2"].replace(0, np.nan)).median()
+            if not pd.notna(med_rate): return {}, 0.0
+            unmet = source_df[source_df[usage_col] == 0]
+            per_brand = {}
+            for _, r in unmet.iterrows():
+                per_brand[r["brand"]] = per_brand.get(r["brand"], 0) + float(r["size_m2"]) * med_rate
+            total = sum(per_brand.values())
+            return per_brand, total
+
+        _w_per_brand,  _w_total_leak  = _leakage_for(water_df,    "usage_m3",  "total")
+        _hw_per_brand, _hw_total_leak = _leakage_for(hotwater_df, "usage_m3",  "total")
+        _el_per_brand, _el_total_leak = _leakage_for(elec_df,     "kwh_total", "grand_total")
+        _total_leakage = _w_total_leak + _hw_total_leak + _el_total_leak
+
+        # ── IQR anomaly count ──────────────────────────────────────────────────
+        _util_up = _iqr_upper(merged["util_total"])
+        _n_anomaly = int((merged["util_total"] > _util_up).sum())
+
+        # ── Top-5 cost concentration ───────────────────────────────────────────
+        _total_spend = merged["util_total"].sum()
+        _top5_pct = merged.nlargest(5, "util_total")["util_total"].sum() / _total_spend * 100 if _total_spend else 0
+
+        # ── Total unmetered count ──────────────────────────────────────────────
+        _all_unmet_brands = set(_w_per_brand) | set(_hw_per_brand) | set(_el_per_brand)
+
+        # ── KPI row ────────────────────────────────────────────────────────────
+        kc = st.columns(4)
+        kc[0].metric("월 추정 미청구 손실",
+                     f"{_total_leakage:,.0f} 원",
+                     help="미계량 브랜드 면적 × 계량 브랜드 중앙 원/m² 합산")
+        kc[1].metric("미계량 브랜드",
+                     f"{len(_all_unmet_brands)}개",
+                     help="수도/온수/전기 중 하나 이상 미계량")
+        kc[2].metric("이상 징후 브랜드",
+                     f"{_n_anomaly}개",
+                     help="총 유틸리티 비용 IQR 상한 초과")
+        kc[3].metric("상위 5개 비중",
+                     f"{_top5_pct:.1f}%",
+                     help="전체 유틸리티 지출에서 상위 5개 브랜드 비중")
+
+        if _total_leakage > 0:
+            st.error(
+                f"💸 총 추정 월 미청구 손실 **{_total_leakage:,.0f} 원** — "
+                f"수도 {_w_total_leak:,.0f} / 온수 {_hw_total_leak:,.0f} / 전기 {_el_total_leak:,.0f} 원"
+            )
+
+        st.divider()
+
+        # ── Priority action table ──────────────────────────────────────────────
+        st.markdown("#### 우선 조치 브랜드")
+        st.caption("미계량·이상치·고비용 기준으로 조치 우선순위를 산정합니다. (점수 = 이상치×3 + 미계량수×2)")
+
+        _action_rows = []
+        for _, row in merged.iterrows():
+            b = str(row["brand"])
+            _is_anom = bool(row["util_total"] > _util_up)
+            _w_u  = b in _w_per_brand
+            _hw_u = b in _hw_per_brand
+            _el_u = b in _el_per_brand
+            _unmet_cnt = int(_w_u) + int(_hw_u) + int(_el_u)
+            _brand_leak = _w_per_brand.get(b, 0) + _hw_per_brand.get(b, 0) + _el_per_brand.get(b, 0)
+            _pm2 = row["util_total"] / row["size_m2"] if row.get("size_m2", 0) > 0 else np.nan
+            _score = (_is_anom * 3) + (_unmet_cnt * 2)
+
+            # Per-building median util/m² for underpay flag
+            _bld = str(row.get("building", ""))
+            _bld_sub = merged[merged["building"] == _bld]
+            _bld_med_pm2 = (
+                (_bld_sub["util_total"] / _bld_sub["size_m2"].replace(0, np.nan)).median()
+                if not _bld_sub.empty else np.nan
+            )
+            _underpay = (pd.notna(_pm2) and pd.notna(_bld_med_pm2) and _bld_med_pm2 > 0
+                         and _pm2 < _bld_med_pm2 * 0.4)
+            if _underpay:
+                _score += 1
+
+            _action_rows.append({
+                "브랜드":        b,
+                "건물":          _bld,
+                "층":            str(row.get("floor", "")),
+                "총 유틸리티 (원)": int(row["util_total"]),
+                "원/m²":         round(_pm2, 0) if pd.notna(_pm2) else None,
+                "건물중앙 원/m²": round(_bld_med_pm2, 0) if pd.notna(_bld_med_pm2) else None,
+                "미계량":        ("수도 " if _w_u else "") + ("온수 " if _hw_u else "") + ("전기" if _el_u else "") or "-",
+                "추정 손실 (원)": int(_brand_leak),
+                "이상치":        "⛔" if _is_anom else "✓",
+                "저납부":        "⚠" if _underpay else "-",
+                "우선순위 점수": _score,
+            })
+
+        _action_df = (
+            pd.DataFrame(_action_rows)
+            .sort_values(["우선순위 점수", "총 유틸리티 (원)"], ascending=[False, False])
+            .reset_index(drop=True)
+        )
+        _action_df.index = _action_df.index + 1  # 1-based rank
+
+        # Color highlight for top priority rows
+        def _highlight(row):
+            if row["우선순위 점수"] >= 4:
+                return ["background-color: #ffeaea"] * len(row)
+            elif row["우선순위 점수"] >= 2:
+                return ["background-color: #fff8e8"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(
+            _action_df.style.apply(_highlight, axis=1),
+            use_container_width=True,
+        )
+
+        # ── Download management report ─────────────────────────────────────────
+        import io
+        _buf = io.BytesIO()
+        with pd.ExcelWriter(_buf, engine="openpyxl") as _xw:
+            _action_df.to_excel(_xw, sheet_name="우선조치목록", index=True)
+            # Per-sheet leakage detail
+            for _sheet_label, _per_brand in [("수도_미계량", _w_per_brand),
+                                              ("온수_미계량", _hw_per_brand),
+                                              ("전기_미계량", _el_per_brand)]:
+                if _per_brand:
+                    _detail = pd.DataFrame(
+                        [{"브랜드": k, "추정 손실 (원)": int(v)} for k, v in _per_brand.items()]
+                    ).sort_values("추정 손실 (원)", ascending=False)
+                    _detail.to_excel(_xw, sheet_name=_sheet_label, index=False)
+        st.download_button(
+            "📥 경영 보고서 다운로드 (Excel)",
+            data=_buf.getvalue(),
+            file_name="utility_management_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        st.divider()
+
+        # ── Cost concentration (Pareto) ────────────────────────────────────────
+        st.markdown("#### 비용 집중도 (Pareto)")
+        _sorted = merged.sort_values("util_total", ascending=False).reset_index(drop=True)
+        _sorted["누적 비중 (%)"] = (_sorted["util_total"].cumsum() / _total_spend * 100).round(1)
+        _sorted["순위"] = _sorted.index + 1
+
+        _pareto_n = st.slider("표시 브랜드 수", 5, min(50, len(_sorted)), min(20, len(_sorted)), key="sum_pareto_n")
+        _pareto = _sorted.head(_pareto_n)
+
+        fig_p = go.Figure()
+        fig_p.add_trace(go.Bar(
+            x=[str(b)[:22] for b in _pareto["brand"]],
+            y=_pareto["util_total"].values,
+            marker_color=[_BLD_COLOR.get(str(b), "#888") for b in _pareto["building"]],
+            text=[f"{v/1e6:.2f}M" for v in _pareto["util_total"].values],
+            textposition="outside", textfont=dict(size=9),
+            name="유틸리티 합계",
+        ))
+        fig_p.add_trace(go.Scatter(
+            x=[str(b)[:22] for b in _pareto["brand"]],
+            y=_pareto["누적 비중 (%)"].values,
+            mode="lines+markers", name="누적 비중 (%)",
+            yaxis="y2", line=dict(color="#C44E52", width=2),
+            marker=dict(size=5),
+        ))
+        fig_p.update_layout(
+            height=400, plot_bgcolor="white",
+            yaxis=dict(title="원", gridcolor="#DDDDDD", griddash="dot"),
+            yaxis2=dict(title="누적 비중 (%)", overlaying="y", side="right",
+                        range=[0, 105], showgrid=False),
+            xaxis=dict(tickangle=-40),
+            legend=dict(orientation="h", y=1.04),
+            margin=dict(l=10, r=60, t=50, b=100),
+        )
+        st.plotly_chart(fig_p, use_container_width=True, key="sum_pareto_chart")
+
+        _p80 = int((_sorted["누적 비중 (%)"] <= 80).sum()) + 1
+        st.caption(
+            f"상위 **{_p80}개** 브랜드가 전체 비용의 80%를 차지합니다. "
+            f"(전체 {len(merged)}개 브랜드 중 {_p80/len(merged)*100:.0f}%)"
+        )
