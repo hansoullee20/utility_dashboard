@@ -1,7 +1,10 @@
 from datetime import date
 
+import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
+from scipy import stats as _stats
 import streamlit as st
 
 from data import st_safe
@@ -125,7 +128,6 @@ def _util_selector(df: pd.DataFrame, key: str):
 
 def render_hvac_view(df: pd.DataFrame) -> None:
     st.subheader("관리비 고지서 EHP 열(냉난방)")
-    st.caption("▣ 열(냉난방)사용 내역")
 
     if df.empty:
         st.warning("열(냉난방)사용 내역 섹션을 찾을 수 없습니다.")
@@ -156,7 +158,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
     comm_fee_col  = next((c for c in df.columns if "공용요금" in c), None)
     amount_col    = next((c for c in df.columns if "전용" in c and "면적" not in c and "부과" not in c and "전용요금" not in c and "FCU" in c), None)
     total_col     = next((c for c in df.columns if "소계" in c), None)
-    numeric_cols  = [c for c in [usage_col, base_col, usage_fee_col, comm_fee_col, amount_col, total_col] if c]
+    area_col      = next((c for c in df.columns if "면적" in c), None)
+    numeric_cols  = [c for c in [usage_col, base_col, usage_fee_col, comm_fee_col, amount_col, total_col, area_col] if c]
 
     num_df = df.copy()
     for col in numeric_cols:
@@ -190,31 +193,19 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
 
         _val_label = "소계" if total_col else "전용 합계"
         _formula   = "기본요금 + 사용요금 + 공용요금" if comm_fee_col else "기본요금 + 사용요금"
-        st.markdown(f"#### FCU 요금 정합성 검증: {_val_label} = {_formula}")
-        st.caption(
-            f"{_val_label}는 {_formula}의 합으로 구성됩니다 (Excel: P = K + M + O). "
-            "두 값이 일치하면 요금 산정 로직이 정확히 반영된 것이며, "
-            "불일치가 있을 경우 데이터 입력 오류 또는 별도 조정분(할인·가산금 등)이 포함된 것으로 볼 수 있습니다."
-        )
+        _val_title = f"요금 정합성 검증 — {'✅ 전체 일치' if n_mismatch == 0 else f'⚠️ 불일치 {n_mismatch}건'}"
+        with st.expander(_val_title, expanded=False):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("검증 대상", f"{n_total}건")
+            c2.metric("일치", f"{n_match}건", f"{match_rate:.1f}%")
+            c3.metric("불일치", f"{n_mismatch}건")
+            c4.metric("최대 차이", f"{abs_diff.max():,.0f}원" if n_total else "—")
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("검증 대상", f"{n_total}건")
-        c2.metric("일치", f"{n_match}건", f"{match_rate:.1f}%")
-        c3.metric("불일치", f"{n_mismatch}건")
-        c4.metric("최대 차이", f"{abs_diff.max():,.0f}원" if n_total else "—")
-
-        if n_mismatch == 0:
-            st.success(f"전체 {n_total}건 모두 일치 — 요금 데이터 정합성이 확인되었습니다.")
-        else:
-            st.warning(
-                f"{n_mismatch}건에서 {_val_label}와 {_formula}이 다릅니다. "
-                f"평균 차이 {abs_diff[mismatch_mask].mean():,.0f}원, 최대 차이 {abs_diff.max():,.0f}원. "
-                "할인·연체·기타 조정분이 포함되어 있을 가능성이 있습니다."
-            )
-            show_cols = [c for c in ["브랜드", _val_col, base_col, usage_fee_col, comm_fee_col] if c and c in num_df.columns]
-            mismatch_df = num_df[mismatch_mask][show_cols].copy()
-            mismatch_df[f"차이 ({_val_label}−합산)"] = diff[mismatch_mask].values
-            st.dataframe(st_safe(mismatch_df), use_container_width=True)
+            if n_mismatch > 0:
+                show_cols = [c for c in ["브랜드", _val_col, base_col, usage_fee_col, comm_fee_col] if c and c in num_df.columns]
+                mismatch_df = num_df[mismatch_mask][show_cols].copy()
+                mismatch_df[f"차이 ({_val_label}−합산)"] = diff[mismatch_mask].values
+                st.dataframe(st_safe(mismatch_df), use_container_width=True)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
     def _stats_table(rows: list[tuple[str, pd.Series]], total_sum: float | None = None) -> None:
@@ -242,57 +233,42 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
         if not records:
             return
         st.dataframe(pd.DataFrame(records), use_container_width=True, hide_index=True)
-        with st.expander("컬럼 설명"):
-            st.markdown(
-                "- **업체 수**: 해당 항목에 값이 있는(0 제외) 업체 수\n"
-                "- **합계**: 표시된 업체들의 값을 모두 더한 총액\n"
-                "- **평균**: 합계 ÷ 업체 수\n"
-                "- **중앙값**: 업체들을 금액 순으로 정렬했을 때 정중앙에 위치한 값으로, 극단값의 영향을 받지 않음\n"
-                "- **표준편차**: 업체 간 편차가 클수록 높으며, 요금 분포의 불균형 정도를 나타냄\n"
-                "- **최대 / 최소**: 가장 높은 / 낮은 업체의 값"
-                + (f"\n- **합계 비중**: 해당 항목의 합계가 전용 합계 총액({total_sum:,.0f}원) 중 차지하는 비율" if total_sum else "")
-            )
 
-        # ── Statistical interpretation ─────────────────────────────────────────
-        insights = []
+        with st.expander("컬럼 설명"):
+            _col_desc = [
+                ("업체 수",  "해당 항목에 값이 있는(0 제외) 업체 수"),
+                ("합계",     "표시된 업체들의 값을 모두 더한 총액"),
+                ("평균",     "합계 ÷ 업체 수"),
+                ("중앙값",   "업체를 금액 순 정렬 시 정중앙 값 — 극단값에 강건"),
+                ("표준편차", "업체 간 편차 지표 — 클수록 분포 불균형"),
+                ("최대/최소","가장 높은 / 낮은 업체의 값"),
+            ]
+            if total_sum:
+                _col_desc.append(("합계 비중", f"전용 합계 총액({total_sum:,.0f}원) 대비 비율"))
+            st.dataframe(pd.DataFrame(_col_desc, columns=["컬럼", "설명"]),
+                         use_container_width=True, hide_index=True)
+
+        _insight_rows = []
         for label, s in rows:
             s = s.replace(0, pd.NA).dropna()
             if s.empty or len(s) < 2:
                 continue
             mean, median = s.mean(), s.median()
-            std, mx, mn  = s.std(), s.max(), s.min()
-            cv           = std / mean if mean else 0
+            cv           = s.std() / mean if mean else 0
             skew_ratio   = mean / median if median else 1
-
-            lines = [f"**{label}**"]
-            # Distribution shape
-            if skew_ratio > 1.5:
-                lines.append(f"평균({mean:,.0f})이 중앙값({median:,.0f})보다 {skew_ratio:.1f}배 높아 일부 고액 업체가 평균을 끌어올리는 우편향 분포입니다.")
-            elif skew_ratio < 0.67:
-                lines.append(f"평균({mean:,.0f})이 중앙값({median:,.0f})보다 낮아 소수의 저액 업체가 평균을 낮추는 좌편향 분포입니다.")
-            else:
-                lines.append(f"평균({mean:,.0f})과 중앙값({median:,.0f})이 유사하여 비교적 고른 분포를 보입니다.")
-            # Variability
-            if cv > 1.0:
-                lines.append(f"변동계수(CV={cv:.2f})가 1을 초과하여 업체 간 요금 편차가 매우 큽니다.")
-            elif cv > 0.5:
-                lines.append(f"변동계수(CV={cv:.2f})로 업체 간 요금 편차가 다소 있습니다.")
-            else:
-                lines.append(f"변동계수(CV={cv:.2f})로 업체 간 요금이 비교적 균일합니다.")
-            # Max/min spread
-            if mn > 0:
-                lines.append(f"최대({mx:,.0f})는 최소({mn:,.0f})의 {mx/mn:.0f}배로, 업체 간 요금 규모 차이가 {'매우 큽니다' if mx/mn > 10 else '있습니다'}.")
-            # Total share context
-            if total_sum and total_sum > 0:
-                share = s.sum() / total_sum * 100
-                lines.append(f"전용 합계 총액의 {share:.1f}%를 차지합니다.")
-            insights.append("\n  ".join(lines))
-
-        if insights:
-            with st.expander("통계 해석"):
-                for insight in insights:
-                    st.markdown(insight)
-                    st.divider()
+            mx, mn       = s.max(), s.min()
+            irow = {
+                "항목":           label,
+                "분포 형태":      "▲ 우편향" if skew_ratio > 1.5 else ("▼ 좌편향" if skew_ratio < 0.67 else "≈ 균등"),
+                "변동성 (CV)":    f"{cv:.2f}",
+                "격차 (최대/최소)": f"{mx/mn:.0f}×" if mn > 0 else "—",
+            }
+            if total_sum:
+                irow["합계 비중"] = f"{s.sum() / total_sum * 100:.1f}%"
+            _insight_rows.append(irow)
+        if _insight_rows:
+            with st.expander("분포 특성"):
+                st.dataframe(pd.DataFrame(_insight_rows), use_container_width=True, hide_index=True)
 
     def _hbar(series: pd.Series, xlab: str, color: str, key: str):
         fig = go.Figure(go.Bar(
@@ -317,27 +293,142 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
         clean = series.dropna()
         if clean.empty:
             return
-        fig = go.Figure(go.Histogram(
-            x=clean,
-            marker_color=color,
-            marker_line=dict(color="white", width=1),
-            opacity=0.85,
+        x = clean.values.astype(float)
+        _bins = int(st.session_state.get("bins", 10))
+        _tail = float(st.session_state.get("tail", 10))
+        counts, edges = np.histogram(x, bins=_bins)
+        midpoints = (edges[:-1] + edges[1:]) / 2
+        widths     = edges[1:] - edges[:-1]
+        lo  = float(np.percentile(x, _tail))
+        hi  = float(np.percentile(x, 100 - _tail))
+        med = float(np.median(x))
+        tail_mask   = np.array([(m <= lo or m >= hi) for m in midpoints])
+        normal_mask = ~tail_mask
+        xmin, xmax  = float(x.min()), float(x.max())
+
+        _bkw = dict(
+            marker_line_color="white", marker_line_width=0.8, opacity=0.9,
+            textposition="outside", textfont=dict(size=9, color="#666666"),
+        )
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=midpoints[normal_mask], y=counts[normal_mask], width=widths[normal_mask],
+            name="일반", marker_color="#4C72B0",
+            text=[str(c) if c > 0 else "" for c in counts[normal_mask]], **_bkw,
         ))
+        fig.add_trace(go.Bar(
+            x=midpoints[tail_mask], y=counts[tail_mask], width=widths[tail_mask],
+            name="꼬리", marker_color="#DD8A00",
+            text=[str(c) if c > 0 else "" for c in counts[tail_mask]], **_bkw,
+        ))
+        fig.add_trace(go.Scatter(x=[None], y=[None], name="중앙값", mode="lines",
+                                 line=dict(color="#C44E52", width=2, dash="dot")))
+        fig.add_trace(go.Scatter(x=[None], y=[None], name=f"하위/상위 {_tail:.0f}%", mode="lines",
+                                 line=dict(color="#111111", width=2, dash="dash")))
+
+        eps = 1e-12
+        if lo > xmin + eps:
+            fig.add_vrect(x0=xmin, x1=lo, fillcolor="#DD8A00", opacity=0.1, line_width=0)
+        if hi < xmax - eps:
+            fig.add_vrect(x0=hi, x1=xmax, fillcolor="#DD8A00", opacity=0.1, line_width=0)
+        fig.add_vline(x=lo,  line_dash="dash", line_color="#111111", line_width=1.5)
+        fig.add_vline(x=hi,  line_dash="dash", line_color="#111111", line_width=1.5)
+        fig.add_vline(x=med, line_dash="dot",  line_color="#C44E52", line_width=1.5)
+
+        n_tail = int(np.sum(counts[tail_mask]))
+        n_total = int(counts.sum())
+        tail_pct_val = 100 * n_tail / n_total if n_total > 0 else 0
+
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.99, y=0.55,
+            xanchor="right", yanchor="top", showarrow=False,
+            text=f"하위 {_tail:.0f}%  {lo:.1f}<br>상위 {_tail:.0f}%  {hi:.1f}<br>중앙값    {med:.1f}",
+            font=dict(size=11, color="#333333", family="monospace"),
+            bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA",
+            borderwidth=1, borderpad=6, align="left",
+        )
         fig.update_layout(
-            height=300,
-            margin=dict(t=20, b=60, l=60, r=20),
-            xaxis=_axis(title=xlab),
-            yaxis=_axis(grid=True, title="업체 수"),
-            bargap=0.05,
-            **_LAYOUT_BASE,
+            title=dict(
+                text=f"<b>{xlab}</b>   <span style='font-size:12px;color:#888'>n={n_total} · 꼬리={n_tail} ({tail_pct_val:.1f}%)</span>",
+                font=dict(size=13, color="#222222"), x=0,
+            ),
+            height=380, bargap=0,
+            margin=dict(l=50, r=20, t=55, b=45),
+            plot_bgcolor="white", paper_bgcolor="white",
+            xaxis=dict(
+                title=xlab, showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                zeroline=False, showline=True, linecolor="#AAAAAA", linewidth=1,
+                tickfont=dict(size=11, color="#222222"),
+            ),
+            yaxis=dict(
+                title=dict(text="업체 수", font=dict(size=11, color="#222222")),
+                showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                zeroline=True, zerolinecolor="#AAAAAA", zerolinewidth=1,
+                showline=True, linecolor="#AAAAAA", linewidth=1,
+                rangemode="tozero", tickfont=dict(size=11, color="#222222"),
+            ),
+            font=dict(family="Arial, sans-serif"),
+            showlegend=True,
+            legend=dict(
+                orientation="v", x=0.99, xanchor="right", y=0.97, yanchor="top",
+                font=dict(size=11, color="#333333", family="monospace"),
+                bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA", borderwidth=1,
+            ),
         )
         st.plotly_chart(fig, use_container_width=True, key=key, theme=None)
 
+    # ── Filters ───────────────────────────────────────────────────────────────
+    _bldg_col  = next((c for c in num_df.columns if c in ("건물", "동", "building")), None)
+    _floor_col = next((c for c in num_df.columns if "층" in c or c in ("층", "floor")), None)
+    _has_gong  = num_df["브랜드"].astype(str).str.contains("공실", na=False).any()
+
+    _fc_count = 1 + bool(_bldg_col) + bool(_floor_col)
+    _fcols = st.columns(_fc_count)
+    _fci = 0
+
+    if _bldg_col:
+        _all_bldg = ["전체"] + sorted(num_df[_bldg_col].dropna().unique().tolist())
+        _sel_bldg = _fcols[_fci].multiselect("건물", _all_bldg, default=["전체"], key="hvac_filter_bldg")
+        _fci += 1
+    else:
+        _sel_bldg = ["전체"]
+
+    if _floor_col:
+        _all_floors = get_simple_floors(num_df.rename(columns={_floor_col: "floor"}))
+        _sel_floor = _fcols[_fci].multiselect("층", ["전체"] + _all_floors, default=["전체"], key="hvac_filter_floor")
+        _fci += 1
+    else:
+        _sel_floor = ["전체"]
+
+    _gong_mode = _fcols[_fci].radio(
+        "공실", ["전체", "공실 제외", "공실만"],
+        horizontal=True, key="hvac_filter_gong",
+        disabled=not _has_gong,
+    )
+
+    # Apply filters
+    if _bldg_col and "전체" not in _sel_bldg and _sel_bldg:
+        num_df = num_df[num_df[_bldg_col].isin(_sel_bldg)]
+    if _floor_col and "전체" not in _sel_floor and _sel_floor:
+        _sel_set = set(_sel_floor)
+        _floor_mask = num_df[_floor_col].apply(
+            lambda v: bool(set(parse_floor_value(str(v))) & _sel_set)
+        )
+        num_df = num_df[_floor_mask]
+    if _gong_mode == "공실만":
+        num_df = num_df[num_df["브랜드"].astype(str).str.contains("공실", na=False)]
+    elif _gong_mode == "공실 제외":
+        num_df = num_df[~num_df["브랜드"].astype(str).str.contains("공실", na=False)]
+
+    if num_df.empty:
+        st.warning("선택한 필터 조건에 해당하는 데이터가 없습니다.")
+        return
+
     # ── Overall statistical analysis ──────────────────────────────────────────
-    st.markdown("#### 전체 통계 분석")
     brand_agg_all = num_df.groupby("브랜드")[numeric_cols].sum()
 
     # Top-line metrics
+    st.divider()
     _mc = st.columns(4)
     _mc[0].metric("총 브랜드 수", f"{num_df['브랜드'].nunique():,}")
     if usage_col:
@@ -347,36 +438,6 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
     if base_col and usage_fee_col:
         _base_ratio = brand_agg_all[base_col].sum() / brand_agg_all[amount_col].sum() * 100 if amount_col and brand_agg_all[amount_col].sum() else 0
         _mc[3].metric("기본요금 비중", f"{_base_ratio:.1f}%")
-
-    # Per-column stats across all brands
-    _stat_rows = []
-    for col, label in [(c, l) for c, l in [
-        (usage_col,     "사용량 (Mcal)"),
-        (base_col,      "기본요금 (원)"),
-        (usage_fee_col, "사용요금 (원)"),
-        (comm_fee_col,  "공용요금 (원)"),
-        (amount_col,    "전용 합계 (원)"),
-        (total_col,     "소계 (원)"),
-    ] if c]:
-        s = brand_agg_all[col].replace(0, pd.NA).dropna()
-        if s.empty:
-            continue
-        q1, q3 = s.quantile(0.25), s.quantile(0.75)
-        _stat_rows.append({
-            "항목":    label,
-            "업체 수": len(s),
-            "합계":    f"{s.sum():,.0f}",
-            "평균":    f"{s.mean():,.0f}",
-            "중앙값":  f"{s.median():,.0f}",
-            "표준편차": f"{s.std():,.0f}",
-            "Q1 (25%)": f"{q1:,.0f}",
-            "Q3 (75%)": f"{q3:,.0f}",
-            "IQR":     f"{(q3 - q1):,.0f}",
-            "최대":    f"{s.max():,.0f}",
-            "최소":    f"{s.min():,.0f}",
-        })
-    if _stat_rows:
-        st.dataframe(pd.DataFrame(_stat_rows), use_container_width=True, hide_index=True)
 
     # ── 기본요금 / 사용요금 / 공용요금 비중 — stored for tab use ──────────────
     # Denominator: 소계(P) if available, else 전용 합계
@@ -393,75 +454,47 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
         _prop_data = _agg
 
 
-    # Missing data summary
-    _total_brands = num_df["브랜드"].nunique()
-    _missing_rows = []
-    for col, label in [(c, l) for c, l in [
-        (usage_col,     "사용량 (Mcal)"),
-        (base_col,      "기본요금 (원)"),
-        (usage_fee_col, "사용요금 (원)"),
-        (amount_col,    "전용 합계 (원)"),
-    ] if c]:
-        _agg = brand_agg_all[col]
-        n_zero    = int((_agg == 0).sum())
-        n_missing = n_zero  # NaN already replaced with 0 during load
-        _missing_rows.append({
-            "항목":              label,
-            "전체 업체":         _total_brands,
-            "데이터 있음":       _total_brands - n_missing,
-            "0 (누락 또는 미부과)": n_missing,
-            "비율":              f"{n_missing / _total_brands * 100:.1f}%" if _total_brands else "—",
-        })
-    if _missing_rows:
-        with st.expander("결측 데이터 요약", expanded=False):
-            st.dataframe(pd.DataFrame(_missing_rows), use_container_width=True, hide_index=True)
-
-            st.caption(
-                "모든 빈 값(NaN)은 로딩 시 0으로 처리됩니다. "
-                "따라서 0으로 표시된 업체는 실제로 해당 항목이 없어 0원으로 부과된 경우일 수도 있고, "
-                "원본 데이터에 값이 입력되지 않아 누락된 경우일 수도 있습니다. "
-                "두 경우를 구분하려면 원본 Excel을 직접 확인하세요."
-            )
-
-            # Per-brand missing pattern (which columns are missing per brand)
-            _pattern_cols = [(c, l) for c, l in [
-                (usage_col, "사용량"), (base_col, "기본요금"),
-                (usage_fee_col, "사용요금"), (amount_col, "전용 합계"),
-            ] if c]
-            if len(_pattern_cols) > 1:
-                _pat_df = brand_agg_all[[c for c, _ in _pattern_cols]].copy()
-                _pat_df.columns = [l for _, l in _pattern_cols]
-                _missing_pattern = _pat_df[(_pat_df == 0).any(axis=1) | _pat_df.isna().any(axis=1)].copy()
-                _missing_pattern = _missing_pattern.applymap(lambda v: "—" if (pd.isna(v) or v == 0) else "✔")
-                if not _missing_pattern.empty:
-                    st.caption("항목별 누락이 있는 업체")
-                    st.dataframe(_missing_pattern, use_container_width=True)
-
     # Concentration: top-5 brands share
     if amount_col:
         _total = brand_agg_all[amount_col].sum()
         _top5  = brand_agg_all[amount_col].nlargest(5)
         _top5_share = _top5.sum() / _total * 100 if _total else 0
-        with st.expander("상위 5개 업체 집중도"):
-            st.caption(
-                f"집중도(concentration ratio)는 상위 5개 업체의 전용 합계를 합산한 뒤 전체 총액으로 나눈 값으로, "
-                f"요금이 소수 업체에 얼마나 몰려 있는지를 나타냅니다. "
-                f"현재 상위 5개 업체의 합계는 {_top5.sum():,.0f}원이고 전체 총액은 {_total:,.0f}원으로, 집중도는 {_top5_share:.1f}%입니다.\n\n"
-                f"아래 표의 비중 열은 각 업체의 전용 합계가 전체 총액({_total:,.0f}원) 중 몇 퍼센트인지를 나타내며, "
-                "업체별 전용 합계 ÷ 전체 총액 × 100으로 계산됩니다."
-            )
-            st.latex(
-                r"\text{집중도} = \frac{\sum_{i=1}^{5} \text{전용합계}_i}{\sum_{\text{전체}} \text{전용합계}} \times 100"
-                rf"= \frac{{{_top5.sum():,.0f}}}{{{_total:,.0f}}} \times 100 = {_top5_share:.1f}\%"
-            )
+        with st.expander(f"상위 5개 업체 집중도 — {_top5_share:.1f}%"):
             _top5_df = _top5.reset_index()
             _top5_df.columns = ["브랜드", "전용 합계 (원)"]
             _top5_df["비중"] = (_top5_df["전용 합계 (원)"] / _total * 100).map(lambda x: f"{x:.1f}%")
             _top5_df["전용 합계 (원)"] = _top5_df["전용 합계 (원)"].map(lambda x: f"{x:,.0f}")
             st.dataframe(_top5_df, use_container_width=True, hide_index=True)
 
+    # ── Report download ────────────────────────────────────────────────────────
+    with st.expander("PDF 보고서 다운로드", expanded=False):
+        st.caption("현재 데이터를 기반으로 FCU 냉난방 요금 분석 PDF 보고서를 생성합니다.")
+        if st.button("PDF 생성", key="hvac_gen_pdf"):
+            from hvac_report import generate_hvac_pdf
+            with st.spinner("PDF 생성 중…"):
+                _pdf_bytes = generate_hvac_pdf(
+                    brand_agg_all,
+                    usage_col=usage_col,
+                    base_col=base_col,
+                    usage_fee_col=usage_fee_col,
+                    comm_fee_col=comm_fee_col,
+                    fee_col=total_col or amount_col,
+                    area_col=area_col,
+                    context={"date": __import__("datetime").date.today()},
+                )
+            st.session_state["hvac_pdf_bytes"] = _pdf_bytes
+        if "hvac_pdf_bytes" in st.session_state:
+            st.download_button(
+                label="PDF 다운로드",
+                data=st.session_state["hvac_pdf_bytes"],
+                file_name=f"hvac_report_{__import__('datetime').date.today()}.pdf",
+                mime="application/pdf",
+                key="hvac_pdf_dl",
+            )
+
+    st.divider()
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab_rank, tab_prop, tab_summary = st.tabs(["업체별 요금·사용량", "기본·사용요금 비중", "전체 내역"])
+    tab_rank, tab_prop, tab_fair, tab_corr = st.tabs(["순위", "비중", "면적별 비용 비교", "상관"])
 
     # ── Brand data summary (computed once, used across tabs) ──────────────────
     ref_col = amount_col or usage_col
@@ -469,136 +502,141 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
     brands_with_data = brands_with_data[brands_with_data > 0]
     valid_brands = set(brands_with_data.index)
     fdf = num_df[num_df["브랜드"].isin(valid_brands)]
-    total_brands = num_df["브랜드"].nunique()
-    no_data_brands = num_df[~num_df["브랜드"].isin(valid_brands)]["브랜드"].dropna().unique().tolist()
 
     with tab_rank:
-        # ── Combined summary ──────────────────────────────────────────────────
-        _sum_parts = []
         if amount_col and usage_col:
-            _top1_fee   = brand_agg_all[amount_col].idxmax()
-            _top1_usage = brand_agg_all[usage_col].idxmax()
-            _fee_total  = brand_agg_all[amount_col].sum()
-            _usage_total = brand_agg_all[usage_col].sum()
+            _top1_fee         = brand_agg_all[amount_col].idxmax()
+            _top1_usage       = brand_agg_all[usage_col].idxmax()
+            _fee_total        = brand_agg_all[amount_col].sum()
+            _usage_total      = brand_agg_all[usage_col].sum()
             _top1_fee_share   = brand_agg_all.loc[_top1_fee,   amount_col] / _fee_total   * 100
             _top1_usage_share = brand_agg_all.loc[_top1_usage, usage_col]  / _usage_total * 100
-            _sum_parts.append(
-                f"전용 합계 최다 업체는 **{_top1_fee}** ({_top1_fee_share:.1f}% 차지), "
-                f"사용량 최다 업체는 **{_top1_usage}** ({_top1_usage_share:.1f}% 차지)."
-            )
-            _fee_cv = brand_agg_all[amount_col].std() / brand_agg_all[amount_col].mean()
-            _sum_parts.append(
-                f"요금 분포 변동계수 {_fee_cv:.2f} — " +
-                ("업체 간 요금 격차가 매우 크며 소수 고액 업체가 존재합니다." if _fee_cv > 1
-                 else "업체 간 요금이 비교적 균등합니다.")
-            )
-        if len(_sum_parts):
-            st.info("  \n".join(_sum_parts))
+            _fee_cv           = brand_agg_all[amount_col].std() / brand_agg_all[amount_col].mean()
+            def _mini_metric(col, label, value, sub):
+                col.markdown(
+                    f"<div style='font-size:13px;color:#888;margin-bottom:4px'>{label}</div>"
+                    f"<div style='font-size:20px;font-weight:600;line-height:1.3;word-break:keep-all'>{value}</div>"
+                    f"<div style='font-size:13px;color:#555;margin-top:3px'>{sub}</div>",
+                    unsafe_allow_html=True,
+                )
+            _sc = st.columns(3)
+            _mini_metric(_sc[0], "최다 요금 업체",     _top1_fee,         f"{_top1_fee_share:.1f}%")
+            _mini_metric(_sc[1], "최다 사용량 업체",   _top1_usage,       f"{_top1_usage_share:.1f}%")
+            _mini_metric(_sc[2], "요금 변동계수 (CV)", f"{_fee_cv:.2f}",  "격차 큼" if _fee_cv > 1 else "균등")
 
         fee_check_cols = {k: v for k, v in [
-            ("기본요금", base_col), ("사용요금", usage_fee_col), ("전용 합계", amount_col)
+            ("사용량 (Mcal)", usage_col), ("기본요금", base_col), ("사용요금", usage_fee_col), ("전용 합계", amount_col)
         ] if v}
         brand_fee_agg = num_df.groupby("브랜드")[list(fee_check_cols.values())].sum()
-        n_total = num_df["브랜드"].nunique()
+        _n_total_brands = num_df["브랜드"].nunique()
         coverage = pd.DataFrame([{
             "항목": label,
             "데이터 있는 업체": int((brand_fee_agg[col] > 0).sum()),
-            "데이터 없는 업체": n_total - int((brand_fee_agg[col] > 0).sum()),
+            "데이터 없는 업체": _n_total_brands - int((brand_fee_agg[col] > 0).sum()),
         } for label, col in fee_check_cols.items()])
-        st.dataframe(coverage, use_container_width=True, hide_index=True)
+        st.divider()
 
-        top_n = st.slider("표시 업체 수", min_value=1, max_value=max(1, len(brands_with_data)),
-                          value=min(20, len(brands_with_data)), step=1, key="hvac_top_n")
-        sub_fee, sub_usage = st.tabs(["요금", "사용량"])
+        _ctrl_l, _ctrl_r = st.columns([3, 2])
+        with _ctrl_l:
+            _chart_view_opts = (["요금 순위"] if amount_col else []) + (["사용량 순위"] if usage_col else [])
+            _chart_view = st.radio("보기", _chart_view_opts, horizontal=True, key="hvac_chart_view")
+        with _ctrl_r:
+            top_n = st.slider("표시 업체 수", min_value=1, max_value=max(1, len(brands_with_data)),
+                              value=min(20, len(brands_with_data)), step=1, key="hvac_top_n")
 
-        with sub_usage:
-            if usage_col:
-                grp = fdf.groupby("브랜드")[usage_col].sum().dropna()
-                grp = grp[grp > 0].sort_values(ascending=False).head(top_n)
-                _stats_table([("사용량 (Mcal)", grp)])
-                _hbar(grp, "사용량 (Mcal)", _WATER_COLOR, "hvac_rank_usage")
+        with st.expander("항목별 데이터 보유 현황"):
+            st.dataframe(coverage, use_container_width=True, hide_index=True)
 
-        with sub_fee:
-            if amount_col:
-                # Radio: show 소계 as the primary combined view when available
-                _fee_radio_opts = (["소계"] if total_col else ["전용 합계"]) + \
-                                  (["기본요금"] if base_col else []) + \
-                                  (["사용요금"] if usage_fee_col else []) + \
-                                  (["공용요금"] if comm_fee_col else [])
-                fee_sel = st.radio(
-                    "요금 항목",
-                    _fee_radio_opts,
-                    horizontal=True, key="hvac_fee_sel",
-                )
-                # Anchor business list to 전용 합계 for all graphs
-                top_brands = (fdf.groupby("브랜드")[amount_col].sum()
-                              .dropna().sort_values(ascending=False).head(top_n).index.tolist())
-                sub_fdf = fdf[fdf["브랜드"].isin(top_brands)]
+        _stat_entries: list = []
+        _stat_total: float | None = None
 
-                if fee_sel in ("전용 합계", "소계"):
-                    _base_vals  = sub_fdf.groupby("브랜드")[base_col].sum().reindex(top_brands).fillna(0)      if base_col      else pd.Series(0, index=top_brands)
-                    _usage_vals = sub_fdf.groupby("브랜드")[usage_fee_col].sum().reindex(top_brands).fillna(0) if usage_fee_col else pd.Series(0, index=top_brands)
-                    _comm_vals  = sub_fdf.groupby("브랜드")[comm_fee_col].sum().reindex(top_brands).fillna(0)  if comm_fee_col  else pd.Series(0, index=top_brands)
-                    _pivot_dict = {"기본요금": _base_vals, "사용요금": _usage_vals}
-                    if comm_fee_col:
-                        _pivot_dict["공용요금"] = _comm_vals
-                    pivot = pd.DataFrame(_pivot_dict, index=top_brands)
-                    pivot = pivot.assign(_total=pivot.sum(axis=1)).sort_values("_total", ascending=False).drop(columns="_total")
-                    fig = go.Figure()
-                    _stacked_traces = [("기본요금", "#9B59B6"), ("사용요금", "#27AE60")]
-                    if comm_fee_col:
-                        _stacked_traces.append(("공용요금", "#E67E22"))
-                    for label, color in _stacked_traces:
-                        if label in pivot.columns:
-                            fig.add_trace(go.Bar(
-                                name=label, x=pivot[label], y=pivot.index.astype(str),
-                                orientation="h", marker_color=color,
-                            ))
-                    totals = pivot.sum(axis=1)
-                    annotations = [
-                        dict(
-                            x=totals[brand], y=brand,
-                            text=f"<b>{totals[brand]:,.0f}</b>",
-                            xanchor="left", yanchor="middle",
-                            showarrow=False,
-                            font=dict(color="#000000", size=11),
-                            xshift=6,
-                        )
-                        for brand in pivot.index
-                    ]
-                    fig.update_layout(
-                        barmode="stack",
-                        height=max(340, len(pivot) * 36),
-                        margin=dict(t=20, b=60, l=160, r=160),
-                        xaxis=_axis(grid=True, title="금액 (원)", range=[0, totals.max() * 1.35]),
-                        yaxis=_axis(autorange="reversed"),
-                        legend=dict(
-                            font=dict(color="#000000"),
-                            title=dict(text="구분  (<b>굵은 숫자</b> = 합계)", font=dict(color="#000000", size=11)),
-                        ),
-                        annotations=annotations,
-                        **_LAYOUT_BASE,
+        if _chart_view == "요금 순위" and amount_col:
+            # Fee type radio — only shown for fee view
+            _fee_radio_opts = (["소계"] if total_col else ["전용 합계"]) + \
+                              (["기본요금"] if base_col else []) + \
+                              (["사용요금"] if usage_fee_col else []) + \
+                              (["공용요금"] if comm_fee_col else [])
+            fee_sel = st.radio(
+                "요금 항목", _fee_radio_opts,
+                horizontal=True, key="hvac_fee_sel",
+            )
+            top_brands = (fdf.groupby("브랜드")[amount_col].sum()
+                          .dropna().sort_values(ascending=False).head(top_n).index.tolist())
+            sub_fdf = fdf[fdf["브랜드"].isin(top_brands)]
+            if fee_sel in ("전용 합계", "소계"):
+                _base_vals  = sub_fdf.groupby("브랜드")[base_col].sum().reindex(top_brands).fillna(0)      if base_col      else pd.Series(0, index=top_brands)
+                _usage_vals = sub_fdf.groupby("브랜드")[usage_fee_col].sum().reindex(top_brands).fillna(0) if usage_fee_col else pd.Series(0, index=top_brands)
+                _comm_vals  = sub_fdf.groupby("브랜드")[comm_fee_col].sum().reindex(top_brands).fillna(0)  if comm_fee_col  else pd.Series(0, index=top_brands)
+                _pivot_dict = {"기본요금": _base_vals, "사용요금": _usage_vals}
+                if comm_fee_col:
+                    _pivot_dict["공용요금"] = _comm_vals
+                pivot = pd.DataFrame(_pivot_dict, index=top_brands)
+                pivot = pivot.assign(_total=pivot.sum(axis=1)).sort_values("_total", ascending=False).drop(columns="_total")
+                fig = go.Figure()
+                _stacked_traces = [("기본요금", "#9B59B6"), ("사용요금", "#27AE60")]
+                if comm_fee_col:
+                    _stacked_traces.append(("공용요금", "#E67E22"))
+                for label, color in _stacked_traces:
+                    if label in pivot.columns:
+                        fig.add_trace(go.Bar(
+                            name=label, x=pivot[label], y=pivot.index.astype(str),
+                            orientation="h", marker_color=color,
+                        ))
+                totals = pivot.sum(axis=1)
+                annotations = [
+                    dict(
+                        x=totals[brand], y=brand,
+                        text=f"<b>{totals[brand]:,.0f}</b>",
+                        xanchor="left", yanchor="middle",
+                        showarrow=False,
+                        font=dict(color="#000000", size=11),
+                        xshift=6,
                     )
-                    _stat_entries = [("기본요금 (원)", pivot["기본요금"]), ("사용요금 (원)", pivot["사용요금"])]
-                    if comm_fee_col:
-                        _stat_entries.append(("공용요금 (원)", pivot["공용요금"]))
-                    _denom_lbl = "소계 (원)" if total_col else "전용 합계 (원)"
-                    _stat_entries.append((_denom_lbl, totals))
-                    _total_fee = totals.sum()
-                    _stats_table(_stat_entries, total_sum=_total_fee if _total_fee else None)
-                    st.plotly_chart(fig, use_container_width=True, key="hvac_fee_stacked", theme=None)
-                else:
-                    if fee_sel == "기본요금":
-                        fee_col, color = base_col, "#9B59B6"
-                    elif fee_sel == "사용요금":
-                        fee_col, color = usage_fee_col, "#27AE60"
-                    else:  # 공용요금
-                        fee_col, color = comm_fee_col, "#E67E22"
-                    grp = sub_fdf.groupby("브랜드")[fee_col].sum().reindex(top_brands).fillna(0)
-                    grp = grp.sort_values(ascending=False)
-                    _overall_total = sub_fdf.groupby("브랜드")[amount_col].sum().reindex(top_brands).fillna(0).sum()
-                    _stats_table([(f"{fee_sel} (원)", grp)], total_sum=_overall_total if _overall_total else None)
-                    _hbar(grp, f"{fee_sel} (원)", color, "hvac_fee_single")
+                    for brand in pivot.index
+                ]
+                fig.update_layout(
+                    barmode="stack",
+                    height=max(340, len(pivot) * 36),
+                    margin=dict(t=20, b=60, l=160, r=160),
+                    xaxis=_axis(grid=True, title="금액 (원)", range=[0, totals.max() * 1.35]),
+                    yaxis=_axis(autorange="reversed"),
+                    legend=dict(
+                        font=dict(color="#000000"),
+                        title=dict(text="구분  (<b>굵은 숫자</b> = 합계)", font=dict(color="#000000", size=11)),
+                    ),
+                    annotations=annotations,
+                    **_LAYOUT_BASE,
+                )
+                st.plotly_chart(fig, use_container_width=True, key="hvac_fee_stacked", theme=None)
+                _stat_entries = [("기본요금 (원)", pivot["기본요금"]), ("사용요금 (원)", pivot["사용요금"])]
+                if comm_fee_col:
+                    _stat_entries.append(("공용요금 (원)", pivot["공용요금"]))
+                _denom_lbl = "소계 (원)" if total_col else "전용 합계 (원)"
+                _stat_entries.append((_denom_lbl, totals))
+                _stat_total = float(totals.sum()) or None
+            else:
+                if fee_sel == "기본요금":
+                    fee_col_sel, color = base_col, "#9B59B6"
+                elif fee_sel == "사용요금":
+                    fee_col_sel, color = usage_fee_col, "#27AE60"
+                else:  # 공용요금
+                    fee_col_sel, color = comm_fee_col, "#E67E22"
+                grp = sub_fdf.groupby("브랜드")[fee_col_sel].sum().reindex(top_brands).fillna(0)
+                grp = grp.sort_values(ascending=False)
+                _overall_total = sub_fdf.groupby("브랜드")[amount_col].sum().reindex(top_brands).fillna(0).sum()
+                _hbar(grp, f"{fee_sel} (원)", color, "hvac_fee_single")
+                _stat_entries = [(f"{fee_sel} (원)", grp)]
+                _stat_total = float(_overall_total) or None
+
+        elif _chart_view == "사용량 순위" and usage_col:
+            grp_usage = (fdf.groupby("브랜드")[usage_col].sum()
+                         .dropna().nlargest(top_n).sort_values(ascending=False))
+            _hbar(grp_usage, "사용량 (Mcal)", _WATER_COLOR, "hvac_rank_usage")
+            _stat_entries = [("사용량 (Mcal)", grp_usage)]
+
+        with st.expander("통계"):
+            if _stat_entries:
+                _stats_table(_stat_entries, total_sum=_stat_total)
 
     with tab_prop:
         if _prop_data is not None:
@@ -611,103 +649,89 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
             _total_usage_pct = _agg[usage_fee_col].sum() / _denom_sum * 100
             _total_comm_pct  = _agg[comm_fee_col].sum()  / _denom_sum * 100 if comm_fee_col else 0
             _ratio           = (_agg[base_col] / _agg[usage_fee_col].replace(0, pd.NA)).dropna()
-            _ratio_pct_all   = _ratio * 100
+            _ratio_pct       = _ratio * 100
             _denom_label     = "소계" if total_col else "전용 합계"
 
-            # ── Combined summary ──────────────────────────────────────────────
-            _dominant_overall = max(
-                [("기본요금", _total_base_pct), ("사용요금", _total_usage_pct), ("공용요금", _total_comm_pct)],
-                key=lambda x: x[1]
-            )[0]
-            _n_base_dom  = int((_ratio_pct_all > 110).sum())
-            _n_usage_dom = int((_ratio_pct_all < 90).sum())
-            _n_equal     = len(_ratio_pct_all) - _n_base_dom - _n_usage_dom
-            _high_base_n = int((_base_pct > 80).sum())
-            _comm_line   = f" / 공용 {_total_comm_pct:.1f}%" if comm_fee_col else ""
-            _prop_summary = (
-                f"소계 구성 (Excel P = K + M + O): "
-                f"기본 {_total_base_pct:.1f}% / 사용 {_total_usage_pct:.1f}%{_comm_line}.  \n"
-                f"**{_dominant_overall}**이 가장 큰 비중을 차지합니다.  \n"
-                f"업체별 기본:사용 비율 — 기본요금 우세 {_n_base_dom}개, 사용요금 우세 {_n_usage_dom}개, 동일 {_n_equal}개."
-            )
-            if _high_base_n:
-                _prop_summary += f"  \n기본요금 비중 80% 초과 업체 {_high_base_n}개 — 고정 부담이 두드러집니다."
-            st.info(_prop_summary)
+            _n_base_dom  = int((_ratio_pct > 110).sum())
+            _n_usage_dom = int((_ratio_pct < 90).sum())
 
-            _sub_pct, _sub_ratio = st.tabs(["비중", "비율"])
+            # ── Precompute shared objects (used across views) ─────────────────
+            _ratio_num = _ratio_pct.reindex(_agg.index)
 
-            with _sub_pct:
-                _n_stat_cols = 4 if not comm_fee_col else 4
-                for _fee_lbl, _fee_s in [("기본요금", _base_pct), ("사용요금", _usage_pct)] + \
-                                        ([("공용요금", _comm_pct)] if comm_fee_col else []):
-                    _sc = st.columns(4)
-                    _sc[0].metric(f"{_fee_lbl} 비중 평균",   f"{_fee_s.mean():.1f}%")
-                    _sc[1].metric(f"{_fee_lbl} 비중 중앙값", f"{_fee_s.median():.1f}%")
-                    _sc[2].metric(f"{_fee_lbl} 비중 최대",   f"{_fee_s.max():.1f}%")
-                    _sc[3].metric(f"{_fee_lbl} 비중 최소",   f"{_fee_s.min():.1f}%")
+            def _dominant_label(v):
+                if pd.isna(v):  return "—"
+                if v >= 200:    return "기본요금 우세 ●●●"
+                if v >= 150:    return "기본요금 우세 ●●"
+                if v >= 110:    return "기본요금 우세 ●"
+                if v <= 50:     return "사용요금 우세 ●●●"
+                if v <= 75:     return "사용요금 우세 ●●"
+                if v < 90:      return "사용요금 우세 ●"
+                return "동일"
 
-                _pct_cols_raw  = [c for c in [base_col, usage_fee_col, comm_fee_col, _denom_col] if c]
-                _pct_cols_lbl  = ["기본요금 (원)", "사용요금 (원)"] + \
-                                 (["공용요금 (원)"] if comm_fee_col else []) + \
-                                 [f"{_denom_label} (원)"]
-                _pct_bpct_cols = ["기본요금 비중(%)", "사용요금 비중(%)"] + \
-                                 (["공용요금 비중(%)"] if comm_fee_col else [])
-                _pct_table = _agg[_pct_cols_raw + _pct_bpct_cols].copy()
-                _pct_table.columns = _pct_cols_lbl + _pct_bpct_cols
-                for _c in _pct_cols_lbl:
-                    _pct_table[_c] = _pct_table[_c].map(lambda v: f"{v:,.0f}")
-                for _c in _pct_bpct_cols:
-                    _pct_table[_c] = _pct_table[_c].map(lambda v: f"{v:.1f}%")
-                st.dataframe(st_safe(_pct_table.sort_values("기본요금 비중(%)", ascending=False)),
-                             use_container_width=True)
+            _label_colors = {
+                "기본요금 우세 ●●●": "background-color: #6C3483; color: white",
+                "기본요금 우세 ●●":  "background-color: #9B59B6; color: white",
+                "기본요금 우세 ●":   "background-color: #C39BD3",
+                "동일":             "background-color: #D5F5E3",
+                "사용요금 우세 ●":   "background-color: #F1948A",
+                "사용요금 우세 ●●":  "background-color: #E74C3C; color: white",
+                "사용요금 우세 ●●●": "background-color: #C0392B; color: white",
+            }
 
-                with st.expander("비중 해석"):
-                    _base_std = _base_pct.std()
-                    _comp_str = f"기본요금 {_total_base_pct:.1f}%, 사용요금 {_total_usage_pct:.1f}%" + \
-                                (f", 공용요금 {_total_comm_pct:.1f}%" if comm_fee_col else "")
-                    st.markdown(
-                        f"- {_denom_label} 구성 (P = K + M{' + O' if comm_fee_col else ''}): **{_comp_str}**. "
-                        + ("기본요금이 가장 높아 사용량과 무관한 고정 부담이 큰 구조입니다."
-                           if _total_base_pct == max(_total_base_pct, _total_usage_pct, _total_comm_pct)
-                           else "사용요금이 가장 높아 실제 냉난방 사용량이 요금의 주요 결정 요인입니다.")
+            _ratio_table = pd.DataFrame({
+                "기본요금 (원)":       _agg[base_col].map(lambda v: f"{v:,.0f}"),
+                "사용요금 (원)":       _agg[usage_fee_col].map(lambda v: f"{v:,.0f}"),
+                "비율 (기본÷사용, %)": _ratio_num.map(lambda v: f"{v:.1f}%" if pd.notna(v) else "—"),
+                "우세 항목":          _ratio_num.map(_dominant_label),
+            }, index=_agg.index).sort_values("비율 (기본÷사용, %)", ascending=False)
+
+            _above1_mask = _ratio_pct > 100
+            _below1_mask = _ratio_pct < 100
+            _equal_mask  = ~_above1_mask & ~_below1_mask
+
+            _ref_cols_for_table = [c for c in [base_col, usage_fee_col, comm_fee_col, _denom_col] if c]
+            _ref_rename_map = {
+                base_col:      "기본요금 (원)",
+                usage_fee_col: "사용요금 (원)",
+                _denom_col:    "소계 (원)" if total_col else "전용 합계 (원)",
+            }
+            if comm_fee_col:
+                _ref_rename_map[comm_fee_col] = "공용요금 (원)"
+
+            # ── Summary metrics row ───────────────────────────────────────────
+            _m_cols = 3 + (1 if comm_fee_col else 0)
+            _mc2 = st.columns(_m_cols)
+            _mc2[0].metric("기본요금 비중", f"{_total_base_pct:.1f}%")
+            _mc2[1].metric("사용요금 비중", f"{_total_usage_pct:.1f}%")
+            if comm_fee_col:
+                _mc2[2].metric("공용요금 비중", f"{_total_comm_pct:.1f}%")
+            _mc2[-1].metric("기본 우세 업체", f"{_n_base_dom}개",
+                            f"사용 우세 {_n_usage_dom}개", delta_color="off")
+
+            st.divider()
+
+            _pv_l, _pv_r = st.columns([3, 2])
+            with _pv_l:
+                _prop_view = st.radio(
+                    "보기", ["구성 비중", "기본÷사용 비율", "분포"],
+                    horizontal=True, key="hvac_prop_view",
+                )
+            with _pv_r:
+                if _prop_view == "구성 비중":
+                    _comp_view = st.radio(
+                        "구분", ["전체 구성 비중", "업체별 요금 구성 비중"],
+                        horizontal=True, key="hvac_comp_view",
                     )
-                    st.markdown(
-                        f"- 업체별 기본요금 비중의 표준편차가 {_base_std:.1f}%p로 "
-                        + (f"크며, 최소 {_base_pct.min():.1f}%에서 최대 {_base_pct.max():.1f}%까지 분포합니다. 업체마다 요금 구성 비율이 크게 다름을 의미합니다."
-                           if _base_std > 20 else
-                           "작아 대부분의 업체가 유사한 요금 구성 비율을 보입니다.")
-                    )
+            st.divider()
 
-                    _ref_cols_for_table = [c for c in [base_col, usage_fee_col, comm_fee_col, _denom_col] if c]
-                    _ref_rename_map = {
-                        base_col:      "기본요금 (원)",
-                        usage_fee_col: "사용요금 (원)",
-                        _denom_col:    "소계 (원)" if total_col else "전용 합계 (원)",
-                    }
-                    if comm_fee_col:
-                        _ref_rename_map[comm_fee_col] = "공용요금 (원)"
+            # ── View: 구성 비중 ───────────────────────────────────────────────
+            if _prop_view == "구성 비중":
+                if "hvac_comp_view" not in st.session_state:
+                    st.session_state["hvac_comp_view"] = "전체 구성 비중"
+                _comp_view = st.session_state.get("hvac_comp_view", "전체 구성 비중")
 
-                    _high_base = _agg[_agg["기본요금 비중(%)"] > 80][_ref_cols_for_table + ["기본요금 비중(%)"]].copy()
-                    if not _high_base.empty:
-                        st.markdown(f"- 기본요금 비중이 **80% 초과**인 업체 {len(_high_base)}개 — 사용량이 거의 없음에도 기본요금만 부과되는 업체입니다.")
-                        _high_base = _high_base.rename(columns=_ref_rename_map)
-                        _num_cols_hb = [c for c in _high_base.columns if c != "기본요금 비중(%)"]
-                        for _c in _num_cols_hb:
-                            _high_base[_c] = _high_base[_c].map(lambda v: f"{v:,.0f}")
-                        _high_base["기본요금 비중(%)"] = _high_base["기본요금 비중(%)"].map(lambda v: f"{v:.1f}%")
-                        st.dataframe(st_safe(_high_base.sort_values("기본요금 비중(%)", ascending=False)), use_container_width=True)
-
-                    _no_base_cols = [c for c in [base_col, usage_fee_col, comm_fee_col, _denom_col] if c]
-                    _no_base = _agg[_agg[base_col] == 0][_no_base_cols].copy()
-                    if not _no_base.empty:
-                        st.markdown(f"- **기본요금이 0**인 업체 {len(_no_base)}개 — 사용요금만 부과되고 있습니다.")
-                        _no_base = _no_base.rename(columns=_ref_rename_map)
-                        for _c in _no_base.columns:
-                            _no_base[_c] = _no_base[_c].map(lambda v: f"{v:,.0f}")
-                        st.dataframe(st_safe(_no_base), use_container_width=True)
-
-                _col_donut, _col_bar = st.columns([1, 2])
-                with _col_donut:
+                if _comp_view == "전체 구성 비중":
+                    # ── Donut ────────────────────────────────────────────────
                     _donut_labels = ["기본요금", "사용요금"]
                     _donut_values = [_total_base_pct, _total_usage_pct]
                     _donut_colors = ["#9B59B6", "#27AE60"]
@@ -725,7 +749,7 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                         insidetextorientation="radial",
                     ))
                     _fig_donut.update_layout(
-                        height=280,
+                        height=320,
                         margin=dict(t=30, b=10, l=10, r=10),
                         showlegend=False,
                         annotations=[dict(text="전체", x=0.5, y=0.5,
@@ -734,7 +758,24 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     )
                     st.plotly_chart(_fig_donut, use_container_width=True, key="hvac_donut", theme=None)
 
-                with _col_bar:
+                    # ── Stats table ──────────────────────────────────────────
+                    _comp_rows = [("기본요금", _total_base_pct, _base_pct),
+                                  ("사용요금", _total_usage_pct, _usage_pct)]
+                    if comm_fee_col:
+                        _comp_rows.append(("공용요금", _total_comm_pct, _comm_pct))
+                    st.dataframe(pd.DataFrame([{
+                        "항목":       lbl,
+                        "전체 비중":  f"{total:.1f}%",
+                        "업체 평균":  f"{s.mean():.1f}%",
+                        "중앙값":     f"{s.median():.1f}%",
+                        "표준편차":   f"{s.std():.1f}%",
+                        "최대":       f"{s.max():.1f}%",
+                        "최소":       f"{s.min():.1f}%",
+                    } for lbl, total, s in _comp_rows]),
+                    hide_index=True, use_container_width=True)
+
+                else:  # 업체별 요금 구성 비중
+                    # ── Stacked bar ──────────────────────────────────────────
                     _sorted = _agg.sort_values("기본요금 비중(%)", ascending=True)
                     _fig_prop = go.Figure()
                     _bar_traces = [("기본요금 비중(%)", "#9B59B6"), ("사용요금 비중(%)", "#27AE60")]
@@ -762,81 +803,31 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     )
                     st.plotly_chart(_fig_prop, use_container_width=True, key="hvac_prop_stack", theme=None)
 
-            with _sub_ratio:
-                _ratio_pct = _ratio * 100  # express as percentage
-                _rc = st.columns(4)
-                _rc[0].metric("평균 비율",   f"{_ratio_pct.mean():.1f}%")
-                _rc[1].metric("중앙값 비율", f"{_ratio_pct.median():.1f}%")
-                _rc[2].metric("최대",        f"{_ratio_pct.max():.1f}%")
-                _rc[3].metric("최소",        f"{_ratio_pct.min():.1f}%")
+                    # ── Stats table ──────────────────────────────────────────
+                    _prop_stat_rows = []
+                    for _plbl, _ps in [("기본요금", _base_pct), ("사용요금", _usage_pct)] + \
+                                      ([("공용요금", _comm_pct)] if comm_fee_col else []):
+                        _prop_stat_rows.append({
+                            "항목":    _plbl,
+                            "평균":    f"{_ps.mean():.1f}%",
+                            "중앙값":  f"{_ps.median():.1f}%",
+                            "표준편차": f"{_ps.std():.1f}%",
+                            "최대":    f"{_ps.max():.1f}%",
+                            "최소":    f"{_ps.min():.1f}%",
+                        })
+                    st.dataframe(pd.DataFrame(_prop_stat_rows), hide_index=True, use_container_width=True)
 
-                _ratio_num = _ratio_pct.reindex(_agg.index)
-
-                def _dominant_label(v):
-                    if pd.isna(v):  return "—"
-                    if v >= 200:    return "기본요금 우세 ●●●"
-                    if v >= 150:    return "기본요금 우세 ●●"
-                    if v >= 110:    return "기본요금 우세 ●"
-                    if v <= 50:     return "사용요금 우세 ●●●"
-                    if v <= 75:     return "사용요금 우세 ●●"
-                    if v < 90:      return "사용요금 우세 ●"
-                    return "동일"
-
-                _label_colors = {
-                    "기본요금 우세 ●●●": "background-color: #6C3483; color: white",
-                    "기본요금 우세 ●●":  "background-color: #9B59B6; color: white",
-                    "기본요금 우세 ●":   "background-color: #C39BD3",
-                    "동일":             "background-color: #D5F5E3",
-                    "사용요금 우세 ●":   "background-color: #F1948A",
-                    "사용요금 우세 ●●":  "background-color: #E74C3C; color: white",
-                    "사용요금 우세 ●●●": "background-color: #C0392B; color: white",
-                }
-
-                _ratio_table = pd.DataFrame({
-                    "기본요금 (원)":       _agg[base_col].map(lambda v: f"{v:,.0f}"),
-                    "사용요금 (원)":       _agg[usage_fee_col].map(lambda v: f"{v:,.0f}"),
-                    "비율 (기본÷사용, %)": _ratio_num.map(lambda v: f"{v:.1f}%" if pd.notna(v) else "—"),
-                    "우세 항목":          _ratio_num.map(_dominant_label),
-                }, index=_agg.index).sort_values("비율 (기본÷사용, %)", ascending=False)
-
-                st.dataframe(
-                    _ratio_table.style.applymap(
-                        lambda v: _label_colors.get(v, ""),
-                        subset=["우세 항목"],
-                    ),
-                    use_container_width=True,
-                )
-
-                with st.expander("비율 해석"):
-                    _above1_mask = _ratio_pct > 100
-                    _below1_mask = _ratio_pct < 100
-                    _above1 = int(_above1_mask.sum())
-                    _below1 = int(_below1_mask.sum())
-
-                    st.markdown("- 비율 = 기본요금 ÷ 사용요금 × 100(%)으로, 100%이면 두 항목이 동일, 100% 초과이면 기본요금이 더 높고 100% 미만이면 사용요금이 더 높음을 의미합니다.")
-                    st.markdown(
-                        f"- 평균 {_ratio_pct.mean():.1f}% — " + (
-                            "전반적으로 기본요금이 사용요금보다 높아 고정 부담이 큰 구조입니다."
-                            if _ratio_pct.mean() > 100 else
-                            "전반적으로 사용요금이 기본요금보다 높아 실제 사용량이 요금을 주도합니다."
-                        )
-                    )
-
-                    def _ratio_subtable(mask, label):
-                        if not mask.any():
-                            return
-                        st.markdown(f"- **{label}** ({int(mask.sum())}개)")
-                        _t = _agg.loc[mask.index[mask], [base_col, usage_fee_col]].copy()
-                        _t.columns = ["기본요금 (원)", "사용요금 (원)"]
-                        _t["비율 (%)"] = _ratio_pct[mask].map(lambda v: f"{v:.1f}%")
-                        for _c in ["기본요금 (원)", "사용요금 (원)"]:
-                            _t[_c] = _t[_c].map(lambda v: f"{v:,.0f}")
-                        st.dataframe(st_safe(_t), use_container_width=True)
-
-                    _ratio_subtable(_above1_mask, "기본요금 > 사용요금")
-                    _ratio_subtable(_below1_mask, "기본요금 < 사용요금")
-                    _equal_mask = ~_above1_mask & ~_below1_mask
-                    _ratio_subtable(_equal_mask, "기본요금 ≈ 사용요금 (동일)")
+            # ── View: 기본÷사용 비율 ─────────────────────────────────────────
+            elif _prop_view == "기본÷사용 비율":
+                _rmc = st.columns(4)
+                _rmc[0].metric("평균 비율",   f"{_ratio_pct.mean():.1f}%",
+                               "전체 업체의 평균", delta_color="off")
+                _rmc[1].metric("중앙값 비율", f"{_ratio_pct.median():.1f}%",
+                               "상위 50% 기준선", delta_color="off")
+                _rmc[2].metric("최고 비율",   f"{_ratio_pct.max():.1f}%",
+                               "기본요금 부담 가장 큰 업체", delta_color="off")
+                _rmc[3].metric("최저 비율",   f"{_ratio_pct.min():.1f}%",
+                               "사용요금 비중 가장 큰 업체", delta_color="off")
 
                 _ratio_sorted = _ratio_pct.sort_values(ascending=False)
                 _fig_ratio = go.Figure(go.Bar(
@@ -866,10 +857,623 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     **_LAYOUT_BASE,
                 )
                 st.plotly_chart(_fig_ratio, use_container_width=True, key="hvac_ratio_bar", theme=None)
+
+            # ── View: 분포 ────────────────────────────────────────────────────
+            elif _prop_view == "분포":
+                _fee_hist_opts = [("기본요금 비중", _base_pct, "#9B59B6"),
+                                  ("사용요금 비중", _usage_pct, "#27AE60")] + \
+                                 ([("공용요금 비중", _comm_pct, "#E67E22")] if comm_fee_col else [])
+                _hist_sel = st.radio("항목", [l for l, _, _ in _fee_hist_opts],
+                                     horizontal=True, key="hvac_pct_hist_sel")
+                _hist_s, _hist_clr = next((s, c) for l, s, c in _fee_hist_opts if l == _hist_sel)
+                _hist(_hist_s, f"{_hist_sel} (%)", _hist_clr, "hvac_pct_hist")
+
+                # ── Stats table ───────────────────────────────────────────────
+                _hs = _hist_s.dropna()
+                _h_tail = float(st.session_state.get("tail", 10))
+                _h_lo   = float(np.percentile(_hs, _h_tail))
+                _h_hi   = float(np.percentile(_hs, 100 - _h_tail))
+                st.dataframe(pd.DataFrame([{
+                    "n":    len(_hs),
+                    "최솟값":  f"{_hs.min():.1f}%",
+                    f"하위 {_h_tail:.0f}%": f"{_h_lo:.1f}%",
+                    "중앙값":  f"{_hs.median():.1f}%",
+                    "평균":    f"{_hs.mean():.1f}%",
+                    "표준편차": f"{_hs.std():.1f}%",
+                    f"상위 {_h_tail:.0f}%": f"{_h_hi:.1f}%",
+                    "최댓값":  f"{_hs.max():.1f}%",
+                }]), hide_index=True, use_container_width=True)
+
+                # ── Tail brand tables ─────────────────────────────────────────
+                _tail_low  = _hs[_hs <= _h_lo]
+                _tail_high = _hs[_hs >= _h_hi]
+                _middle    = _hs[(_hs > _h_lo) & (_hs < _h_hi)].sort_values(ascending=False)
+                _tail_cols_raw = [c for c in [base_col, usage_fee_col, comm_fee_col, _denom_col] if c]
+                _tail_rename   = {
+                    base_col:      "기본요금 (원)",
+                    usage_fee_col: "사용요금 (원)",
+                    _denom_col:    "소계 (원)" if total_col else "전용 합계 (원)",
+                }
+                if comm_fee_col:
+                    _tail_rename[comm_fee_col] = "공용요금 (원)"
+
+                def _tail_table(mask_s: pd.Series, caption: str):
+                    if mask_s.empty:
+                        return
+                    st.caption(caption)
+                    _pct_lbl = f"{_hist_sel} (%)"
+                    _t = _agg.loc[mask_s.index, _tail_cols_raw].copy().rename(columns=_tail_rename)
+                    for _c in _t.columns:
+                        _t[_c] = _t[_c].map(lambda v: f"{v:,.0f}")
+                    _t.insert(0, _pct_lbl, mask_s.map(lambda v: f"{v:.1f}%"))
+                    st.dataframe(st_safe(_t.sort_values(_pct_lbl)), use_container_width=True)
+
+                with st.expander("구간별 업체 상세"):
+                    _tail_table(_tail_high.sort_values(ascending=False),
+                                f"상위 꼬리 — {_hist_sel} {_h_hi:.1f}% 초과 ({len(_tail_high)}개 업체)")
+                    _tail_table(_middle.sort_values(ascending=False),
+                                f"중간 구간 — {_h_lo:.1f}% ~ {_h_hi:.1f}% ({len(_middle)}개 업체)")
+                    _tail_table(_tail_low.sort_values(),
+                                f"하위 꼬리 — {_hist_sel} {_h_lo:.1f}% 미만 ({len(_tail_low)}개 업체)")
+
+            # ── Tables in expanders (always shown) ────────────────────────────
+            st.divider()
+            with st.expander("비중 분포 요약"):
+                _pct_stat_rows = []
+                for _fee_lbl, _fee_s in [("기본요금", _base_pct), ("사용요금", _usage_pct)] + \
+                                        ([("공용요금", _comm_pct)] if comm_fee_col else []):
+                    _pct_stat_rows.append({
+                        "항목": _fee_lbl,
+                        "평균":   f"{_fee_s.mean():.1f}%",
+                        "중앙값": f"{_fee_s.median():.1f}%",
+                        "최대":   f"{_fee_s.max():.1f}%",
+                        "최소":   f"{_fee_s.min():.1f}%",
+                    })
+                st.dataframe(pd.DataFrame(_pct_stat_rows), use_container_width=True, hide_index=True)
+
+            with st.expander("업체별 비중 상세"):
+                _pct_cols_raw  = [c for c in [base_col, usage_fee_col, comm_fee_col, _denom_col] if c]
+                _pct_cols_lbl  = ["기본요금 (원)", "사용요금 (원)"] + \
+                                 (["공용요금 (원)"] if comm_fee_col else []) + \
+                                 [f"{_denom_label} (원)"]
+                _pct_bpct_cols = ["기본요금 비중(%)", "사용요금 비중(%)"] + \
+                                 (["공용요금 비중(%)"] if comm_fee_col else [])
+                _pct_table = _agg[_pct_cols_raw + _pct_bpct_cols].copy()
+                _pct_table.columns = _pct_cols_lbl + _pct_bpct_cols
+                for _c in _pct_cols_lbl:
+                    _pct_table[_c] = _pct_table[_c].map(lambda v: f"{v:,.0f}")
+                for _c in _pct_bpct_cols:
+                    _pct_table[_c] = _pct_table[_c].map(lambda v: f"{v:.1f}%")
+                st.dataframe(st_safe(_pct_table.sort_values("기본요금 비중(%)", ascending=False)),
+                             use_container_width=True)
+
+            with st.expander("업체별 비율 상세"):
+                st.dataframe(
+                    _ratio_table.style.applymap(
+                        lambda v: _label_colors.get(v, ""),
+                        subset=["우세 항목"],
+                    ),
+                    use_container_width=True,
+                )
+                for _mask, _lbl in [(_above1_mask, f"기본 > 사용 — {int(_above1_mask.sum())}개 업체"),
+                                    (_below1_mask, f"사용 > 기본 — {int(_below1_mask.sum())}개 업체"),
+                                    (_equal_mask,  f"동일 — {int(_equal_mask.sum())}개 업체")]:
+                    if _mask.any():
+                        st.caption(_lbl)
+                        _t = _agg.loc[_mask.index[_mask], [base_col, usage_fee_col]].copy()
+                        _t.columns = ["기본요금 (원)", "사용요금 (원)"]
+                        _t["비율 (%)"] = _ratio_pct[_mask].map(lambda v: f"{v:.1f}%")
+                        for _c in ["기본요금 (원)", "사용요금 (원)"]:
+                            _t[_c] = _t[_c].map(lambda v: f"{v:,.0f}")
+                        st.dataframe(st_safe(_t), use_container_width=True)
+
+            _high_base = _agg[_agg["기본요금 비중(%)"] > 80][_ref_cols_for_table + ["기본요금 비중(%)"]].copy()
+            _no_base   = _agg[_agg[base_col] == 0][_ref_cols_for_table].copy() if base_col else pd.DataFrame()
+            if not _high_base.empty or not _no_base.empty:
+                with st.expander("심층 분석"):
+                    if not _high_base.empty:
+                        st.caption(f"기본요금 비중 > 80% — {len(_high_base)}개 업체")
+                        _hb = _high_base.rename(columns=_ref_rename_map).copy()
+                        for _c in [c for c in _hb.columns if c != "기본요금 비중(%)"]:
+                            _hb[_c] = _hb[_c].map(lambda v: f"{v:,.0f}")
+                        _hb["기본요금 비중(%)"] = _hb["기본요금 비중(%)"].map(lambda v: f"{v:.1f}%")
+                        st.dataframe(st_safe(_hb.sort_values("기본요금 비중(%)", ascending=False)),
+                                     use_container_width=True)
+                    if not _no_base.empty:
+                        st.caption(f"기본요금 = 0 — {len(_no_base)}개 업체")
+                        _nb = _no_base.rename(columns=_ref_rename_map).copy()
+                        for _c in _nb.columns:
+                            _nb[_c] = _nb[_c].map(lambda v: f"{v:,.0f}")
+                        st.dataframe(st_safe(_nb), use_container_width=True)
+
         else:
             st.info("기본요금 또는 사용요금 컬럼이 없어 비중 분석을 표시할 수 없습니다.")
 
-    with tab_summary:
+    with tab_fair:
+        _fee_col = total_col or amount_col
+        if not _fee_col:
+            st.info("소계 또는 전용 합계 컬럼이 없어 비용 비교 분석을 표시할 수 없습니다.")
+        else:
+            _fv_l, _fv_r = st.columns([3, 5])
+            with _fv_l:
+                _fair_view = st.radio(
+                    "분석 기준", ["단위면적당 요금 (원/㎡·평)", "단위사용량당 요금 (원/Mcal)"],
+                    horizontal=False, key="hvac_fair_view",
+                )
+            with _fv_r:
+                st.caption(
+                    "면적·사용량 규모를 보정해 업체 간 부담 수준을 동일 기준으로 나란히 비교합니다. "
+                    "이상치 업체는 IQR 기준으로 표시됩니다."
+                )
+            st.divider()
+
+            # ── IQR outlier helper ────────────────────────────────────────────
+            def _fair_chart_and_analysis(series: pd.Series, unit: str, key_sfx: str):
+                s = series.dropna()
+                s = s[s > 0]
+                if s.empty:
+                    st.info("계산 가능한 데이터가 없습니다.")
+                    return
+
+                q25, q75 = s.quantile(0.25), s.quantile(0.75)
+                iqr       = q75 - q25
+                upper     = q75 + 1.5 * iqr
+                lower     = max(q25 - 1.5 * iqr, 0.0)
+                med       = s.median()
+                mean      = s.mean()
+                cv        = s.std() / mean if mean else 0
+
+                # ── Shared outlier table helper ───────────────────────────────
+                _detail_cols = [c for c in [base_col, usage_fee_col, comm_fee_col, _fee_col, usage_col, area_col] if c]
+                _detail_rename = {
+                    base_col:      "기본요금 (원)",
+                    usage_fee_col: "사용요금 (원)",
+                    _fee_col:      "소계 (원)" if total_col else "전용 합계 (원)",
+                    usage_col:     "사용량 (Mcal)",
+                    area_col:      "면적 (㎡)",
+                }
+                if comm_fee_col:
+                    _detail_rename[comm_fee_col] = "공용요금 (원)"
+
+                def _outlier_table(idx, caption):
+                    if idx.empty:
+                        return
+                    st.caption(caption)
+                    _ot = brand_agg_all.loc[idx, [c for c in _detail_cols if c in brand_agg_all.columns]].copy()
+                    _ot = _ot.rename(columns={k: v for k, v in _detail_rename.items() if k in _ot.columns})
+                    _ot.insert(0, unit, s[idx].map(lambda v: f"{v:,.2f}"))
+                    for c in _ot.columns[1:]:
+                        _ot[c] = pd.to_numeric(_ot[c], errors="coerce").map(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                        )
+                    st.dataframe(st_safe(_ot.sort_values(unit, ascending=False)), use_container_width=True)
+
+                _chart_type = st.radio(
+                    "차트 유형", ["업체별 막대", "분포 히스토그램"],
+                    horizontal=True, key=f"hvac_fair_charttype_{key_sfx}",
+                )
+
+                if _chart_type == "업체별 막대":
+                    def _color(v):
+                        if v > upper:             return "#C44E52"
+                        if lower > 0 and v < lower: return "#55A868"
+                        return "#4C72B0"
+
+                    s_sorted = s.sort_values(ascending=False)
+                    colors = [_color(v) for v in s_sorted.values]
+
+                    fig = go.Figure(go.Bar(
+                        x=s_sorted.values,
+                        y=s_sorted.index.astype(str),
+                        orientation="h",
+                        marker_color=colors,
+                        marker_line=dict(color="white", width=0.6),
+                        text=[f"{v:,.1f}" for v in s_sorted.values],
+                        textposition="outside",
+                        textfont=dict(color="#000000", size=10),
+                    ))
+                    fig.add_vline(x=med,  line_dash="dot",  line_color="#C44E52", line_width=2,
+                                  annotation_text=f"<b>중앙값 {med:,.1f}</b>",
+                                  annotation_position="top right",
+                                  annotation_font=dict(color="#FFFFFF", size=11),
+                                  annotation_bgcolor="#C44E52",
+                                  annotation_bordercolor="#C44E52",
+                                  annotation_borderwidth=1, annotation_borderpad=3)
+                    fig.add_vline(x=upper, line_dash="dash", line_color="#C44E52", line_width=1.5,
+                                  annotation_text=f"상한 {upper:,.1f}",
+                                  annotation_position="bottom right",
+                                  annotation_font=dict(color="#C44E52", size=10))
+                    if lower > 0:
+                        fig.add_vline(x=lower, line_dash="dash", line_color="#55A868", line_width=1.5,
+                                      annotation_text=f"하한 {lower:,.1f}",
+                                      annotation_position="bottom right",
+                                      annotation_font=dict(color="#55A868", size=10))
+                    fig.update_layout(
+                        height=max(340, len(s_sorted) * 26),
+                        margin=dict(t=20, b=50, l=160, r=120),
+                        xaxis=_axis(grid=True, title=unit),
+                        yaxis=_axis(autorange="reversed"),
+                        **_LAYOUT_BASE,
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key=f"hvac_fair_{key_sfx}", theme=None)
+
+                    # ── Stats + expanders for bar chart (IQR) ─────────────────
+                    st.dataframe(pd.DataFrame([{
+                        "n": len(s), "최솟값": f"{s.min():,.2f}", "Q1": f"{q25:,.2f}",
+                        "중앙값": f"{med:,.2f}", "평균": f"{mean:,.2f}", "Q3": f"{q75:,.2f}",
+                        "최댓값": f"{s.max():,.2f}", "IQR": f"{iqr:,.2f}",
+                        "상한 (Q3+1.5×IQR)": f"{upper:,.2f}",
+                    }]), hide_index=True, use_container_width=True)
+
+                    _over_b   = s[s > upper]
+                    _under_b  = s[s < lower] if lower > 0 else pd.Series(dtype=float)
+                    _lo_mask_b = (s >= lower) if lower > 0 else pd.Series(True, index=s.index)
+                    _normal_b = s[(s <= upper) & _lo_mask_b]
+
+                    with st.expander("구간별 업체 상세"):
+                        _outlier_table(_over_b.index,   f"상위 이상치 — 상한({upper:,.1f}) 초과 ({len(_over_b)}개 업체)")
+                        _outlier_table(_normal_b.index, f"정상 범위 ({len(_normal_b)}개 업체)")
+                        if not _under_b.empty:
+                            _outlier_table(_under_b.index, f"하위 이상치 — 하한({lower:,.1f}) 미만 ({len(_under_b)}개 업체)")
+
+                else:  # 분포 히스토그램
+                    x      = s.values.astype(float)
+                    _bins  = int(st.session_state.get("bins", 10))
+                    _tail  = float(st.session_state.get("tail", 10))
+                    counts, edges = np.histogram(x, bins=_bins)
+                    midpoints = (edges[:-1] + edges[1:]) / 2
+                    widths    = edges[1:] - edges[:-1]
+                    lo_h = float(np.percentile(x, _tail))
+                    hi_h = float(np.percentile(x, 100 - _tail))
+                    xmin, xmax = float(x.min()), float(x.max())
+                    tail_mask   = np.array([(m <= lo_h or m >= hi_h) for m in midpoints])
+                    normal_mask = ~tail_mask
+
+                    _bkw = dict(
+                        marker_line_color="white", marker_line_width=0.8, opacity=0.9,
+                        textposition="outside", textfont=dict(size=9, color="#666666"),
+                    )
+                    hfig = go.Figure()
+                    hfig.add_trace(go.Bar(
+                        x=midpoints[normal_mask], y=counts[normal_mask], width=widths[normal_mask],
+                        name="일반", marker_color="#4C72B0",
+                        text=[str(c) if c > 0 else "" for c in counts[normal_mask]], **_bkw,
+                    ))
+                    hfig.add_trace(go.Bar(
+                        x=midpoints[tail_mask], y=counts[tail_mask], width=widths[tail_mask],
+                        name="꼬리", marker_color="#DD8A00",
+                        text=[str(c) if c > 0 else "" for c in counts[tail_mask]], **_bkw,
+                    ))
+                    hfig.add_trace(go.Scatter(x=[None], y=[None], name="중앙값", mode="lines",
+                                             line=dict(color="#C44E52", width=2, dash="dot")))
+                    hfig.add_trace(go.Scatter(x=[None], y=[None], name=f"하위/상위 {_tail:.0f}%", mode="lines",
+                                             line=dict(color="#111111", width=2, dash="dash")))
+                    eps = 1e-12
+                    if lo_h > xmin + eps:
+                        hfig.add_vrect(x0=xmin, x1=lo_h, fillcolor="#DD8A00", opacity=0.1, line_width=0)
+                    if hi_h < xmax - eps:
+                        hfig.add_vrect(x0=hi_h, x1=xmax, fillcolor="#DD8A00", opacity=0.1, line_width=0)
+                    hfig.add_vline(x=lo_h, line_dash="dash", line_color="#111111", line_width=1.5)
+                    hfig.add_vline(x=hi_h, line_dash="dash", line_color="#111111", line_width=1.5)
+                    hfig.add_vline(x=med,  line_dash="dot",  line_color="#C44E52", line_width=1.5)
+                    n_tail_h = int(np.sum(counts[tail_mask]))
+                    n_total_h = int(counts.sum())
+                    tail_pct_h = 100 * n_tail_h / n_total_h if n_total_h > 0 else 0
+                    hfig.add_annotation(
+                        xref="paper", yref="paper", x=0.99, y=0.55,
+                        xanchor="right", yanchor="top", showarrow=False,
+                        text=f"하위 {_tail:.0f}%  {lo_h:.1f}<br>상위 {_tail:.0f}%  {hi_h:.1f}<br>중앙값    {med:.1f}",
+                        font=dict(size=11, color="#333333", family="monospace"),
+                        bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA",
+                        borderwidth=1, borderpad=6, align="left",
+                    )
+                    hfig.update_layout(
+                        title=dict(
+                            text=f"<b>{unit} 분포</b>   <span style='font-size:12px;color:#888'>n={n_total_h} · 꼬리={n_tail_h} ({tail_pct_h:.1f}%)</span>",
+                            font=dict(size=13, color="#222222"), x=0,
+                        ),
+                        height=380, bargap=0,
+                        margin=dict(l=50, r=20, t=55, b=45),
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        xaxis=dict(
+                            title=unit, showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                            zeroline=False, showline=True, linecolor="#AAAAAA", linewidth=1,
+                            tickfont=dict(size=11, color="#222222"),
+                        ),
+                        yaxis=dict(
+                            title=dict(text="업체 수", font=dict(size=11, color="#222222")),
+                            showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                            zeroline=True, zerolinecolor="#AAAAAA", zerolinewidth=1,
+                            showline=True, linecolor="#AAAAAA", linewidth=1,
+                            rangemode="tozero", tickfont=dict(size=11, color="#222222"),
+                        ),
+                        font=dict(family="Arial, sans-serif"),
+                        showlegend=True,
+                        legend=dict(
+                            orientation="v", x=0.99, xanchor="right", y=0.97, yanchor="top",
+                            font=dict(size=11, color="#333333", family="monospace"),
+                            bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA", borderwidth=1,
+                        ),
+                    )
+                    st.plotly_chart(hfig, use_container_width=True, key=f"hvac_fair_hist_{key_sfx}", theme=None)
+
+                    # ── Stats + expanders for histogram (tail %) ──────────────
+                    st.dataframe(pd.DataFrame([{
+                        "n": len(s), "최솟값": f"{s.min():,.2f}",
+                        f"하위 {_tail:.0f}%": f"{lo_h:,.2f}", "중앙값": f"{med:,.2f}",
+                        "평균": f"{mean:,.2f}", f"상위 {_tail:.0f}%": f"{hi_h:,.2f}",
+                        "최댓값": f"{s.max():,.2f}",
+                    }]), hide_index=True, use_container_width=True)
+
+                    _tail_high_h = s[s >= hi_h]
+                    _tail_low_h  = s[s <= lo_h]
+                    _middle_h    = s[(s > lo_h) & (s < hi_h)]
+
+                    with st.expander("구간별 업체 상세"):
+                        _outlier_table(_tail_high_h.index, f"상위 꼬리 — {hi_h:,.1f} 초과 ({len(_tail_high_h)}개 업체)")
+                        _outlier_table(_middle_h.index,    f"중간 구간 ({len(_middle_h)}개 업체)")
+                        _outlier_table(_tail_low_h.index,  f"하위 꼬리 — {lo_h:,.1f} 이하 ({len(_tail_low_h)}개 업체)")
+
+
+            # ── Per-area analysis ─────────────────────────────────────────────
+            if _fair_view == "단위면적당 요금 (원/㎡·평)":
+                if not area_col:
+                    st.warning("면적 컬럼을 찾을 수 없습니다. 단위면적당 요금 분석을 사용할 수 없습니다.")
+                else:
+                    _area_unit = st.radio("면적 단위", ["㎡", "평"], horizontal=True, key="hvac_area_unit")
+                    _M2_PER_PYEONG = 3.305785
+                    _area_agg  = brand_agg_all[area_col].where(brand_agg_all[area_col] > 0)
+                    if _area_unit == "평":
+                        _area_agg = _area_agg / _M2_PER_PYEONG
+                    _fee_agg   = brand_agg_all[_fee_col]
+                    _per_area  = (_fee_agg / _area_agg).dropna()
+                    _per_area.name = "단위면적당 요금"
+                    _fair_chart_and_analysis(_per_area, f"원/{_area_unit}", f"perm2_{_area_unit}")
+
+            # ── Per-usage analysis ────────────────────────────────────────────
+            elif _fair_view == "단위사용량당 요금 (원/Mcal)":
+                if not usage_col:
+                    st.warning("사용량 컬럼을 찾을 수 없습니다. 단위사용량당 요금 분석을 사용할 수 없습니다.")
+                else:
+                    _usage_agg  = brand_agg_all[usage_col].where(brand_agg_all[usage_col] > 0)
+                    _fee_agg    = brand_agg_all[_fee_col]
+                    _per_usage  = (_fee_agg / _usage_agg).dropna()
+                    _per_usage.name = "단위사용량당 요금"
+                    _fair_chart_and_analysis(_per_usage, "원/Mcal", "perusage")
+
+
+    with tab_corr:
+        _M2_PER_PYEONG = 3.305785
+        _fee_col_c = total_col or amount_col
+
+        # ── Build analysis DataFrame (brand-level) ────────────────────────────
+        _corr_base = brand_agg_all.copy()
+        _corr_cols: dict[str, pd.Series] = {}
+
+        if area_col:
+            _corr_cols["면적_㎡"]   = _corr_base[area_col].where(_corr_base[area_col] > 0)
+            _corr_cols["면적_평"]   = _corr_cols["면적_㎡"] / _M2_PER_PYEONG
+        if usage_col:
+            _corr_cols["사용량"]    = _corr_base[usage_col].where(_corr_base[usage_col] > 0)
+        if base_col:
+            _corr_cols["기본요금"]  = _corr_base[base_col]
+        if usage_fee_col:
+            _corr_cols["사용요금"]  = _corr_base[usage_fee_col]
+        if comm_fee_col:
+            _corr_cols["공용요금"]  = _corr_base[comm_fee_col]
+        if _fee_col_c:
+            _corr_cols["소계"]      = _corr_base[_fee_col_c]
+        if area_col and _fee_col_c:
+            _a = _corr_cols.get("면적_㎡", pd.Series(dtype=float))
+            _corr_cols["단위면적요금_㎡"] = (_corr_base[_fee_col_c] / _a).replace([np.inf, -np.inf], np.nan)
+            _corr_cols["단위면적요금_평"] = _corr_cols["단위면적요금_㎡"] * _M2_PER_PYEONG
+        if usage_col and _fee_col_c:
+            _u = _corr_cols.get("사용량", pd.Series(dtype=float))
+            _corr_cols["단위사용량요금"] = (_corr_base[_fee_col_c] / _u).replace([np.inf, -np.inf], np.nan)
+
+        _corr_frame = pd.DataFrame(_corr_cols, index=_corr_base.index)
+        _col_names  = list(_corr_cols.keys())
+
+        _COL_KO = {c: c for c in _col_names}  # already Korean
+
+        if len(_col_names) < 2:
+            st.info("상관 분석에 필요한 컬럼이 부족합니다.")
+        else:
+            # ── Auto-discovery ────────────────────────────────────────────────
+            st.subheader("자동 상관 탐색")
+            st.caption("모든 항목 쌍의 피어슨 r을 자동 계산합니다. 행을 클릭하면 아래 산점도에 반영됩니다.")
+            _disc_rows = []
+            for _i, _ca in enumerate(_col_names):
+                for _cb in _col_names[_i + 1:]:
+                    _dp = _corr_frame[[_ca, _cb]].dropna()
+                    if len(_dp) < 4:
+                        continue
+                    _rv, _pv = _stats.pearsonr(_dp[_ca].values, _dp[_cb].values)
+                    _disc_rows.append({
+                        "X": _ca, "Y": _cb,
+                        "r":       round(_rv, 3),
+                        "R²":      round(_rv ** 2, 3),
+                        "p-value": round(_pv, 4),
+                        "n":       len(_dp),
+                        "방향":    "양(+)" if _rv > 0 else "음(−)",
+                        "강도":    ("강함" if abs(_rv) >= 0.6 else "보통" if abs(_rv) >= 0.35 else "약함"),
+                    })
+
+            if _disc_rows:
+                _disc_df = pd.DataFrame(_disc_rows).sort_values("R²", ascending=False).reset_index(drop=True)
+
+                _fc1, _fc2, _fc3 = st.columns([2, 2, 3])
+                with _fc1:
+                    _min_r2 = st.slider("최소 R²", 0.0, 1.0, 0.05, 0.05, key="hvac_corr_min_r2")
+                with _fc2:
+                    _show_ns = st.checkbox("p ≥ 0.05 포함", value=False, key="hvac_corr_nonsig")
+                with _fc3:
+                    _str_filter = st.multiselect("강도 필터", ["강함", "보통", "약함"],
+                                                  default=["강함", "보통"], key="hvac_corr_strength")
+
+                _shown = _disc_df[
+                    (_disc_df["R²"] >= _min_r2) &
+                    (_disc_df["강도"].isin(_str_filter)) &
+                    (_show_ns | (_disc_df["p-value"] < 0.05))
+                ].reset_index(drop=True)
+
+                if _shown.empty:
+                    st.info("현재 필터 조건에 맞는 쌍이 없습니다.")
+                else:
+                    st.caption(f"{len(_shown)}개 쌍 · 행 클릭 시 아래 산점도에 자동 반영됩니다")
+                    _disc_event = st.dataframe(
+                        _shown, hide_index=True, use_container_width=True,
+                        on_select="rerun", selection_mode="single-row",
+                        column_config={
+                            "r":       st.column_config.NumberColumn("r",   format="%.3f"),
+                            "R²":      st.column_config.NumberColumn("R²",  format="%.3f"),
+                            "p-value": st.column_config.NumberColumn("p",   format="%.4f"),
+                        },
+                    )
+                    _sel_rows = (
+                        _disc_event.selection.rows
+                        if _disc_event and hasattr(_disc_event, "selection") else []
+                    )
+                    if _sel_rows:
+                        _sel = _shown.iloc[_sel_rows[0]]
+                        st.session_state["hvac_corr_x"] = _sel["X"]
+                        st.session_state["hvac_corr_y"] = _sel["Y"]
+                        st.success(f"**{_sel['X']}** vs **{_sel['Y']}** 로드됨 (R² = {_sel['R²']:.3f})")
+
+            # ── Correlation heatmap ───────────────────────────────────────────
+            _hm_data = _corr_frame.dropna(how="all")
+            if len(_hm_data) >= 3 and len(_col_names) >= 3:
+                _corr_mat = _hm_data.corr()
+                _hm_fig = px.imshow(
+                    _corr_mat, x=_col_names, y=_col_names,
+                    color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
+                    text_auto=".2f", aspect="auto",
+                    title="상관 행렬",
+                )
+                _hm_fig.update_layout(
+                    height=420, margin=dict(l=10, r=10, t=50, b=10),
+                    coloraxis_colorbar=dict(title="r"),
+                    font=dict(size=11, color="#222222"),
+                )
+                _hm_fig.update_traces(textfont_size=10)
+                st.plotly_chart(_hm_fig, use_container_width=True, key="hvac_heatmap", theme=None)
+
+            st.divider()
+            st.subheader("수동 산점도")
+
+            _sc1, _sc2, _sc3, _sc4 = st.columns([3, 3, 1, 2])
+            with _sc1:
+                _x_col = st.selectbox("X축", _col_names,
+                                       index=_col_names.index(st.session_state.get("hvac_corr_x", _col_names[0])),
+                                       key="hvac_corr_x")
+            with _sc2:
+                _y_default = st.session_state.get("hvac_corr_y", _col_names[min(1, len(_col_names)-1)])
+                _y_col = st.selectbox("Y축", _col_names,
+                                       index=_col_names.index(_y_default),
+                                       key="hvac_corr_y")
+            with _sc3:
+                st.write("")
+                _log_x = st.checkbox("Log X", value=False, key="hvac_corr_log_x")
+                _log_y = st.checkbox("Log Y", value=False, key="hvac_corr_log_y")
+            with _sc4:
+                st.write("")
+                _rm_out = st.checkbox("이상치 제거 (IQR)", value=False, key="hvac_corr_rm_out")
+                if _rm_out:
+                    _iqr_k = st.slider("IQR 배율", 0.5, 3.0, 1.5, 0.1, key="hvac_corr_iqr_k")
+
+            if not _rm_out:
+                _iqr_k = 1.5
+
+            if _x_col == _y_col:
+                st.info("X축과 Y축에 서로 다른 항목을 선택하세요.")
+            else:
+                _sc_df = _corr_frame[[_x_col, _y_col]].copy()
+                _sc_df["브랜드"] = _corr_frame.index.astype(str)
+                _sc_df = _sc_df.dropna(subset=[_x_col, _y_col])
+
+                if _rm_out:
+                    for _c in [_x_col, _y_col]:
+                        _q1, _q3 = _sc_df[_c].quantile(0.25), _sc_df[_c].quantile(0.75)
+                        _iq = _q3 - _q1
+                        _sc_df = _sc_df[(_sc_df[_c] >= _q1 - _iqr_k * _iq) & (_sc_df[_c] <= _q3 + _iqr_k * _iq)]
+
+                if _sc_df.empty:
+                    st.warning("유효한 데이터가 없습니다.")
+                else:
+                    _xv = np.log10(_sc_df[_x_col].values.astype(float)) if _log_x else _sc_df[_x_col].values.astype(float)
+                    _yv = np.log10(_sc_df[_y_col].values.astype(float)) if _log_y else _sc_df[_y_col].values.astype(float)
+                    _mask = np.isfinite(_xv) & np.isfinite(_yv)
+                    _xv, _yv = _xv[_mask], _yv[_mask]
+
+                    _sfig = px.scatter(
+                        _sc_df, x=_x_col, y=_y_col, color="브랜드",
+                        hover_name="브랜드",
+                        log_x=_log_x, log_y=_log_y,
+                        labels={_x_col: _x_col, _y_col: _y_col},
+                    )
+                    _sfig.update_traces(
+                        marker=dict(size=11, opacity=0.9, line=dict(color="white", width=0.8)),
+                    )
+
+                    if len(_xv) >= 2:
+                        _slope, _icpt, _rv, _pv, _se = _stats.linregress(_xv, _yv)
+                        _xl = np.linspace(_xv.min(), _xv.max(), 200)
+                        _yl = _slope * _xl + _icpt
+                        if _log_x: _xl = 10 ** _xl
+                        if _log_y: _yl = 10 ** _yl
+                        _sfig.add_trace(go.Scatter(
+                            x=_xl, y=_yl, mode="lines",
+                            line=dict(color="#C44E52", width=1.5, dash="dot"),
+                            name=f"추세선  r={_rv:+.3f}",
+                            hoverinfo="skip",
+                        ))
+                        _sign = "+" if _icpt >= 0 else "-"
+                        _sfig.add_annotation(
+                            xref="paper", yref="paper", x=0.01, y=0.99,
+                            text=f"y = {_slope:.4f}x {_sign} {abs(_icpt):.4f}",
+                            showarrow=False, align="left",
+                            bgcolor="rgba(255,255,255,0.85)", bordercolor="#C44E52",
+                            borderwidth=1, font=dict(size=12, color="#C44E52"),
+                        )
+
+                    _sfig.update_layout(
+                        height=520,
+                        margin=dict(l=80, r=200, t=40, b=80),
+                        plot_bgcolor="white", paper_bgcolor="white",
+                        xaxis=dict(
+                            title=dict(text=_x_col, font=dict(size=14, color="#222222")),
+                            showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                            zeroline=False, showline=True, linecolor="#AAAAAA",
+                            tickfont=dict(size=12, color="#222222"),
+                        ),
+                        yaxis=dict(
+                            title=dict(text=_y_col, font=dict(size=14, color="#222222")),
+                            showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                            zeroline=False, showline=True, linecolor="#AAAAAA",
+                            tickfont=dict(size=12, color="#222222"),
+                        ),
+                        legend=dict(
+                            title=dict(text="업체", font=dict(size=13, color="#222222")),
+                            x=1.01, xanchor="left", y=1.0, yanchor="top",
+                            bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA",
+                            borderwidth=1, font=dict(size=12, color="#222222"),
+                        ),
+                        font=dict(family="Arial, sans-serif", color="#222222"),
+                    )
+                    st.plotly_chart(_sfig, use_container_width=True, key="hvac_corr_scatter", theme=None)
+
+                    if len(_xv) >= 2:
+                        _r2 = _rv ** 2
+                        _str_k = ("강함" if _r2 >= 0.36 else "보통" if _r2 >= 0.12 else "약함")
+                        st.dataframe(pd.DataFrame([{
+                            "n": len(_xv),
+                            "r": f"{_rv:+.3f}", "R²": f"{_r2:.3f}",
+                            "기울기": f"{_slope:.4f}", "절편": f"{_icpt:.4f}",
+                            "p-value": f"{_pv:.4e}", "강도": _str_k,
+                        }]), hide_index=True, use_container_width=True)
+
+    # ── Bottom expanders ───────────────────────────────────────────────────────
+    with st.expander("전체 내역", expanded=False):
         group_cols = [c for c in ["유형", "구분"] if c in num_df.columns]
         agg_df = num_df.groupby(group_cols + ["브랜드"])[numeric_cols].sum().reset_index()
         st.dataframe(st_safe(agg_df), use_container_width=True, hide_index=True)
@@ -927,11 +1531,11 @@ def render_billing_view(df: pd.DataFrame) -> None:
         return
 
     # ── Report download ────────────────────────────────────────────────────────
-    with st.expander("Download Report (PDF)", expanded=False):
+    with st.expander("PDF 보고서 다운로드", expanded=False):
         st.caption("현재 필터가 적용된 청구 데이터를 기반으로 업무용 PDF 보고서를 생성합니다.")
-        lang_billing = st.radio("Language", ["한국어 (ko)", "English (en)"],
+        lang_billing = st.radio("언어", ["한국어 (ko)", "English (en)"],
                                 horizontal=True, key="billing_report_lang")
-        if st.button("Generate PDF Report", key="billing_gen_report"):
+        if st.button("PDF 생성", key="billing_gen_report"):
             from billing_report import generate_billing_pdf
             with st.spinner("Generating PDF…"):
                 pdf_bytes = generate_billing_pdf(
@@ -941,7 +1545,7 @@ def render_billing_view(df: pd.DataFrame) -> None:
                 )
             bldg_tag = "all" if "All" in sel_bldg else "_".join(sel_bldg)
             st.download_button(
-                label="Download PDF Report",
+                label="PDF 다운로드",
                 data=pdf_bytes,
                 file_name=f"billing_report_{bldg_tag}_{date.today()}.pdf",
                 mime="application/pdf",
@@ -950,8 +1554,8 @@ def render_billing_view(df: pd.DataFrame) -> None:
 
     # ── Tabs ──
     tab_rank, tab_hist, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
-        "Billing Ranking", "Histogram", "Building Summary",
-        "Composition", "공용/전용 Ratio", "Per m²",
+        "업체별 순위", "분포", "건물별 요약",
+        "구성 비율", "공용/전용 비율", "단위면적당",
     ])
 
     with tab_rank:
@@ -1044,11 +1648,9 @@ def _hvac_tab(df: pd.DataFrame) -> None:
     st.dataframe(tbl, hide_index=True, use_container_width=True)
 
 def _ranking_tab(df: pd.DataFrame) -> None:
-    st.subheader("Billing Ranking")
-
     _n = len(df)
     if _n >= 2:
-        top_n = st.slider("Show top N brands in chart", min(10, _n - 1), _n, min(30, _n), key="rank_n")
+        top_n = st.slider("표시 업체 수", min(10, _n - 1), _n, min(30, _n), key="rank_n")
     else:
         top_n = _n
     sel_util, view_mode, segments = _util_selector(df, key="rank")
@@ -1064,10 +1666,10 @@ def _ranking_tab(df: pd.DataFrame) -> None:
     x_max = df[_ref_col].fillna(0).max() * 1.05 if _ref_col and _ref_col in df.columns else None
 
     sort_key = st.radio(
-        "Sort by", ["현재 뷰 (Current view)", "합계 (Total)"],
+        "정렬 기준", ["현재 뷰", "합계"],
         horizontal=True, key="rank_sort",
     )
-    if sort_key == "합계 (Total)" and _ref_col and _ref_col in df.columns:
+    if sort_key == "합계" and _ref_col and _ref_col in df.columns:
         sorted_df = df.sort_values(_ref_col, ascending=False).copy()
     else:
         sort_series = df[[c for c in seg_cols if c in df.columns]].fillna(0).sum(axis=1)
@@ -1127,7 +1729,7 @@ def _ranking_tab(df: pd.DataFrame) -> None:
     out = add_display_index(sorted_df[show].copy())
 
     label = view_mode if view_mode != "합계" else sel_util
-    st.markdown(f"**{len(out)} brands** — sorted by {label} (high → low)")
+    st.markdown(f"**{len(out)}개 업체** — {label} 내림차순")
     st.dataframe(
         st_safe(out), hide_index=True, use_container_width=True,
         height=min(35 * len(out) + 38, 700),
@@ -1145,8 +1747,6 @@ _HIST_REF_COL = {
 
 
 def _histogram_tab(df: pd.DataFrame) -> None:
-    st.subheader("Histogram")
-
     bins     = st.session_state.get("bins", 50)
     tail_pct = st.session_state.get("tail", 20)
 
@@ -1198,23 +1798,23 @@ def _histogram_tab(df: pd.DataFrame) -> None:
 
     # ── Tail table ──
     show_mode = st.radio(
-        "Show", ["All", "Top", "Middle", "Bottom"],
+        "표시 범위", ["전체", "상위", "중간", "하위"],
         horizontal=True, key="hist_show",
     )
     label = f"{tail_pct}%"
 
-    if show_mode == "All":
+    if show_mode == "전체":
         tbl = df[display_cols].dropna(subset=[val_col]).sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**All entries** — sorted high → low ({len(tbl)})")
-    elif show_mode == "Top":
+        st.markdown(f"**전체 {len(tbl)}개 업체** — 내림차순")
+    elif show_mode == "상위":
         tbl = df[df[val_col] >= hi][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**Top {label} (≥ {hi:,.2f})** — sorted high → low ({len(tbl)})")
-    elif show_mode == "Middle":
+        st.markdown(f"**상위 {label} (≥ {hi:,.2f})** — {len(tbl)}개 업체")
+    elif show_mode == "중간":
         tbl = df[(df[val_col] > lo) & (df[val_col] < hi)][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**Middle** ({lo:,.2f} – {hi:,.2f}) — sorted high → low ({len(tbl)})")
-    else:  # Bottom
+        st.markdown(f"**중간** ({lo:,.2f} – {hi:,.2f}) — {len(tbl)}개 업체")
+    else:  # 하위
         tbl = df[df[val_col] <= lo][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**Bottom {label} (≤ {lo:,.2f})** — sorted high → low ({len(tbl)})")
+        st.markdown(f"**하위 {label} (≤ {lo:,.2f})** — {len(tbl)}개 업체")
 
     tbl = add_display_index(tbl)
     st.dataframe(st_safe(tbl), hide_index=True, use_container_width=True,
@@ -1223,7 +1823,6 @@ def _histogram_tab(df: pd.DataFrame) -> None:
 
 
 def _building_tab(df: pd.DataFrame) -> None:
-    st.subheader("Building Summary")
 
     present = [(c, lbl, clr) for c, lbl, clr in _UTIL_COLS if c in df.columns]
     sum_cols = [c for c, _, _ in present] + (["total"] if "total" in df.columns else [])
@@ -1288,7 +1887,7 @@ def _building_tab(df: pd.DataFrame) -> None:
         )
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    st.markdown("**Building totals**")
+    st.markdown("**건물별 합계**")
     st.dataframe(st_safe(agg), hide_index=True, use_container_width=True)
     download_df_as_excel(agg, filename="billing_building_summary.xlsx", sheet_name="building")
 
@@ -1304,8 +1903,6 @@ _COMP_COLS = [
 
 def _composition_tab(df: pd.DataFrame) -> None:
     """Show each brand's cost split by utility (absolute stacked bar + % table)."""
-    st.subheader("Cost Composition by Brand")
-
     present = [(c, lbl, clr) for c, lbl, clr in _COMP_COLS if c in df.columns]
     if not present:
         st.warning("No utility cost columns found.")
@@ -1313,16 +1910,16 @@ def _composition_tab(df: pd.DataFrame) -> None:
 
     seg_cols = [c for c, _, _ in present]
 
-    mode = st.radio("Chart mode", ["100% stacked (share)", "Absolute (만원)"],
+    mode = st.radio("차트 형식", ["비율 (100% 누적)", "금액 (만원)"],
                     horizontal=True, key="comp_mode")
 
     _n = len(df)
-    top_n = st.slider("Show top N brands", min(10, _n), _n, min(40, _n), key="comp_n") if _n > 1 else _n
+    top_n = st.slider("표시 업체 수", min(10, _n), _n, min(40, _n), key="comp_n") if _n > 1 else _n
 
     sort_col = next((c for c in ["total"] + seg_cols if c in df.columns), seg_cols[0])
     plot_df = df.sort_values(sort_col, ascending=False).head(top_n).iloc[::-1].copy()
 
-    if mode.startswith("100%"):
+    if mode.startswith("비율"):
         row_sums = plot_df[seg_cols].fillna(0).sum(axis=1).replace(0, float("nan"))
         for c in seg_cols:
             plot_df[f"_{c}_pct"] = (plot_df[c].fillna(0) / row_sums * 100).round(1)
@@ -1381,7 +1978,7 @@ def _composition_tab(df: pd.DataFrame) -> None:
     show_cols = ["brand", "building", "floor"] + seg_cols + pct_cols + (["total"] if "total" in tbl.columns else [])
     show_cols = [c for c in show_cols if c in tbl.columns]
     out = add_display_index(tbl[show_cols].copy())
-    st.markdown(f"**{len(out)} brands** — sorted by total cost (high → low)")
+    st.markdown(f"**{len(out)}개 업체** — 총 요금 내림차순")
     st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
                  height=min(35 * len(out) + 38, 700))
     download_df_as_excel(out, filename="billing_composition.xlsx", sheet_name="composition")
@@ -1400,8 +1997,7 @@ _RATIO_PAIRS = [
 
 def _ratio_tab(df: pd.DataFrame) -> None:
     """공용 vs 전용 ratio analysis — flag brands with disproportionate common charges."""
-    st.subheader("공용 / 전용 Cost Ratio")
-    st.caption("Brands where 공용 (common area) charges represent an unusually large share of their bill.")
+    st.caption("공용 요금 비율이 비정상적으로 높은 업체를 강조합니다.")
 
     # Only show utilities where both comm and excl columns exist
     available = [(comm, excl, tot, lbl, c_comm, c_excl)
@@ -1428,7 +2024,7 @@ def _ratio_tab(df: pd.DataFrame) -> None:
     median_ratio = ratios.median()
 
     _n = len(wdf)
-    top_n = st.slider("Show top N brands", min(10, _n), _n, min(40, _n), key="ratio_n") if _n > 1 else _n
+    top_n = st.slider("표시 업체 수", min(10, _n), _n, min(40, _n), key="ratio_n") if _n > 1 else _n
     sort_col_r = tot_col if tot_col in wdf.columns else comm
     plot_df = wdf.sort_values(sort_col_r, ascending=False).head(top_n).copy()
     plot_df = plot_df.sort_values("comm_ratio", ascending=True)  # sort by ratio for chart
@@ -1479,10 +2075,10 @@ def _ratio_tab(df: pd.DataFrame) -> None:
     # Summary stats
     n_outliers = int((wdf["comm_ratio"] >= upper_fence).sum())
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Brands analyzed", len(wdf.dropna(subset=["comm_ratio"])))
-    c2.metric("Median 공용 ratio", f"{median_ratio:.1f}%")
-    c3.metric("Outlier fence", f"{upper_fence:.1f}%")
-    c4.metric("Outlier brands", n_outliers)
+    c1.metric("분석 업체 수", len(wdf.dropna(subset=["comm_ratio"])))
+    c2.metric("공용 비율 중앙값", f"{median_ratio:.1f}%")
+    c3.metric("이상치 기준", f"{upper_fence:.1f}%")
+    c4.metric("이상치 업체 수", n_outliers)
 
     # Table: all brands with flag
     tbl = wdf.sort_values("comm_ratio", ascending=False).copy()
@@ -1492,7 +2088,7 @@ def _ratio_tab(df: pd.DataFrame) -> None:
         show_cols.insert(4, tot_col)
     show_cols = [c for c in show_cols if c in tbl.columns]
     out = add_display_index(tbl[show_cols].copy())
-    st.markdown(f"**{n_outliers} outlier brand(s)** with 공용 ratio ≥ {upper_fence:.1f}%")
+    st.markdown(f"**{n_outliers}개 이상치 업체** (공용 비율 ≥ {upper_fence:.1f}%)")
     st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
                  height=min(35 * len(out) + 38, 700))
     download_df_as_excel(out, filename=f"billing_ratio_{lbl}.xlsx", sheet_name="ratio")
@@ -1510,8 +2106,7 @@ _PERM2_COLS = [
 
 def _per_m2_tab(df: pd.DataFrame) -> None:
     """Cost per m² — normalise billing by floor area for fair cross-tenant comparison."""
-    st.subheader("Cost per m² (평당 요금 분석)")
-    st.caption("단위: 만원/m² · Normalises cost by tenant floor area for fair comparison.")
+    st.caption("단위: 만원/m² · 면적 대비 공정 비교를 위해 입주사 면적으로 정규화한 값입니다.")
 
     if "size_m2" not in df.columns:
         st.warning("size_m2 column not found — cannot compute per-m² metrics.")
@@ -1537,7 +2132,7 @@ def _per_m2_tab(df: pd.DataFrame) -> None:
     pm2_col = f"{col}_pm2"
 
     _n = len(wdf)
-    top_n = st.slider("Show top N brands", min(10, _n), _n, min(40, _n), key="perm2_n") if _n > 1 else _n
+    top_n = st.slider("표시 업체 수", min(10, _n), _n, min(40, _n), key="perm2_n") if _n > 1 else _n
 
     sort_df = wdf.sort_values(pm2_col, ascending=False)
     plot_df = sort_df.head(top_n).iloc[::-1].copy()
@@ -1616,11 +2211,11 @@ def _per_m2_tab(df: pd.DataFrame) -> None:
     n_high = int((wdf[pm2_col] >= upper_fence).sum())
     n_low  = int((lower_fence > 0) and (wdf[pm2_col] <= lower_fence).sum())
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Brands (with size)", len(vals))
-    c2.metric("Median (만원/m²)", f"{median_pm2:.4f}")
-    c3.metric("Mean (만원/m²)",   f"{mean_pm2:.4f}")
-    c4.metric("High outliers",    n_high)
-    c5.metric("Low outliers",     n_low)
+    c1.metric("면적 있는 업체", len(vals))
+    c2.metric("중앙값 (만원/m²)", f"{median_pm2:.4f}")
+    c3.metric("평균 (만원/m²)",   f"{mean_pm2:.4f}")
+    c4.metric("고가 이상치",      n_high)
+    c5.metric("저가 이상치",      n_low)
 
     # Full ranked table with per-m² column + flag
     tbl = wdf.sort_values(pm2_col, ascending=False).copy()
@@ -1630,7 +2225,7 @@ def _per_m2_tab(df: pd.DataFrame) -> None:
                  "high_outlier", "low_outlier"]
     show_cols = [c for c in show_cols if c in tbl.columns]
     out = add_display_index(tbl[show_cols].copy())
-    st.markdown(f"**{len(out)} brands** with floor area — sorted by {lbl}/m² (high → low)")
+    st.markdown(f"**{len(out)}개 업체** (면적 있음) — {lbl}/m² 내림차순")
     st.dataframe(st_safe(out), hide_index=True, use_container_width=True,
                  height=min(35 * len(out) + 38, 700))
     download_df_as_excel(out, filename=f"billing_per_m2_{lbl}.xlsx", sheet_name="per_m2")
