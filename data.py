@@ -73,6 +73,78 @@ def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
 BILLING_SHEET_NAME  = "수도광열비 부과 내역"
 EHP_OAC_SHEET_NAME  = "EHP(OAC)검침자료"
 HVAC_SHEET_NAME     = "관리비 고지서 EHP 열(냉난방)"
+WATER_SHEET_NAME    = "수도 사용 내역"
+
+
+@st.cache_data(show_spinner="Loading water sheet...")
+def read_water_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Parse 수도 사용 내역 sheet into a clean flat DataFrame.
+
+    Layout (header=None):
+      row 0  : ▣ 수도 사용 내역 (section title)
+      rows 2-4: 3-level column headers
+      row 5+ : data rows; col 2 ∈ {A, B, C, D} identifies real tenant rows
+      rows 214-219: building/total subtotals (excluded by the building filter)
+    """
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+
+    data_rows = raw.iloc[5:].copy()
+    data_rows = data_rows[
+        data_rows[2].astype(str).str.strip().isin({"A", "B", "C", "D"})
+    ].copy()
+
+    col_map = {
+        2:  "building",
+        3:  "floor",
+        4:  "unit",
+        5:  "size_m2",
+        8:  "size_py",
+        9:  "brand",
+        10: "usage_m3",
+        11: "pipe_fee_comm",
+        12: "water_excl",
+        13: "water_comm",
+        14: "sewage_excl",
+        15: "sewage_comm",
+        16: "levy_excl",
+        17: "levy_comm",
+        18: "total_excl",
+        19: "total_comm",
+        20: "total",
+        22: "avg_unit_price",
+    }
+
+    present_cols = [c for c in col_map if c in data_rows.columns]
+    df = data_rows[present_cols].copy()
+    df.columns = [col_map[c] for c in present_cols]
+
+    # Drop rows where brand is missing
+    brand_str = df["brand"].astype(str).str.strip()
+    df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+
+    str_cols = {"building", "floor", "unit", "brand"}
+    fee_cols = {
+        "usage_m3", "pipe_fee_comm",
+        "water_excl", "water_comm",
+        "sewage_excl", "sewage_comm",
+        "levy_excl", "levy_comm",
+        "total_excl", "total_comm", "total",
+        "avg_unit_price",
+    }
+    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+
+    for c in df.columns:
+        if c in str_cols:
+            df[c] = df[c].astype(str).str.strip()
+        elif c in fee_cols:
+            cleaned = df[c].astype(str).str.strip().replace(_blank, "0")
+            df[c] = pd.to_numeric(
+                cleaned.str.replace(",", "", regex=False), errors="coerce"
+            ).fillna(0)
+        else:
+            df[c] = to_numeric_series(df[c])
+
+    return df.reset_index(drop=True)
 
 
 @st.cache_data(show_spinner="Loading billing sheet...")
