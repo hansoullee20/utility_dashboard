@@ -79,7 +79,8 @@ def render_water_view(df: pd.DataFrame) -> None:
     def _pfx(brand: str) -> str:
         if brand not in _flags.index:
             return ""
-        n = _flags.at[brand, "플래그 수"]
+        val = _flags.loc[brand, "플래그 수"]
+        n = int(val.iloc[0]) if isinstance(val, pd.Series) else int(val)
         return "⛔ " if n >= 2 else ("⚠ " if n == 1 else "")
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
