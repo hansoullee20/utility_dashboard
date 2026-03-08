@@ -7,7 +7,7 @@ import plotly.express as px
 from scipy import stats
 from typing import Dict
 
-from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, get_billing_period, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME
+from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, get_billing_period, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, HVAC_SHEET_NAME, read_hvac_sheet
 from billing import render_billing_view
 from ehp import render_ehp_view
 from features import (
@@ -132,7 +132,7 @@ def main():
     file_name = st.selectbox("Select file", list(file_map.keys()))
     all_sheet_keys = sheet_map[file_name]
 
-    SUPPORTED_SHEETS = {"검침 내역", BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME}
+    SUPPORTED_SHEETS = {"검침 내역", BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, HVAC_SHEET_NAME}
     sheet_keys = [s for s in all_sheet_keys if s.strip() in SUPPORTED_SHEETS]
     if not sheet_keys:
         st.warning("No supported sheets found in this file. Expected '검침 내역' or '수도광열비 부과 내역'.")
@@ -140,6 +140,17 @@ def main():
 
     default_sheet = "검침 내역" if "검침 내역" in sheet_keys else sheet_keys[0]
     sheet_name = st.selectbox("Select sheet", sheet_keys, index=sheet_keys.index(default_sheet), key=f"sheet_{file_name}")
+
+    # ── HVAC billing sheet: separate pipeline ─────────────────────────────────
+    if sheet_name.strip() == HVAC_SHEET_NAME:
+        from billing import render_hvac_view
+        try:
+            hvac_df = read_hvac_sheet(file_name, file_map[file_name], sheet_name)
+        except Exception as e:
+            st.error(f"Failed to parse HVAC sheet: {e}")
+            st.stop()
+        render_hvac_view(hvac_df)
+        return
 
     # ── Billing sheet: separate pipeline ──────────────────────────────────────
     if sheet_name.strip() == BILLING_SHEET_NAME:
@@ -226,6 +237,7 @@ def main():
 
     allowed = ["water", "hwater", "elect", "heat"]
     present_all = [p for p in allowed if f"{p}_change" in df.columns]
+    _CATEGORY_LABELS = {"water": "💧 수도", "hwater": "🌡️ 온수", "elect": "⚡ 전기", "heat": "🔥 난방"}
     has_gongshil_any = df["brand"].astype(str).str.contains("공실", na=False).any()
 
     def on_building_change():
@@ -258,7 +270,7 @@ def main():
             key="floor_select", on_change=on_floor_change,
         )
     with fc3:
-        prefix = st.selectbox("Category", present_all)
+        prefix = st.selectbox("Category", present_all, format_func=lambda x: _CATEGORY_LABELS.get(x, x))
     with fc4:
         gongshil_mode = st.radio(
             "공실", ["All", "Exclude 공실", "공실 only"],
@@ -437,11 +449,11 @@ def main():
         )
         report_lang = st.radio(
             "Report language / 보고서 언어",
-            ["English", "한국어"],
+            ["한국어", "English"],
             horizontal=True,
             key="report_lang",
         )
-        lang_code = "en" if report_lang == "English" else "ko"
+        lang_code = "ko" if report_lang == "한국어" else "en"
 
         if st.button("Generate Report", key="gen_report"):
             report_context = {

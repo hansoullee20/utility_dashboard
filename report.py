@@ -10,6 +10,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D as _Line2D
+from matplotlib.font_manager import FontProperties as _FontProperties
 from matplotlib import font_manager as _fm
 import numpy as np
 import pandas as pd
@@ -53,9 +55,29 @@ def _ensure_fonts():
     registerFontFamily("NanumGothic",
                        normal="NanumGothic", bold="NanumGothic-Bold",
                        italic="NanumGothic", boldItalic="NanumGothic-Bold")
+    # Delete stale matplotlib font cache so new fonts are picked up
+    import glob as _glob
+    import matplotlib as _mpl
+    for _fc in _glob.glob(os.path.join(_mpl.get_cachedir(), "fontlist-*.json")):
+        try:
+            os.remove(_fc)
+        except OSError:
+            pass
+
     _fm.fontManager.addfont(_FONT_REG)
     _fm.fontManager.addfont(_FONT_BOLD)
-    plt.rcParams["font.family"] = "NanumGothic"
+
+    # Clear the findfont LRU cache so lookups use the updated font list
+    try:
+        _fm.findfont.cache_clear()
+    except AttributeError:
+        pass
+
+    _font_name = _fm.FontProperties(fname=_FONT_REG).get_name()
+    plt.rcParams["font.sans-serif"] = [_font_name] + [
+        f for f in plt.rcParams.get("font.sans-serif", []) if f != _font_name
+    ]
+    plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["axes.unicode_minus"] = False
 
 # ── Palette ──────────────────────────────────────────────────────────────────
@@ -741,12 +763,13 @@ def _chart_change_bar(rows, unit, title, status_labels, max_rows=40):
             edgecolor="white", linewidth=0.5, height=0.72)
     ax.set_yticks(range(n))
     ax.set_yticklabels(labels, fontsize=10)
-    ax.axvline(0, color="#333333", linewidth=0.8)
+    ax.axvline(0, color="#333333", linewidth=1.2)
     ax.set_xlabel(f"({unit})", fontsize=10)
     ax.set_title(title, fontsize=12, fontweight="bold", color="#1B2A3B", pad=8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_position(("data", -0.5))
     ax.tick_params(axis="y", length=0)
     ax.tick_params(axis="x", labelsize=10)
     ax.grid(axis="x", color="#DDDDDD", linewidth=0.5, linestyle="--")
@@ -804,8 +827,7 @@ def _chart_histogram(values, hi, lo, unit, title, xlabel_suffix=""):
         ax.axvline(hi, color="#555555", linewidth=1.2, linestyle="--", alpha=0.7,
                    label=f"Threshold: {lo:,.1f} / {hi:,.1f}")
 
-    ax.axvline(med, color="#C44E52", linewidth=1.5, linestyle="--",
-               label=f"Median: {med:,.2f} {unit}")
+    ax.axvline(med, color="#C44E52", linewidth=1.5, linestyle="--")
 
     ax.set_xlabel(f"({unit})", fontsize=9)
     ax.set_ylabel(xlabel_suffix, fontsize=9)
@@ -813,8 +835,12 @@ def _chart_histogram(values, hi, lo, unit, title, xlabel_suffix=""):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.set_facecolor("white")
+    ax.set_xlim(0, xmax * 1.05)
+    ax.set_ylim(0, counts.max() * 1.15)
     ax.grid(axis="y", color="#DDDDDD", linewidth=0.5, linestyle="--")
-    ax.legend(fontsize=8, framealpha=0.9)
+    ax.legend(handles=[
+        _Line2D([0], [0], color="#C44E52", linewidth=1.5, linestyle="--", label=f"Median: {med:,.2f} {unit}"),
+    ], fontsize=8, framealpha=0.9)
     fig.tight_layout(pad=0.8)
     return _png(fig)
 
@@ -890,6 +916,10 @@ def _make_styles():
     s["table_hdr"] = ParagraphStyle(
         "TableHdr", fontSize=8, fontName="NanumGothic-Bold",
         textColor=C_WHITE, alignment=TA_LEFT,
+    )
+    s["table_subhdr"] = ParagraphStyle(
+        "TableSubHdr", fontSize=8, fontName="NanumGothic-Bold",
+        textColor=C_NAVY, alignment=TA_CENTER,
     )
     s["table_cell"] = ParagraphStyle(
         "TableCell", fontSize=8, fontName="NanumGothic",
@@ -1336,29 +1366,67 @@ def _seasonal_note(period_str, T):
 
 
 def _building_totals_table(util_data, T, styles, content_w):
-    """Table: per-building totals for each utility."""
-    # Collect buildings
+    """Table: per-building totals for each utility.
+
+    Layout (two header rows):
+      Row 0 – Building (rowspan 2) | Utility name spanning 3 cols | ...
+      Row 1 – (spanned)            | Curr | Chg | %  | Curr | Chg | % | ...
+    """
     all_bldgs = sorted({r["building"] for ud in util_data.values() for r in ud["rows"] if r.get("building")})
     if not all_bldgs:
         return None
 
     prefixes = list(util_data.keys())
-    # Header row: Building | (util curr / prev / chg% per utility)
-    sub_hdrs = []
-    for p in prefixes:
-        unit = util_data[p]["unit"]
-        sub_hdrs += [
-            f"{util_data[p]['meta'].get('ko' if T.get('col_bldg') == '건물' else 'en', p)}\n{T['col_curr_t']} ({unit})",
-            T["col_chg_t"],
-            T["col_pct_t"],
-        ]
-    hdr = [Paragraph(T["col_bldg"], styles["table_hdr"])] + \
-          [Paragraph(h, styles["table_hdr"]) for h in sub_hdrs]
+    lang_key = "ko" if T.get("col_bldg") == "건물" else "en"
 
-    data = [hdr]
-    for bldg in all_bldgs:
+    _UTIL_COLORS = {
+        "water":  colors.HexColor("#2980B9"),
+        "hwater": colors.HexColor("#E67E22"),
+        "elect":  colors.HexColor("#27AE60"),
+        "heat":   colors.HexColor("#E74C3C"),
+    }
+    _UTIL_TINT_COLORS = {
+        "water":  colors.HexColor("#D6EAF8"),
+        "hwater": colors.HexColor("#FDEBD0"),
+        "elect":  colors.HexColor("#D5F5E3"),
+        "heat":   colors.HexColor("#FADBD8"),
+    }
+    _UTIL_TINT_TEXT = {
+        "water":  colors.HexColor("#1A5276"),
+        "hwater": colors.HexColor("#784212"),
+        "elect":  colors.HexColor("#1E8449"),
+        "heat":   colors.HexColor("#922B21"),
+    }
+
+    # ── Header row 0: Building (rowspan 2) | util name spanning 3 cols | … ──
+    hdr0 = [Paragraph(T["col_bldg"], styles["table_hdr"])]
+    for p in prefixes:
+        name = util_data[p]["meta"].get(lang_key, p)
+        unit = util_data[p]["unit"]
+        hdr0 += [Paragraph(f"{name}\n({unit})", styles["table_hdr"]), "", ""]
+
+    # ── Header row 1: compact sub-labels (no spaces → no wrapping) ──
+    ko = (lang_key == "ko")
+    sub_labels = (
+        ["이번기간", "변화량", "변화율(%)"] if ko
+        else ["Current", "Chg", "Chg%"]
+    )
+    hdr1 = [Paragraph("", styles["table_hdr"])]
+    for p in prefixes:
+        sub_style = ParagraphStyle(
+            f"subhdr_{p}",
+            fontSize=7, fontName="NanumGothic-Bold",
+            textColor=_UTIL_TINT_TEXT[p], alignment=TA_CENTER,
+        )
+        hdr1 += [Paragraph(lbl, sub_style) for lbl in sub_labels]
+
+    data = [hdr0, hdr1]
+
+    # ── Data rows ──
+    pct_vals = {}
+    for ri, bldg in enumerate(all_bldgs, 2):
         row = [Paragraph(str(bldg), styles["table_cell"])]
-        for p in prefixes:
+        for ci, p in enumerate(prefixes):
             ud = util_data[p]
             b_rows = [r for r in ud["rows"] if r.get("building") == bldg]
             curr_total = sum(float(r["curr"]) for r in b_rows
@@ -1367,6 +1435,8 @@ def _building_totals_table(util_data, T, styles, content_w):
                              if r.get("prev") is not None and not pd.isna(r.get("prev", np.nan)))
             chg = curr_total - prev_total
             pct = (chg / prev_total * 100) if prev_total > 0 else np.nan
+            pct_col = 1 + ci * 3 + 2
+            pct_vals[(ri, pct_col)] = pct
             row += [
                 Paragraph(_fmt(curr_total), styles["table_cell_c"]),
                 Paragraph(f"{chg:+,.1f}" if not pd.isna(chg) else "—", styles["table_cell_c"]),
@@ -1374,41 +1444,53 @@ def _building_totals_table(util_data, T, styles, content_w):
             ]
         data.append(row)
 
-    n_util = len(prefixes)
-    bldg_w = 1.6 * cm
-    util_w = (content_w - bldg_w) / (n_util * 3)
-    col_w = [bldg_w] + [util_w] * (n_util * 3)
+    # ── Column widths ──
+    bldg_w = 1.0 * cm
+    util_w = (content_w - bldg_w) / (len(prefixes) * 3)
+    col_w  = [bldg_w] + [util_w] * (len(prefixes) * 3)
 
     ts = TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0),  C_NAVY),
-        ("TEXTCOLOR",     (0, 0), (-1, 0),  C_WHITE),
-        ("FONTSIZE",      (0, 0), (-1, -1), 8),
-        ("GRID",          (0, 0), (-1, -1), 0.3, C_DIVIDER),
-        ("TOPPADDING",    (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
-        ("ALIGN",         (1, 0), (-1, -1), "RIGHT"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 7),
+        ("TOPPADDING",    (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 2),
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.HexColor("#F5F7FA"), colors.white]),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_DIVIDER),
+        # Building column (spans both header rows)
+        ("BACKGROUND",    (0, 0), (0, -1),  C_NAVY),
         ("FONTNAME",      (0, 0), (0, -1),  "NanumGothic-Bold"),
+        ("ALIGN",         (0, 0), (0, -1),  "CENTER"),
+        ("SPAN",          (0, 0), (0, 1)),
+        # Data rows alternating
+        ("ROWBACKGROUNDS",(0, 2), (-1, -1), [colors.HexColor("#F5F7FA"), colors.white]),
+        ("ALIGN",         (1, 2), (-1, -1), "RIGHT"),
+        # Thick vertical dividers between utility groups
+        *[("LINEAFTER", (1 + ci * 3 + 2, 0), (1 + ci * 3 + 2, -1), 1.2, C_NAVY)
+          for ci in range(len(prefixes))],
     ])
-    # Color the % change cells
-    for ri, bldg in enumerate(all_bldgs, 1):
-        for ci, p in enumerate(prefixes):
-            pct_col = 1 + ci * 3 + 2  # pct is 3rd in each util group
-            cell_val = data[ri][pct_col].text if hasattr(data[ri][pct_col], "text") else ""
-            try:
-                pct_v = float(str(cell_val).replace("%", "").replace("+", ""))
-                if pct_v > 10:
-                    ts.add("TEXTCOLOR", (pct_col, ri), (pct_col, ri), C_CRITICAL)
-                    ts.add("FONTNAME",  (pct_col, ri), (pct_col, ri), "NanumGothic-Bold")
-                elif pct_v < -10:
-                    ts.add("TEXTCOLOR", (pct_col, ri), (pct_col, ri), C_STABLE)
-                    ts.add("FONTNAME",  (pct_col, ri), (pct_col, ri), "NanumGothic-Bold")
-            except (ValueError, TypeError):
-                pass
 
-    return Table(data, colWidths=col_w, style=ts, repeatRows=1)
+    # Per-utility colors for row 0 (saturated) and row 1 (tint)
+    for ci, p in enumerate(prefixes):
+        col_start = 1 + ci * 3
+        col_end   = col_start + 2
+        ts.add("SPAN",       (col_start, 0), (col_end, 0))
+        ts.add("BACKGROUND", (col_start, 0), (col_end, 0), _UTIL_COLORS[p])
+        ts.add("ALIGN",      (col_start, 0), (col_end, 0), "CENTER")
+        ts.add("BACKGROUND", (col_start, 1), (col_end, 1), _UTIL_TINT_COLORS[p])
+
+    # % change cell coloring
+    for (ri, pct_col), pct_v in pct_vals.items():
+        if pd.isna(pct_v):
+            continue
+        if pct_v > 10:
+            ts.add("TEXTCOLOR", (pct_col, ri), (pct_col, ri), C_CRITICAL)
+            ts.add("FONTNAME",  (pct_col, ri), (pct_col, ri), "NanumGothic-Bold")
+        elif pct_v < -10:
+            ts.add("TEXTCOLOR", (pct_col, ri), (pct_col, ri), C_STABLE)
+            ts.add("FONTNAME",  (pct_col, ri), (pct_col, ri), "NanumGothic-Bold")
+
+    return Table(data, colWidths=col_w, style=ts, repeatRows=2)
 
 
 def _data_coverage_table(util_data, T, styles, content_w):
@@ -1481,6 +1563,7 @@ def _chart_building_comparison(util_data, T, prefix):
     ax.tick_params(axis="y", labelsize=10, length=0)
     ax.tick_params(axis="x", labelsize=10)
     ax.set_facecolor("white")
+    ax.set_xlim(0, max(avgs) * 1.2)
     ax.grid(axis="x", color="#DDDDDD", linewidth=0.5, linestyle="--")
     fig.tight_layout(pad=0.8)
     return _png(fig)

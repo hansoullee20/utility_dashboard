@@ -8,6 +8,8 @@ from datetime import date as _today_date
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D as _Line2D
+from matplotlib.font_manager import FontProperties as _FontProperties
 import numpy as np
 import pandas as pd
 from PIL import Image as PILImage
@@ -24,7 +26,7 @@ from report import (
     C_BLUE, C_CRITICAL, C_DIVIDER, C_LIGHT, C_NAVY, C_WHITE,
     M_BAR, M_CRITICAL,
     _ensure_fonts, _make_numbered_canvas, _make_page_template,
-    _make_styles, _png, _section_bar,
+    _make_styles, _png, _section_bar, _FONT_REG,
 )
 
 # ── Utility definitions (key, ko_label, en_label, excl_col, comm_col, total_col, chart_color)
@@ -125,10 +127,12 @@ def _chart_hbar(df: pd.DataFrame, x_col: str, y_col: str,
     ax.spines["left"].set_visible(False)
     ax.tick_params(axis="y", length=0)
     ax.tick_params(axis="x", labelsize=9)
+    x_max = float(max(vals)) * 1.2 if len(vals) else 1
+    ax.set_xlim(0, x_max)
     ax.grid(axis="x", color="#DDDDDD", linewidth=0.5, linestyle="--")
     ax.set_facecolor("white")
     if avg > 0:
-        ax.legend(fontsize=9, framealpha=0.9)
+        ax.legend(prop=_FontProperties(fname=_FONT_REG, size=9), framealpha=0.9)
     xlim = ax.get_xlim()
     x_off = 0.01 * (xlim[1] - xlim[0])
     for i, v in enumerate(vals):
@@ -169,15 +173,14 @@ def _chart_hist(vals: np.ndarray, title: str, unit: str,
         ax.axvspan(hi, xmax, color="#DD8A00", alpha=0.10, linewidth=0)
         ax.axvline(hi, color="#555555", linewidth=1.2, linestyle="--", alpha=0.7)
 
-    ax.axvline(med, color="#C44E52", linewidth=1.5, linestyle="--",
-               label=f"중앙값: {med:,.0f}")
+    ax.axvline(med, color="#C44E52", linewidth=1.5, linestyle="--")
 
     # Annotation box
     ax.annotate(
         f"하위 {tail_pct:.0f}%  {lo:,.0f}\n상위 {tail_pct:.0f}%  {hi:,.0f}\n중앙값    {med:,.0f}",
         xy=(0.98, 0.97), xycoords="axes fraction",
-        ha="right", va="top", fontsize=7.5,
-        fontfamily="monospace",
+        ha="right", va="top",
+        fontproperties=_FontProperties(fname=_FONT_REG, size=7.5),
         bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#AAAAAA", lw=0.8, alpha=0.9),
     )
 
@@ -187,8 +190,12 @@ def _chart_hist(vals: np.ndarray, title: str, unit: str,
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.set_facecolor("white")
+    ax.set_xlim(0, xmax * 1.05)
+    ax.set_ylim(0, counts.max() * 1.15)
     ax.grid(axis="y", color="#DDDDDD", linewidth=0.5, linestyle="--")
-    ax.legend(fontsize=8, framealpha=0.9)
+    ax.legend(handles=[
+        _Line2D([0], [0], color="#C44E52", linewidth=1.5, linestyle="--", label=f"중앙값: {med:,.0f}"),
+    ], prop=_FontProperties(fname=_FONT_REG, size=8), framealpha=0.9)
     fig.tight_layout(pad=0.8)
     return _png_from_fig(fig)
 

@@ -72,6 +72,7 @@ def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
 
 BILLING_SHEET_NAME  = "수도광열비 부과 내역"
 EHP_OAC_SHEET_NAME  = "EHP(OAC)검침자료"
+HVAC_SHEET_NAME     = "관리비 고지서 EHP 열(냉난방)"
 
 
 @st.cache_data(show_spinner="Loading billing sheet...")
@@ -142,6 +143,144 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
             df[c] = df[c].astype(str).str.strip()
 
     return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner="Loading HVAC billing sheet...")
+def read_hvac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Parse 관리비 고지서 EHP 열(냉난방) sheet.
+
+    Finds the ▣ 열(냉난방)사용 내역 section, reads columns A–T (indices 0–19),
+    treats the first row of that section as column headers.
+    """
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+
+    # Find the section header row
+    section_row = None
+    for i, row in raw.iterrows():
+        if row.astype(str).str.contains(r"▣.*열.*냉난방.*사용", regex=True, na=False).any():
+            section_row = i
+            break
+    if section_row is None:
+        return pd.DataFrame()
+
+    # Find end of section (next ▣ header or end of data)
+    end_row = len(raw)
+    for i in range(section_row + 1, len(raw)):
+        if raw.iloc[i].astype(str).str.contains("▣", na=False).any():
+            end_row = i
+            break
+
+    # Collect up to 3 non-empty header rows (multi-level merged headers)
+    header_rows: list[int] = []
+    for i in range(section_row + 1, end_row):
+        if raw.iloc[i, :20].notna().any():
+            header_rows.append(i)
+        if len(header_rows) == 3:
+            break
+    if not header_rows:
+        return pd.DataFrame()
+
+    def _clean(v: object) -> str:
+        s = _re_billing.sub(r"\s+", " ", str(v)).strip()
+        return "" if s.lower() == "nan" else s
+
+    # Forward-fill each header row independently (merged cells), then combine
+    levels = [raw.iloc[r, :20].ffill() for r in header_rows]
+    raw_cols = []
+    for ci in range(20):
+        parts = [_clean(lvl.iloc[ci]) for lvl in levels]
+        # Remove empty parts and deduplicate adjacent identical parts
+        unique_parts: list[str] = []
+        for p in parts:
+            if p and (not unique_parts or p != unique_parts[-1]):
+                unique_parts.append(p)
+        raw_cols.append("_".join(unique_parts) if unique_parts else "")
+    data_start = header_rows[-1] + 1
+
+    # Deduplicate column names
+    seen: dict[str, int] = {}
+    unique_cols: list[str] = []
+    for c in raw_cols:
+        if c in seen:
+            seen[c] += 1
+            unique_cols.append(f"{c}_{seen[c]}")
+        else:
+            seen[c] = 0
+            unique_cols.append(c)
+
+    block = raw.iloc[data_start:end_row, :20].reset_index(drop=True)
+    if block.empty:
+        return pd.DataFrame()
+
+    block.columns = unique_cols
+
+    # Truncate at first row where 순번 column becomes empty (end of actual data)
+    순번_col = next((c for c in unique_cols if "순번" in c), None)
+    if 순번_col:
+        empty_mask = block[순번_col].astype(str).str.strip().isin({"", "nan", "NaN"})
+        if empty_mask.any():
+            block = block.iloc[:empty_mask.idxmax()]
+
+    block = block.dropna(how="all").reset_index(drop=True)
+    block = block.drop(columns=[c for c in block.columns if "동별 건물 면적 현황_순번" in c], errors="ignore")
+
+    # Replace dash and blank strings with NaN
+    block = block.replace(r"^\s*[-–—]\s*$", pd.NA, regex=True)
+    block = block.replace(r"^\s*$", pd.NA, regex=True)
+
+    # Rename brand column and move to front
+    brand_col = next((c for c in block.columns if "브랜드" in c and "관리비" in c), None)
+    if brand_col:
+        block = block.rename(columns={brand_col: "브랜드"})
+        block.insert(0, "브랜드", block.pop("브랜드"))
+
+    # Forward-fill 구분 column (merged cells in Excel)
+    구분_col = next((c for c in block.columns if "구분" in c), None)
+    if 구분_col:
+        block[구분_col] = block[구분_col].replace("", pd.NA).ffill()
+        # Split 구분 into two columns: label before () and value inside ()
+        col_idx = block.columns.get_loc(구분_col)
+        block.insert(col_idx + 1, "유형", block[구분_col].astype(str).str.extract(r"\(([^)]+)\)", expand=False).str.strip())
+        block[구분_col] = block[구분_col].astype(str).str.replace(r"\s*\([^)]*\)", "", regex=True).str.strip()
+
+    # Simplify column names: strip long top-level prefix groups
+    _prefixes = [
+        "냉난방요금(FCU/EHP 사용량)_",
+        "동별 건물 면적 현황_",
+        "관리비 분담_",
+        "부과금액_",
+    ]
+    def _simplify(col: str) -> str:
+        for pfx in _prefixes:
+            if col.startswith(pfx):
+                return col[len(pfx):]
+        return col
+
+    # Deduplicate after simplification
+    simplified = [_simplify(c) for c in block.columns]
+    seen: dict[str, int] = {}
+    final_cols: list[str] = []
+    for c in simplified:
+        if c in seen:
+            seen[c] += 1
+            final_cols.append(f"{c}_{seen[c]}")
+        else:
+            seen[c] = 0
+            final_cols.append(c)
+    block.columns = [
+        c if c == "전용면적_(평)" else c.replace("_(평)", "").replace("(평)", "")
+        for c in final_cols
+    ]
+
+    # Fill 기본요금 and 사용요금 NaN with 0
+    for _fill_col in [next((c for c in block.columns if "기본요금" in c), None),
+                      next((c for c in block.columns if "사용요금" in c), None)]:
+        if _fill_col:
+            block[_fill_col] = pd.to_numeric(
+                block[_fill_col].astype(str).str.replace(",", "", regex=False), errors="coerce"
+            ).fillna(0)
+
+    return block
 
 
 import re as _re
