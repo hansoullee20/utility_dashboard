@@ -1486,35 +1486,40 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
             q1, q3 = s.quantile(0.25), s.quantile(0.75)
             return float(q3 + 1.5 * (q3 - q1))
 
-        _flags = pd.DataFrame(index=brand_agg_all.index)
+        _flags      = pd.DataFrame(index=brand_agg_all.index)
+        _series_map: dict = {}   # flag_name → (full_series, threshold, unit_label)
 
         # Flag 1 — absolute fee outlier
         if _anom_fee and _anom_fee in brand_agg_all.columns:
-            _fee_s  = brand_agg_all[_anom_fee]
+            _fee_s  = brand_agg_all[_anom_fee].dropna()
             _fee_up = _iqr_upper(_fee_s)
-            _flags["요금 이상치"] = _fee_s > _fee_up
+            _flags["요금 이상치"] = (_fee_s.reindex(brand_agg_all.index) > _fee_up).fillna(False)
+            _series_map["요금 이상치"] = (_fee_s, _fee_up, "원")
 
         # Flag 2 — unit area cost outlier
         if _anom_fee and area_col and _anom_fee in brand_agg_all.columns and area_col in brand_agg_all.columns:
-            _a_s  = brand_agg_all[area_col].where(brand_agg_all[area_col] > 0)
-            _pm2  = (brand_agg_all[_anom_fee] / _a_s).dropna()
-            _pm2  = _pm2[_pm2 > 0]
+            _a_s    = brand_agg_all[area_col].where(brand_agg_all[area_col] > 0)
+            _pm2    = (brand_agg_all[_anom_fee] / _a_s).dropna()
+            _pm2    = _pm2[_pm2 > 0]
             _pm2_up = _iqr_upper(_pm2)
             _flags["단위면적 이상치"] = (_pm2.reindex(brand_agg_all.index) > _pm2_up).fillna(False)
+            _series_map["단위면적 이상치"] = (_pm2, _pm2_up, "원/㎡")
 
         # Flag 3 — unit usage cost outlier
         if _anom_fee and usage_col and _anom_fee in brand_agg_all.columns and usage_col in brand_agg_all.columns:
-            _u_s  = brand_agg_all[usage_col].where(brand_agg_all[usage_col] > 0)
-            _pmc  = (brand_agg_all[_anom_fee] / _u_s).dropna()
-            _pmc  = _pmc[_pmc > 0]
+            _u_s    = brand_agg_all[usage_col].where(brand_agg_all[usage_col] > 0)
+            _pmc    = (brand_agg_all[_anom_fee] / _u_s).dropna()
+            _pmc    = _pmc[_pmc > 0]
             _pmc_up = _iqr_upper(_pmc)
             _flags["단위사용량 이상치"] = (_pmc.reindex(brand_agg_all.index) > _pmc_up).fillna(False)
+            _series_map["단위사용량 이상치"] = (_pmc, _pmc_up, "원/Mcal")
 
         # Flag 4 — base fee heavy (>70%)
         if base_col and _anom_fee and base_col in brand_agg_all.columns and _anom_fee in brand_agg_all.columns:
-            _denom = brand_agg_all[_anom_fee].replace(0, np.nan)
-            _bp = (brand_agg_all[base_col] / _denom * 100)
-            _flags["기본요금 편중"] = (_bp > 70).fillna(False)
+            _denom  = brand_agg_all[_anom_fee].replace(0, np.nan)
+            _bp     = (brand_agg_all[base_col] / _denom * 100).dropna()
+            _flags["기본요금 편중"] = (_bp.reindex(brand_agg_all.index) > 70).fillna(False)
+            _series_map["기본요금 편중"] = (_bp, 70.0, "%")
 
         # ── Severity score ────────────────────────────────────────────────────
         _flag_cols = list(_flags.columns)
@@ -1526,6 +1531,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                 lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상")
             )
 
+            _SEVER_COLOR = {"🔴 위험": "#C44E52", "🟠 주의": "#DD8A00", "🟢 정상": "#9EBADF"}
+
             n_crit  = int((_flags["플래그 수"] >= 2).sum())
             n_watch = int((_flags["플래그 수"] == 1).sum())
             n_ok    = int((_flags["플래그 수"] == 0).sum())
@@ -1535,6 +1542,42 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
             _am2.metric("🟠 주의 (1개 플래그)",       n_watch)
             _am3.metric("🟢 정상",                     n_ok)
             st.divider()
+
+            # ── Overview chart — all brands colored by severity ───────────────
+            if _anom_fee and _anom_fee in brand_agg_all.columns:
+                _ov_s = brand_agg_all[_anom_fee].dropna()
+                _ov_df = _flags[["플래그 수", "등급"]].join(_ov_s.rename("fee")).dropna(subset=["fee"])
+                _ov_df = _ov_df.sort_values(["플래그 수", "fee"], ascending=[False, False])
+                _ov_n  = min(40, len(_ov_df))
+                _ov_df = _ov_df.head(_ov_n)
+                _ov_labels = [str(b)[:28] for b in _ov_df.index]
+                _ov_colors = [_SEVER_COLOR[g] for g in _ov_df["등급"]]
+                _ov_h = max(320, _ov_n * 22 + 60)
+                _ov_fig = go.Figure(go.Bar(
+                    x=_ov_df["fee"].values,
+                    y=_ov_labels,
+                    orientation="h",
+                    marker_color=_ov_colors,
+                    text=[f"{v:,.0f}" for v in _ov_df["fee"].values],
+                    textposition="outside",
+                    textfont=dict(size=9),
+                ))
+                _ov_fig.update_layout(
+                    height=_ov_h,
+                    margin=dict(l=10, r=60, t=36, b=40),
+                    title=dict(text=f"업체별 FCU 요금 — 이상 등급별 구분 (상위 {_ov_n}개)", font=dict(size=12)),
+                    xaxis=dict(title="요금 (원)", showgrid=True, gridcolor="#DDDDDD", griddash="dot", zeroline=False),
+                    yaxis=dict(autorange="reversed", tickfont=dict(size=9)),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    bargap=0.25,
+                    showlegend=False,
+                )
+                # Legend annotation
+                for _grade, _clr in _SEVER_COLOR.items():
+                    _ov_fig.add_trace(go.Bar(x=[None], y=[None], orientation="h",
+                                             marker_color=_clr, name=_grade, showlegend=True))
+                _ov_fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0))
+                st.plotly_chart(_ov_fig, use_container_width=True, key="hvac_anom_overview", theme=None)
 
             # ── Flag legend ───────────────────────────────────────────────────
             with st.expander("플래그 기준 안내", expanded=False):
@@ -1551,26 +1594,22 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
 
             # ── Flagged brands table ──────────────────────────────────────────
             _flagged = _flags[_flags["플래그 수"] >= 1].copy()
+            _ctx_cols = [c for c in [_anom_fee, base_col, usage_fee_col, comm_fee_col, usage_col, area_col] if c and c in brand_agg_all.columns]
+            _ctx_rename = {
+                _anom_fee:     "소계 (원)" if total_col else "전용 합계 (원)",
+                base_col:      "기본요금 (원)",
+                usage_fee_col: "사용요금 (원)",
+                comm_fee_col:  "공용요금 (원)",
+                usage_col:     "사용량 (Mcal)",
+                area_col:      "면적 (㎡)",
+            }
             if _flagged.empty:
                 st.success("이상 징후가 감지된 업체가 없습니다.")
             else:
                 st.caption(f"이상 징후 업체: {len(_flagged)}개 — 플래그 수 내림차순")
-
-                # Attach context columns
-                _ctx_cols = [c for c in [_anom_fee, base_col, usage_fee_col, comm_fee_col, usage_col, area_col] if c and c in brand_agg_all.columns]
-                _ctx_rename = {
-                    _anom_fee:     "소계 (원)" if total_col else "전용 합계 (원)",
-                    base_col:      "기본요금 (원)",
-                    usage_fee_col: "사용요금 (원)",
-                    comm_fee_col:  "공용요금 (원)",
-                    usage_col:     "사용량 (Mcal)",
-                    area_col:      "면적 (㎡)",
-                }
                 _display = _flagged.sort_values(["플래그 수", "등급"], ascending=[False, True])
                 _display = _display.join(brand_agg_all[_ctx_cols])
                 _display = _display.rename(columns={k: v for k, v in _ctx_rename.items() if k in _display.columns})
-
-                # Format numeric context cols
                 _display_fmt = _display.copy()
                 for _c in _display_fmt.columns:
                     if _c in ["등급", "플래그 수"] + _flag_cols:
@@ -1579,22 +1618,56 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                         _display_fmt[_c] = _display_fmt[_c].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
                     except Exception:
                         pass
-
-                # Reorder: grade, score, flags, then context
                 _disp_order = ["등급", "플래그 수"] + _flag_cols + [c for c in _display_fmt.columns if c not in ["등급", "플래그 수"] + _flag_cols]
-                st.dataframe(
-                    st_safe(_display_fmt[_disp_order]),
-                    use_container_width=True,
-                    hide_index=False,
-                )
+                st.dataframe(st_safe(_display_fmt[_disp_order]), use_container_width=True, hide_index=False)
 
-            # ── Per-flag breakdown ────────────────────────────────────────────
+            # ── Per-flag breakdown with charts ────────────────────────────────
             st.divider()
             for _fc in _flag_cols:
                 _fc_brands = _flags[_flags[_fc] == True].index
                 if _fc_brands.empty:
                     continue
                 with st.expander(f"{_fc} — {len(_fc_brands)}개 업체", expanded=False):
+                    # Chart — full distribution, outliers in red
+                    if _fc in _series_map:
+                        _fc_ser, _fc_thresh, _fc_unit = _series_map[_fc]
+                        _fc_ser_clean = _fc_ser.dropna()
+                        _fc_ser_clean = _fc_ser_clean[_fc_ser_clean > 0] if _fc_unit != "%" else _fc_ser_clean
+                        _fc_ser_sorted = _fc_ser_clean.sort_values(ascending=False).head(40)
+                        _fc_n = len(_fc_ser_sorted)
+                        _fc_bar_colors = [
+                            "#C44E52" if v > _fc_thresh else "#4C72B0"
+                            for v in _fc_ser_sorted.values
+                        ]
+                        _fc_h = max(300, _fc_n * 20 + 60)
+                        _fc_fig = go.Figure(go.Bar(
+                            x=_fc_ser_sorted.values,
+                            y=[str(b)[:28] for b in _fc_ser_sorted.index],
+                            orientation="h",
+                            marker_color=_fc_bar_colors,
+                            text=[f"{v:,.1f}" for v in _fc_ser_sorted.values],
+                            textposition="outside",
+                            textfont=dict(size=9),
+                        ))
+                        _fc_fig.add_vline(
+                            x=_fc_thresh,
+                            line_dash="dot", line_color="#C44E52", line_width=2,
+                            annotation_text=f"기준선 {_fc_thresh:,.1f} {_fc_unit}",
+                            annotation_position="top right",
+                            annotation_font=dict(size=9, color="#C44E52"),
+                        )
+                        _fc_fig.update_layout(
+                            height=_fc_h,
+                            margin=dict(l=10, r=60, t=36, b=40),
+                            title=dict(text=f"{_fc} 분포 — 빨강=기준 초과 업체", font=dict(size=11)),
+                            xaxis=dict(title=f"({_fc_unit})", showgrid=True, gridcolor="#DDDDDD", griddash="dot", zeroline=False),
+                            yaxis=dict(autorange="reversed", tickfont=dict(size=9)),
+                            plot_bgcolor="white", paper_bgcolor="white",
+                            bargap=0.25, showlegend=False,
+                        )
+                        st.plotly_chart(_fc_fig, use_container_width=True, key=f"hvac_anom_{_fc}", theme=None)
+
+                    # Table
                     _fc_ctx = [c for c in [_anom_fee, base_col, usage_fee_col, comm_fee_col, usage_col, area_col] if c and c in brand_agg_all.columns]
                     _fc_df  = brand_agg_all.loc[_fc_brands, _fc_ctx].copy()
                     _fc_df  = _fc_df.rename(columns={k: v for k, v in _ctx_rename.items() if k in _fc_df.columns})
