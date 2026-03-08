@@ -497,7 +497,7 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
 
     st.divider()
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab_rank, tab_prop, tab_fair, tab_corr = st.tabs(["순위", "비중", "면적별 비용 비교", "상관"])
+    tab_rank, tab_prop, tab_fair, tab_corr, tab_anom = st.tabs(["순위", "비중", "면적별 비용 비교", "상관", "이상 탐지"])
 
     # ── Brand data summary (computed once, used across tabs) ──────────────────
     ref_col = amount_col or usage_col
@@ -1474,6 +1474,135 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                             "기울기": f"{_slope:.4f}", "절편": f"{_icpt:.4f}",
                             "p-value": f"{_pv:.4e}", "강도": _str_k,
                         }]), hide_index=True, use_container_width=True)
+
+    with tab_anom:
+        _anom_fee = total_col or amount_col
+
+        # ── Compute flags per brand ───────────────────────────────────────────
+        def _iqr_upper(s: pd.Series) -> float:
+            s = s.dropna(); s = s[s > 0]
+            if len(s) < 4:
+                return float("inf")
+            q1, q3 = s.quantile(0.25), s.quantile(0.75)
+            return float(q3 + 1.5 * (q3 - q1))
+
+        _flags = pd.DataFrame(index=brand_agg_all.index)
+
+        # Flag 1 — absolute fee outlier
+        if _anom_fee and _anom_fee in brand_agg_all.columns:
+            _fee_s  = brand_agg_all[_anom_fee]
+            _fee_up = _iqr_upper(_fee_s)
+            _flags["요금 이상치"] = _fee_s > _fee_up
+
+        # Flag 2 — unit area cost outlier
+        if _anom_fee and area_col and _anom_fee in brand_agg_all.columns and area_col in brand_agg_all.columns:
+            _a_s  = brand_agg_all[area_col].where(brand_agg_all[area_col] > 0)
+            _pm2  = (brand_agg_all[_anom_fee] / _a_s).dropna()
+            _pm2  = _pm2[_pm2 > 0]
+            _pm2_up = _iqr_upper(_pm2)
+            _flags["단위면적 이상치"] = (_pm2.reindex(brand_agg_all.index) > _pm2_up).fillna(False)
+
+        # Flag 3 — unit usage cost outlier
+        if _anom_fee and usage_col and _anom_fee in brand_agg_all.columns and usage_col in brand_agg_all.columns:
+            _u_s  = brand_agg_all[usage_col].where(brand_agg_all[usage_col] > 0)
+            _pmc  = (brand_agg_all[_anom_fee] / _u_s).dropna()
+            _pmc  = _pmc[_pmc > 0]
+            _pmc_up = _iqr_upper(_pmc)
+            _flags["단위사용량 이상치"] = (_pmc.reindex(brand_agg_all.index) > _pmc_up).fillna(False)
+
+        # Flag 4 — base fee heavy (>70%)
+        if base_col and _anom_fee and base_col in brand_agg_all.columns and _anom_fee in brand_agg_all.columns:
+            _denom = brand_agg_all[_anom_fee].replace(0, np.nan)
+            _bp = (brand_agg_all[base_col] / _denom * 100)
+            _flags["기본요금 편중"] = (_bp > 70).fillna(False)
+
+        # ── Severity score ────────────────────────────────────────────────────
+        _flag_cols = list(_flags.columns)
+        if not _flag_cols:
+            st.info("이상 탐지에 필요한 컬럼이 없습니다.")
+        else:
+            _flags["플래그 수"] = _flags[_flag_cols].sum(axis=1).astype(int)
+            _flags["등급"] = _flags["플래그 수"].map(
+                lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상")
+            )
+
+            n_crit  = int((_flags["플래그 수"] >= 2).sum())
+            n_watch = int((_flags["플래그 수"] == 1).sum())
+            n_ok    = int((_flags["플래그 수"] == 0).sum())
+
+            _am1, _am2, _am3 = st.columns(3)
+            _am1.metric("🔴 위험 (2개 이상 플래그)", n_crit)
+            _am2.metric("🟠 주의 (1개 플래그)",       n_watch)
+            _am3.metric("🟢 정상",                     n_ok)
+            st.divider()
+
+            # ── Flag legend ───────────────────────────────────────────────────
+            with st.expander("플래그 기준 안내", expanded=False):
+                st.markdown(
+                    "| 플래그 | 기준 |\n"
+                    "|---|---|\n"
+                    "| **요금 이상치** | 소계(전용) 요금이 IQR 상한 (Q3 + 1.5×IQR) 초과 |\n"
+                    "| **단위면적 이상치** | 원/㎡ 기준 IQR 상한 초과 |\n"
+                    "| **단위사용량 이상치** | 원/Mcal 기준 IQR 상한 초과 |\n"
+                    "| **기본요금 편중** | 기본요금 비중 > 70% |\n"
+                    "| **🔴 위험** | 2개 이상 플래그 |\n"
+                    "| **🟠 주의** | 1개 플래그 |"
+                )
+
+            # ── Flagged brands table ──────────────────────────────────────────
+            _flagged = _flags[_flags["플래그 수"] >= 1].copy()
+            if _flagged.empty:
+                st.success("이상 징후가 감지된 업체가 없습니다.")
+            else:
+                st.caption(f"이상 징후 업체: {len(_flagged)}개 — 플래그 수 내림차순")
+
+                # Attach context columns
+                _ctx_cols = [c for c in [_anom_fee, base_col, usage_fee_col, comm_fee_col, usage_col, area_col] if c and c in brand_agg_all.columns]
+                _ctx_rename = {
+                    _anom_fee:     "소계 (원)" if total_col else "전용 합계 (원)",
+                    base_col:      "기본요금 (원)",
+                    usage_fee_col: "사용요금 (원)",
+                    comm_fee_col:  "공용요금 (원)",
+                    usage_col:     "사용량 (Mcal)",
+                    area_col:      "면적 (㎡)",
+                }
+                _display = _flagged.sort_values(["플래그 수", "등급"], ascending=[False, True])
+                _display = _display.join(brand_agg_all[_ctx_cols])
+                _display = _display.rename(columns={k: v for k, v in _ctx_rename.items() if k in _display.columns})
+
+                # Format numeric context cols
+                _display_fmt = _display.copy()
+                for _c in _display_fmt.columns:
+                    if _c in ["등급", "플래그 수"] + _flag_cols:
+                        continue
+                    try:
+                        _display_fmt[_c] = _display_fmt[_c].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+                    except Exception:
+                        pass
+
+                # Reorder: grade, score, flags, then context
+                _disp_order = ["등급", "플래그 수"] + _flag_cols + [c for c in _display_fmt.columns if c not in ["등급", "플래그 수"] + _flag_cols]
+                st.dataframe(
+                    st_safe(_display_fmt[_disp_order]),
+                    use_container_width=True,
+                    hide_index=False,
+                )
+
+            # ── Per-flag breakdown ────────────────────────────────────────────
+            st.divider()
+            for _fc in _flag_cols:
+                _fc_brands = _flags[_flags[_fc] == True].index
+                if _fc_brands.empty:
+                    continue
+                with st.expander(f"{_fc} — {len(_fc_brands)}개 업체", expanded=False):
+                    _fc_ctx = [c for c in [_anom_fee, base_col, usage_fee_col, comm_fee_col, usage_col, area_col] if c and c in brand_agg_all.columns]
+                    _fc_df  = brand_agg_all.loc[_fc_brands, _fc_ctx].copy()
+                    _fc_df  = _fc_df.rename(columns={k: v for k, v in _ctx_rename.items() if k in _fc_df.columns})
+                    for _c in _fc_df.columns:
+                        _fc_df[_c] = _fc_df[_c].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—")
+                    if _anom_fee and (_ctx_rename.get(_anom_fee) in _fc_df.columns):
+                        _fc_df = _fc_df.sort_values(_ctx_rename[_anom_fee], ascending=False)
+                    st.dataframe(st_safe(_fc_df), use_container_width=True)
 
     # ── Bottom expanders ───────────────────────────────────────────────────────
     with st.expander("전체 내역", expanded=False):
