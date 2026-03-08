@@ -399,19 +399,11 @@ def render_summary_view(
             .reset_index(drop=True)
         )
         _action_df.index = _action_df.index + 1  # 1-based rank
+        _action_df.insert(0, "등급", _action_df["우선순위 점수"].map(
+            lambda s: "🔴 즉시" if s >= 4 else ("🟠 검토" if s >= 2 else ("🟡 관찰" if s == 1 else "🟢 정상"))
+        ))
 
-        # Color highlight for top priority rows
-        def _highlight(row):
-            if row["우선순위 점수"] >= 4:
-                return ["background-color: #ffeaea"] * len(row)
-            elif row["우선순위 점수"] >= 2:
-                return ["background-color: #fff8e8"] * len(row)
-            return [""] * len(row)
-
-        st.dataframe(
-            _action_df.style.apply(_highlight, axis=1),
-            use_container_width=True,
-        )
+        st.dataframe(_action_df, use_container_width=True)
 
         # ── Download management report ─────────────────────────────────────────
         import io
