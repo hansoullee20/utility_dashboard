@@ -87,15 +87,21 @@ def render_electricity_view(df: pd.DataFrame) -> None:
     # ═══════════════════════════ 순위 ═════════════════════════════════════════
     with tab_rank:
         _metric = st.radio(
-            "기준", ["총부과", "전용부과", "공용부과", "사용량 (KWH)"],
+            "기준", ["총부과", "전용부과", "공용부과", "사용량 (KWH)", "실효 단가 (원/KWH)"],
             horizontal=True, key="elec_rank_metric"
         )
-        _col  = {"총부과": "grand_total", "전용부과": "grand_excl",
-                 "공용부과": "grand_comm", "사용량 (KWH)": "kwh_total"}[_metric]
-        _unit = "원" if _metric != "사용량 (KWH)" else "KWH"
+        if _metric == "실효 단가 (원/KWH)":
+            _df_eff = df[df["kwh_total"] > 0].copy()
+            _df_eff["eff_rate"] = (_df_eff["grand_total"] / _df_eff["kwh_total"]).round(0)
+            _col, _unit = "eff_rate", "원/KWH"
+            _df_r = _df_eff[["brand","building","eff_rate"]].sort_values("eff_rate", ascending=True)
+        else:
+            _col  = {"총부과": "grand_total", "전용부과": "grand_excl",
+                     "공용부과": "grand_comm", "사용량 (KWH)": "kwh_total"}[_metric]
+            _unit = "원" if _metric != "사용량 (KWH)" else "KWH"
+            _df_r = df[["brand","building",_col]].sort_values(_col, ascending=True)
 
-        _df_r = df[["brand", "building", _col]].sort_values(_col, ascending=True)
-        _r_up = _iqr_upper(df[_col])
+        _r_up = _iqr_upper(_df_r[_col])
 
         fig_r = go.Figure()
         for bld in ["A", "B", "C", "D"]:
@@ -248,6 +254,51 @@ def render_electricity_view(df: pd.DataFrame) -> None:
         )
         st.plotly_chart(fig_us, use_container_width=True, key="elec_usage_stacked")
 
+        # EHP vs 비-EHP comparison
+        st.divider()
+        st.subheader("EHP 유무 비교")
+        df_ehp  = df[df["kwh_ehp"] > 0].copy()
+        df_noehp = df[df["kwh_ehp"] == 0].copy()
+        st.caption(f"EHP 있음: **{len(df_ehp)}개** 브랜드  |  EHP 없음: **{len(df_noehp)}개** 브랜드")
+
+        _cmp_metrics = {
+            "총부과 (원)":      ("grand_total", 1),
+            "전용부과 (원)":    ("grand_excl",  1),
+            "EHP요금 (원)":     ("ehp_total",   1),
+            "총 KWH":           ("kwh_total",   1),
+            "EHP KWH":          ("kwh_ehp",     1),
+        }
+        _cmp_rows = []
+        for label, (col, _) in _cmp_metrics.items():
+            if col not in df.columns: continue
+            _cmp_rows.append({
+                "항목":        label,
+                "EHP 있음 평균":  f"{df_ehp[col].mean():,.0f}",
+                "EHP 없음 평균":  f"{df_noehp[col].mean():,.0f}" if len(df_noehp) > 0 else "-",
+                "EHP 있음 합계":  f"{df_ehp[col].sum():,.0f}",
+            })
+        st.dataframe(pd.DataFrame(_cmp_rows), use_container_width=True, hide_index=True)
+
+        # Side-by-side box approximation using bar (mean + range)
+        _comp_bar_cols = [("총부과","grand_total","#4C72B0"),("총 KWH","kwh_total","#DD8A00")]
+        _bc1, _bc2 = st.columns(2)
+        for (label, col, clr), _bcol in zip(_comp_bar_cols, [_bc1, _bc2]):
+            with _bcol:
+                _grp = pd.DataFrame({
+                    "그룹": ["EHP 있음", "EHP 없음"],
+                    "평균": [df_ehp[col].mean(), df_noehp[col].mean() if len(df_noehp)>0 else 0],
+                    "중앙값": [df_ehp[col].median(), df_noehp[col].median() if len(df_noehp)>0 else 0],
+                })
+                fig_cmp = go.Figure()
+                fig_cmp.add_trace(go.Bar(x=_grp["그룹"], y=_grp["평균"], name="평균",
+                                         marker_color=[clr,"#AAAAAA"],
+                                         text=[f"{v:,.0f}" for v in _grp["평균"]],
+                                         textposition="outside"))
+                fig_cmp.update_layout(title=f"{label} 평균 비교", height=280, plot_bgcolor="white",
+                                      yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+                                      showlegend=False, margin=dict(l=10,r=10,t=50,b=30))
+                st.plotly_chart(fig_cmp, use_container_width=True, key=f"elec_ehp_cmp_{col}")
+
     # ═══════════════════════════ 요금 구성 ════════════════════════════════════
     with tab_fee:
         _fview = st.radio("보기", ["전체 구성 donut", "브랜드별 stacked"],
@@ -295,6 +346,43 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 "비중": [f"{df[c].sum()/_tot_fee*100:.1f}%" for c in ["excl_total","ehp_total","comm_total"]],
             })
             st.dataframe(_tbl, use_container_width=True, hide_index=True)
+
+            # 기후변화요금 비중 highlight
+            st.divider()
+            _climate_total = df["excl_climate"].sum() + df["ehp_climate"].sum() + df["comm_climate"].sum()
+            _climate_pct   = _climate_total / _tot_fee * 100 if _tot_fee else 0
+            st.info(f"**기후변화요금** 총 {_climate_total/1e6:.2f}M 원 — 전체 전기요금의 **{_climate_pct:.1f}%**")
+
+            # 역률요금 분석
+            st.subheader("역률요금 (역률 조정 할인/할증)")
+            st.caption("역률요금이 음수인 브랜드는 역률 개선으로 할인을 받고, 양수는 저역률 패널티입니다.")
+            _pf_cols = [c for c in ["excl_pfactor","ehp_pfactor","comm_pfactor"] if c in df.columns]
+            if _pf_cols:
+                df_pf = df[["brand","building"] + _pf_cols].copy()
+                df_pf["역률요금_합계"] = df_pf[_pf_cols].sum(axis=1)
+                df_pf = df_pf[df_pf["역률요금_합계"] != 0].sort_values("역률요금_합계")
+                if not df_pf.empty:
+                    _pf_colors = ["#4C72B0" if v < 0 else "#C44E52" for v in df_pf["역률요금_합계"].values]
+                    fig_pf = go.Figure(go.Bar(
+                        x=df_pf["역률요금_합계"].values,
+                        y=[str(b)[:26] for b in df_pf["brand"]],
+                        orientation="h", marker_color=_pf_colors,
+                        text=[f"{v:,.0f}" for v in df_pf["역률요금_합계"].values],
+                        textposition="outside", textfont=dict(size=10),
+                    ))
+                    fig_pf.add_vline(x=0, line_color="#888", line_width=1)
+                    fig_pf.update_layout(
+                        height=max(320, len(df_pf)*22+80), xaxis_title="원 (음수=할인, 양수=할증)",
+                        plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+                        margin=dict(l=10,r=130,t=40,b=40),
+                    )
+                    st.plotly_chart(fig_pf, use_container_width=True, key="elec_pfactor_chart")
+                    _disc = df_pf[df_pf["역률요금_합계"] < 0]
+                    _surch = df_pf[df_pf["역률요금_합계"] > 0]
+                    pc = st.columns(3)
+                    pc[0].metric("할인 브랜드", f"{len(_disc)}개", delta=f"{_disc['역률요금_합계'].sum():,.0f} 원")
+                    pc[1].metric("할증 브랜드", f"{len(_surch)}개", delta=f"{_surch['역률요금_합계'].sum():,.0f} 원", delta_color="inverse")
+                    pc[2].metric("순 역률요금", f"{df_pf['역률요금_합계'].sum():,.0f} 원")
 
         else:
             _n_show2 = st.slider("상위 N개 브랜드", 10, min(60, n_total), min(30, n_total),
