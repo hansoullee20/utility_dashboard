@@ -52,7 +52,7 @@ def render_summary_view(
         _bld_map = df_src.groupby("brand")[["building","floor","size_m2"]].first()
         for idx, row in merged.iterrows():
             b = row["brand"]
-            if pd.isna(row.get("building")) or row.get("building") == "" and b in _bld_map.index:
+            if (pd.isna(row.get("building")) or row.get("building") == "") and b in _bld_map.index:
                 merged.at[idx, "building"] = _bld_map.at[b,"building"]
                 merged.at[idx, "floor"]    = _bld_map.at[b,"floor"]
                 if merged.at[idx,"size_m2"] == 0:
