@@ -102,17 +102,20 @@ def render_water_view(df: pd.DataFrame) -> None:
         _ylbl = [_pfx(b) + str(b)[:26] for b in _df_r["brand"]]
         _clrs = [_BLD_COLOR.get(b, "#888") for b in _df_r["building"]]
 
+        # One trace per building so Plotly generates a proper legend
         fig_r = go.Figure()
-        for bld, clr in _BLD_COLOR.items():
-            fig_r.add_trace(go.Bar(x=[None], y=[None], name=f"{bld}동",
-                                   marker_color=clr, orientation="h"))
-        fig_r.add_trace(go.Bar(
-            x=_df_r[_col].values, y=_ylbl, orientation="h",
-            marker_color=_clrs,
-            text=[f"{v:,.0f}" for v in _df_r[_col].values],
-            textposition="outside", textfont=dict(size=10),
-            showlegend=False,
-        ))
+        for bld in ["A", "B", "C", "D"]:
+            sub = _df_r[_df_r["building"] == bld]
+            if sub.empty:
+                continue
+            _sub_y = [_pfx(b) + str(b)[:26] for b in sub["brand"]]
+            fig_r.add_trace(go.Bar(
+                x=sub[_col].values, y=_sub_y, name=f"{bld}동",
+                orientation="h",
+                marker_color=_BLD_COLOR[bld],
+                text=[f"{v:,.0f}" for v in sub[_col].values],
+                textposition="outside", textfont=dict(size=10),
+            ))
 
         # IQR upper line
         _r_up = _iqr_upper(df[_col])
@@ -131,7 +134,7 @@ def render_water_view(df: pd.DataFrame) -> None:
             legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
             plot_bgcolor="white",
             xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
-            yaxis=dict(tickfont=dict(size=10)),
+            yaxis=dict(tickfont=dict(size=10), categoryorder="total ascending"),
         )
         st.plotly_chart(fig_r, use_container_width=True, key="water_rank_chart")
 
