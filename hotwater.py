@@ -4,14 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-_BLD_COLOR = {"A": "#4C72B0", "B": "#55A868", "C": "#C44E52", "D": "#DD8A00"}
-
-
-def _iqr_upper(s: pd.Series) -> float:
-    s = s.dropna(); s = s[s > 0]
-    if len(s) < 4: return float("inf")
-    q1, q3 = s.quantile(0.25), s.quantile(0.75)
-    return float(q3 + 1.5 * (q3 - q1))
+from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
 
 
 def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
@@ -52,12 +45,6 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
     _flags["등급"] = _flags["플래그 수"].map(
         lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상"))
 
-    def _pfx(brand):
-        if brand not in _flags.index: return ""
-        val = _flags.loc[brand, "플래그 수"]
-        n = int(val.iloc[0]) if isinstance(val, pd.Series) else int(val)
-        return "⛔ " if n >= 2 else ("⚠ " if n == 1 else "")
-
     tab_rank, tab_comp, tab_fair, tab_usage, tab_anom = st.tabs(
         ["순위", "비중", "면적당 비용", "사용량", "이상 탐지"]
     )
@@ -75,7 +62,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
             sub = _df_r[_df_r["building"]==bld]
             if sub.empty: continue
             fig_r.add_trace(go.Bar(
-                x=sub[_col].values, y=[_pfx(b)+str(b)[:26] for b in sub["brand"]],
+                x=sub[_col].values, y=[_flag_prefix(_flags, b)+str(b)[:26] for b in sub["brand"]],
                 name=f"{bld}동", orientation="h", marker_color=_BLD_COLOR[bld],
                 text=[f"{v:,.0f}" for v in sub[_col].values],
                 textposition="outside", textfont=dict(size=10),
@@ -112,7 +99,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 sub = _top[_top["building"]==bld]
                 if sub.empty: continue
                 fig_c.add_trace(go.Bar(
-                    x=sub["fee_excl"].values, y=[_pfx(b)+str(b)[:26] for b in sub["brand"]],
+                    x=sub["fee_excl"].values, y=[_flag_prefix(_flags, b)+str(b)[:26] for b in sub["brand"]],
                     name=f"{bld}동", orientation="h", marker_color=_BLD_COLOR[bld],
                     text=[f"{v/1000:.0f}k" if v >= 1000 else "" for v in sub["fee_excl"].values],
                     textposition="inside", textfont=dict(size=9, color="white"),
@@ -187,7 +174,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
         _bord_clr = ["#8B1A1A" if v>_f_up else ("#1A5C2A" if _f_lo>0 and v<_f_lo else "white") for v in _sf.values]
         _bord_w   = [2.5 if v>_f_up or (_f_lo>0 and v<_f_lo) else 0 for v in _sf.values]
         fig_f = go.Figure(go.Bar(
-            x=_sf.values, y=[_pfx(b)+str(b)[:26] for b in _df_f["brand"]],
+            x=_sf.values, y=[_flag_prefix(_flags, b)+str(b)[:26] for b in _df_f["brand"]],
             orientation="h",
             marker_color=[_BLD_COLOR.get(b,"#888") for b in _df_f["building"]],
             marker_line=dict(color=_bord_clr, width=_bord_w),
@@ -306,7 +293,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 sub = _df_u[_df_u["building"]==bld]
                 if sub.empty: continue
                 fig_u.add_trace(go.Bar(
-                    x=sub["usage_m3"].values, y=[_pfx(b)+str(b)[:26] for b in sub["brand"]],
+                    x=sub["usage_m3"].values, y=[_flag_prefix(_flags, b)+str(b)[:26] for b in sub["brand"]],
                     name=f"{bld}동", orientation="h", marker_color=_BLD_COLOR[bld],
                     text=[f"{v:,}" for v in sub["usage_m3"].values],
                     textposition="outside", textfont=dict(size=10),

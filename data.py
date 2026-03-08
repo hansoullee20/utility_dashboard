@@ -1,8 +1,10 @@
 import io
-import re as _re_billing
+import re
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+_BLANK: frozenset = frozenset({"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"})
 
 
 def get_billing_period(name: str, data: bytes, ehp_sheet: str = "EHP(OAC)검침자료") -> str | None:
@@ -133,7 +135,7 @@ def read_water_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
         "total_excl", "total_comm", "total",
         "avg_unit_price",
     }
-    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+    _blank = _BLANK
 
     for c in df.columns:
         if c in str_cols:
@@ -187,7 +189,7 @@ def read_hotwater_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
 
     str_cols = {"building", "floor", "unit", "brand"}
     num_cols  = set(col_map.values()) - str_cols
-    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+    _blank = _BLANK
 
     for c in df.columns:
         if c in str_cols:
@@ -271,7 +273,7 @@ def read_electricity_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
 
     str_cols = {"building", "floor", "unit", "brand"}
-    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+    _blank = _BLANK
 
     for c in df.columns:
         if c in str_cols:
@@ -337,7 +339,7 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
         "hvac_excl", "hvac_comm",
         "heat_total", "total_excl", "total_comm", "total",
     }
-    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+    _blank = _BLANK
     for c in df.columns:
         if c in str_cols:
             continue
@@ -391,7 +393,7 @@ def read_hvac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     def _clean(v: object) -> str:
-        s = _re_billing.sub(r"\s+", " ", str(v)).strip()
+        s = re.sub(r"\s+", " ", str(v)).strip()
         return "" if s.lower() == "nan" else s
 
     # Forward-fill each header row independently (merged cells), then combine
@@ -493,9 +495,6 @@ def read_hvac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     return block
 
 
-import re as _re
-
-
 def _parse_ehp_col_map(raw: pd.DataFrame) -> dict:
     """Scan the raw sheet header rows and return {col_index: (year, month)}.
 
@@ -513,8 +512,8 @@ def _parse_ehp_col_map(raw: pd.DataFrame) -> dict:
     • After the scan, any cells BEFORE the first explicit year label are
       unlabeled months.  We assume they form exactly 12 months of (first_year − 1).
     """
-    ym_pat   = _re.compile(r'(20\d{2})[.년\s]*(\d{1,2})월')
-    m_pat    = _re.compile(r'(\d{1,2})월')
+    ym_pat   = re.compile(r'(20\d{2})[.년\s]*(\d{1,2})월')
+    m_pat    = re.compile(r'(\d{1,2})월')
 
     # Pick the row with the most month-like values
     best_row_idx, best_count = 0, 0
@@ -563,8 +562,8 @@ def _label_columns_with_year(headers: pd.Series) -> list[str]:
     """Produce unique column names like '2018_1월', '2019_2월', etc.
     For any group of month columns with no year label, the year is
     (next labeled year - 1)."""
-    ym_pat = _re.compile(r'(20\d{2})')
-    m_pat  = _re.compile(r'(\d{1,2})월')
+    ym_pat = re.compile(r'(20\d{2})')
+    m_pat  = re.compile(r'(\d{1,2})월')
     values = [str(v).strip() for v in headers]
 
     # Pass 1: build a map of col_index -> explicit year label
@@ -631,7 +630,7 @@ def compute_monthly_usage(df: pd.DataFrame) -> pd.DataFrame:
     """Compute monthly usage: current month reading − previous month reading.
     Crosses year boundaries naturally. First month column → NaN.
     계량기 번호 is preserved as the first column."""
-    yr_pat = _re.compile(r'^(20\d{2})_')
+    yr_pat = re.compile(r'^(20\d{2})_')
     month_cols = [c for c in df.columns if yr_pat.match(str(c))]
     readings = df[month_cols].apply(
         lambda col: pd.to_numeric(col.astype(str).str.replace(",", "", regex=False), errors="coerce")
@@ -645,7 +644,7 @@ def compute_monthly_usage(df: pd.DataFrame) -> pd.DataFrame:
 
 def group_raw_slice_by_year(df: pd.DataFrame) -> dict[int, pd.DataFrame]:
     """Return {year: df} with 계량기 번호 prepended to each year's month columns."""
-    yr_pat = _re.compile(r'^(20\d{2})_')
+    yr_pat = re.compile(r'^(20\d{2})_')
     years = [int(yr_pat.match(str(c)).group(1)) if yr_pat.match(str(c)) else None for c in df.columns]
     key_col = ["계량기 번호"] if "계량기 번호" in df.columns else []
     result: dict[int, pd.DataFrame] = {}

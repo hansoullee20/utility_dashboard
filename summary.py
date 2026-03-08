@@ -4,15 +4,22 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-_BLD_COLOR = {"A": "#4C72B0", "B": "#55A868", "C": "#C44E52", "D": "#DD8A00"}
+from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper
+
 _UTIL_COLOR = {"수도": "#4C72B0", "온수": "#C44E52", "전기": "#DD8A00"}
 
 
-def _iqr_upper(s: pd.Series) -> float:
-    s = s.dropna(); s = s[s > 0]
-    if len(s) < 4: return float("inf")
-    q1, q3 = s.quantile(0.25), s.quantile(0.75)
-    return float(q3 + 1.5 * (q3 - q1))
+def _leakage_for(source_df, usage_col, fee_col):
+    met = source_df[source_df[usage_col] > 0]
+    if len(met) < 2: return {}, 0.0
+    med_rate = (met[fee_col] / met["size_m2"].replace(0, np.nan)).median()
+    if not pd.notna(med_rate): return {}, 0.0
+    unmet = source_df[source_df[usage_col] == 0]
+    per_brand = {}
+    for _, r in unmet.iterrows():
+        per_brand[r["brand"]] = per_brand.get(r["brand"], 0) + float(r["size_m2"]) * med_rate
+    total = sum(per_brand.values())
+    return per_brand, total
 
 
 def render_summary_view(
@@ -64,17 +71,23 @@ def render_summary_view(
             merged[col] = merged[col].fillna(0)
         else:
             merged[col] = 0
-    # Fill building/floor/size_m2 from any available source
-    for df_src in [hotwater_df, elec_df]:
-        if df_src is None or df_src.empty: continue
-        _bld_map = df_src.groupby("brand")[["building","floor","size_m2"]].first()
-        for idx, row in merged.iterrows():
-            b = row["brand"]
-            if (pd.isna(row.get("building")) or row.get("building") == "") and b in _bld_map.index:
-                merged.at[idx, "building"] = _bld_map.at[b,"building"]
-                merged.at[idx, "floor"]    = _bld_map.at[b,"floor"]
-                if merged.at[idx,"size_m2"] == 0:
-                    merged.at[idx,"size_m2"] = _bld_map.at[b,"size_m2"]
+    # Fill building/floor/size_m2 from all available sources (vectorized)
+    _meta_parts = [
+        df.groupby("brand")[["building", "floor", "size_m2"]].first()
+        for df in [water_df, hotwater_df, elec_df]
+        if df is not None and not df.empty
+    ]
+    if _meta_parts:
+        _meta = pd.concat(_meta_parts).groupby(level=0).first()
+        merged = merged.set_index("brand")
+        _no_bld = merged["building"].isna() | (merged["building"].astype(str).str.strip() == "")
+        merged["building"] = merged["building"].where(~_no_bld, _meta["building"].reindex(merged.index))
+        merged["floor"]    = merged["floor"].where(~_no_bld, _meta["floor"].reindex(merged.index))
+        merged["size_m2"]  = merged["size_m2"].where(
+            merged["size_m2"] > 0,
+            _meta["size_m2"].reindex(merged.index, fill_value=0),
+        )
+        merged = merged.reset_index()
 
     merged["util_total"] = merged["water_total"] + merged["hw_total"] + merged["elec_total"]
     merged = merged[merged["util_total"] > 0].sort_values("util_total", ascending=False).reset_index(drop=True)
@@ -318,18 +331,6 @@ def render_summary_view(
         st.caption("미청구 손실 추정, 이상 징후 브랜드, 비용 집중도를 종합한 경영용 보고서입니다.")
 
         # ── Leakage computation per sheet ──────────────────────────────────────
-        def _leakage_for(source_df, usage_col, fee_col):
-            met = source_df[source_df[usage_col] > 0]
-            if len(met) < 2: return {}, 0.0
-            med_rate = (met[fee_col] / met["size_m2"].replace(0, np.nan)).median()
-            if not pd.notna(med_rate): return {}, 0.0
-            unmet = source_df[source_df[usage_col] == 0]
-            per_brand = {}
-            for _, r in unmet.iterrows():
-                per_brand[r["brand"]] = per_brand.get(r["brand"], 0) + float(r["size_m2"]) * med_rate
-            total = sum(per_brand.values())
-            return per_brand, total
-
         _w_per_brand,  _w_total_leak  = _leakage_for(water_df,    "usage_m3",  "total")    if water_df    is not None else ({}, 0.0)
         _hw_per_brand, _hw_total_leak = _leakage_for(hotwater_df, "usage_m3",  "total")    if hotwater_df is not None else ({}, 0.0)
         _el_per_brand, _el_total_leak = _leakage_for(elec_df,     "kwh_total", "grand_total") if elec_df     is not None else ({}, 0.0)

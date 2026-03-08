@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-_BLD_COLOR = {"A": "#4C72B0", "B": "#55A868", "C": "#C44E52", "D": "#DD8A00"}
+from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
 
 _USAGE_COLS = [
     ("전기01 (검침)",  "kwh_elec01",      "#4C72B0"),
@@ -21,15 +21,6 @@ _FEE_GROUPS = [
     ("EHP 합계",   "ehp_total",  "#C44E52"),
     ("공용 합계",  "comm_total", "#9EBADF"),
 ]
-
-
-def _iqr_upper(s: pd.Series) -> float:
-    s = s.dropna()
-    s = s[s > 0]
-    if len(s) < 4:
-        return float("inf")
-    q1, q3 = s.quantile(0.25), s.quantile(0.75)
-    return float(q3 + 1.5 * (q3 - q1))
 
 
 def render_electricity_view(df: pd.DataFrame) -> None:
@@ -74,13 +65,6 @@ def render_electricity_view(df: pd.DataFrame) -> None:
         lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상")
     )
 
-    def _pfx(brand: str) -> str:
-        if brand not in _flags.index:
-            return ""
-        val = _flags.loc[brand, "플래그 수"]
-        n = int(val.iloc[0]) if isinstance(val, pd.Series) else int(val)
-        return "⛔ " if n >= 2 else ("⚠ " if n == 1 else "")
-
     tab_rank, tab_usage, tab_fee, tab_fair, tab_anom = st.tabs(
         ["순위", "사용량 구성", "요금 구성", "면적당 비용", "이상 탐지"]
     )
@@ -109,7 +93,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             sub = _df_r[_df_r["building"] == bld]
             if sub.empty:
                 continue
-            _sy = [_pfx(b) + str(b)[:26] for b in sub["brand"]]
+            _sy = [_flag_prefix(_flags, b) + str(b)[:26] for b in sub["brand"]]
             fig_r.add_trace(go.Bar(
                 x=sub[_col].values, y=_sy, name=f"{bld}동",
                 orientation="h", marker_color=_BLD_COLOR[bld],
@@ -229,7 +213,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
         _n_show = st.slider("상위 N개 브랜드", 10, min(60, n_total), min(30, n_total),
                             key="elec_usage_n")
         _top = df.nlargest(_n_show, "kwh_total").sort_values("kwh_total", ascending=True)
-        _ty  = [_pfx(b) + str(b)[:26] for b in _top["brand"]]
+        _ty  = [_flag_prefix(_flags, b) + str(b)[:26] for b in _top["brand"]]
 
         fig_us = go.Figure()
         for label, col, clr in _USAGE_COLS:
@@ -389,7 +373,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             _n_show2 = st.slider("상위 N개 브랜드", 10, min(60, n_total), min(30, n_total),
                                  key="elec_fee_n")
             _top2 = df.nlargest(_n_show2, "grand_total").sort_values("grand_total", ascending=True)
-            _fy   = [_pfx(b) + str(b)[:26] for b in _top2["brand"]]
+            _fy   = [_flag_prefix(_flags, b) + str(b)[:26] for b in _top2["brand"]]
 
             fig_fs = go.Figure()
             for label, col, clr in _FEE_GROUPS:
@@ -434,7 +418,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
 
         fig_f = go.Figure(go.Bar(
             x=_sf.values,
-            y=[_pfx(b) + str(b)[:26] for b in _df_f["brand"]],
+            y=[_flag_prefix(_flags, b) + str(b)[:26] for b in _df_f["brand"]],
             orientation="h",
             marker_color=[_BLD_COLOR.get(b, "#888") for b in _df_f["building"]],
             marker_line=dict(color=_bord_clr, width=_bord_w),
