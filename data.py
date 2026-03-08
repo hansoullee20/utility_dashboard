@@ -662,6 +662,7 @@ def group_raw_slice_by_year(df: pd.DataFrame) -> dict[int, pd.DataFrame]:
     return result
 
 
+@st.cache_data(show_spinner=False)
 def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     """Parse only the ▣ OAC 전기 사용량 table inside EHP(OAC)검침자료.
 
