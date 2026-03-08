@@ -97,7 +97,8 @@ def render_water_view(df: pd.DataFrame) -> None:
                  "공용부과": "total_comm", "사용량 (m³)": "usage_m3"}[_metric]
         _unit = "원" if _metric != "사용량 (m³)" else "m³"
 
-        _df_r = df[["brand", "building", _col]].sort_values(_col, ascending=True)
+        _col_label = {"총부과": "총부과", "전용부과": "전용부과", "공용부과": "공용부과", "사용량 (m³)": "사용량 (m³)"}[_metric]
+        _df_r = df[["brand", "building", "floor", "size_m2", _col]].sort_values(_col, ascending=True)
         _r_up = _iqr_upper(df[_col])
 
         fig_r = go.Figure()
@@ -107,8 +108,16 @@ def render_water_view(df: pd.DataFrame) -> None:
             fig_r.add_trace(go.Bar(
                 x=sub[_col].values, y=[_flag_prefix(_flags, b) + str(b)[:26] for b in sub["brand"]],
                 name=f"{bld}동", orientation="h", marker_color=_BLD_COLOR[bld],
+                customdata=sub[["floor", "size_m2"]].fillna("").values,
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    + f"{_col_label}: " + "%{x:,.0f}<br>"
+                    + "층: %{customdata[0]}<br>"
+                    + "면적: %{customdata[1]:.0f} m²"
+                    + "<extra>%{fullData.name}</extra>"
+                ),
                 text=[f"{v:,.0f}" for v in sub[_col].values],
-                textposition="outside", textfont=dict(size=10),
+                textposition="outside" if len(_df_r) <= 25 else "none", textfont=dict(size=10),
             ))
         if _r_up < float("inf"):
             fig_r.add_vline(x=_r_up, line_dash="dot", line_color="#DD8A00",
@@ -299,7 +308,7 @@ def render_water_view(df: pd.DataFrame) -> None:
                           horizontal=True, key="water_usage_view")
 
         if _uview == "사용량 순위":
-            _df_u = df_m[["brand","building","usage_m3"]].sort_values("usage_m3", ascending=True)
+            _df_u = df_m[["brand","building","floor","size_m2","usage_m3"]].sort_values("usage_m3", ascending=True)
             _u_up = _iqr_upper(df_m["usage_m3"])
             fig_u = go.Figure()
             for bld in ["A","B","C","D"]:
@@ -308,8 +317,16 @@ def render_water_view(df: pd.DataFrame) -> None:
                 fig_u.add_trace(go.Bar(
                     x=sub["usage_m3"].values, y=[_flag_prefix(_flags, b)+str(b)[:26] for b in sub["brand"]],
                     name=f"{bld}동", orientation="h", marker_color=_BLD_COLOR[bld],
+                    customdata=sub[["floor", "size_m2"]].fillna("").values,
+                    hovertemplate=(
+                        "<b>%{y}</b><br>"
+                        + "사용량 (m³): %{x:,.0f}<br>"
+                        + "층: %{customdata[0]}<br>"
+                        + "면적: %{customdata[1]:.0f} m²"
+                        + "<extra>%{fullData.name}</extra>"
+                    ),
                     text=[f"{v:,}" for v in sub["usage_m3"].values],
-                    textposition="outside", textfont=dict(size=10),
+                    textposition="outside" if len(_df_u) <= 25 else "none", textfont=dict(size=10),
                 ))
             fig_u.add_vline(x=float(df_m["usage_m3"].median()), line_dash="dash", line_color="#C44E52",
                             annotation_text=f"중앙값 {df_m['usage_m3'].median():.0f}", annotation_font_size=10)
@@ -447,4 +464,23 @@ def render_water_view(df: pd.DataFrame) -> None:
             _meta = _flags[["플래그 수","등급"]].reset_index().rename(columns={"index":"brand"})
             _detail = _detail.merge(_meta, on="brand", how="left")
             _detail = _detail.sort_values("플래그 수", ascending=False).reset_index(drop=True)
-            st.dataframe(_detail, use_container_width=True, hide_index=True)
+            st.dataframe(
+                _detail,
+                column_config={
+                    "brand":       st.column_config.TextColumn("브랜드"),
+                    "building":    st.column_config.TextColumn("건물"),
+                    "floor":       st.column_config.TextColumn("층"),
+                    "size_m2":     st.column_config.NumberColumn("면적 (m²)", format="%.0f"),
+                    "usage_m3":    st.column_config.ProgressColumn(
+                        "사용량 (m³)", format="%,.0f", min_value=0,
+                        max_value=int(_detail["usage_m3"].max()) if not _detail["usage_m3"].empty and _detail["usage_m3"].max() > 0 else 1,
+                    ),
+                    "total_excl":  st.column_config.NumberColumn("전용부과 (원)", format="%,.0f"),
+                    "total_comm":  st.column_config.NumberColumn("공용부과 (원)", format="%,.0f"),
+                    "total":       st.column_config.NumberColumn("총부과 (원)", format="%,.0f"),
+                    "플래그 수":   st.column_config.NumberColumn("플래그", format="%d"),
+                    "등급":        st.column_config.TextColumn("등급"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )

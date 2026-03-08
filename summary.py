@@ -116,6 +116,7 @@ def render_summary_view(
             fig_r.add_trace(go.Bar(
                 x=_top[col].values, y=[str(b)[:26] for b in _top["brand"]],
                 name=label, orientation="h", marker_color=clr,
+                hovertemplate="<b>%{y}</b><br>" + label + ": %{x:,.0f} 원<extra></extra>",
                 text=[f"{v/1e3:.0f}k" if v >= 1e4 else ("" if v==0 else f"{v:,.0f}") for v in _top[col].values],
                 textposition="inside", textfont=dict(size=9, color="white"),
             ))
@@ -196,7 +197,16 @@ def render_summary_view(
         _tbl = _tbl.rename(columns={"brand":"브랜드","building":"건물","floor":"층",
                                      "water_total":"수도 (원)","hw_total":"온수 (원)",
                                      "elec_total":"전기 (원)","util_total":"합계 (원)"})
-        st.dataframe(_tbl, use_container_width=True, hide_index=True)
+        st.dataframe(
+            _tbl,
+            column_config={
+                "브랜드": st.column_config.TextColumn("브랜드"),
+                "건물":   st.column_config.TextColumn("건물", width="small"),
+                "층":     st.column_config.TextColumn("층", width="small"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
 
     # ═══════════════════════════ 면적당 총비용 ════════════════════════════════
     with tab_area:
@@ -427,7 +437,24 @@ def render_summary_view(
             lambda s: "🔴 즉시" if s >= 4 else ("🟠 검토" if s >= 2 else ("🟡 관찰" if s == 1 else "🟢 정상"))
         ))
 
-        st.dataframe(_action_df, use_container_width=True)
+        st.dataframe(
+            _action_df,
+            column_config={
+                "등급":             st.column_config.TextColumn("등급", width="small"),
+                "브랜드":           st.column_config.TextColumn("브랜드"),
+                "건물":             st.column_config.TextColumn("건물", width="small"),
+                "층":               st.column_config.TextColumn("층", width="small"),
+                "총 유틸리티 (원)": st.column_config.NumberColumn("총 유틸리티 (원)", format="%,.0f"),
+                "원/m²":            st.column_config.NumberColumn("원/m²", format="%,.0f"),
+                "건물중앙 원/m²":   st.column_config.NumberColumn("건물중앙 원/m²", format="%,.0f"),
+                "미계량 (참고)":    st.column_config.TextColumn("미계량"),
+                "전체미계량":       st.column_config.TextColumn("전체미계량", width="small"),
+                "이상치":           st.column_config.TextColumn("이상치", width="small"),
+                "저납부":           st.column_config.TextColumn("저납부", width="small"),
+                "우선순위 점수":    st.column_config.ProgressColumn("우선순위", format="%d", min_value=0, max_value=6),
+            },
+            use_container_width=True,
+        )
 
         # ── Download management report ─────────────────────────────────────────
         import io

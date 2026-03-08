@@ -79,12 +79,14 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             _df_eff = df[df["kwh_total"] > 0].copy()
             _df_eff["eff_rate"] = (_df_eff["grand_total"] / _df_eff["kwh_total"]).round(0)
             _col, _unit = "eff_rate", "원/KWH"
-            _df_r = _df_eff[["brand","building","eff_rate"]].sort_values("eff_rate", ascending=True)
+            _col_label = "실효 단가 (원/KWH)"
+            _df_r = _df_eff[["brand","building","floor","size_m2","eff_rate"]].sort_values("eff_rate", ascending=True)
         else:
             _col  = {"총부과": "grand_total", "전용부과": "grand_excl",
                      "공용부과": "grand_comm", "사용량 (KWH)": "kwh_total"}[_metric]
             _unit = "원" if _metric != "사용량 (KWH)" else "KWH"
-            _df_r = df[["brand","building",_col]].sort_values(_col, ascending=True)
+            _col_label = _metric
+            _df_r = df[["brand","building","floor","size_m2",_col]].sort_values(_col, ascending=True)
 
         _r_up = _iqr_upper(_df_r[_col])
 
@@ -97,8 +99,16 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             fig_r.add_trace(go.Bar(
                 x=sub[_col].values, y=_sy, name=f"{bld}동",
                 orientation="h", marker_color=_BLD_COLOR[bld],
+                customdata=sub[["floor", "size_m2"]].fillna("").values,
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    + f"{_col_label}: " + "%{x:,.0f}<br>"
+                    + "층: %{customdata[0]}<br>"
+                    + "면적: %{customdata[1]:.0f} m²"
+                    + "<extra>%{fullData.name}</extra>"
+                ),
                 text=[f"{v:,.0f}" for v in sub[_col].values],
-                textposition="outside", textfont=dict(size=10),
+                textposition="outside" if len(_df_r) <= 25 else "none", textfont=dict(size=10),
             ))
 
         if _r_up < float("inf"):
@@ -225,6 +235,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             fig_us.add_trace(go.Bar(
                 x=_vals, y=_ty, name=label, orientation="h",
                 marker_color=clr,
+                hovertemplate="<b>%{y}</b><br>" + label + ": %{x:,.0f} KWH<extra></extra>",
                 text=[f"{v:,.0f}" if v >= 100 else "" for v in _vals],
                 textposition="inside", textfont=dict(size=9, color="white"),
             ))
@@ -489,4 +500,23 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             _meta = _flags[["플래그 수", "등급"]].reset_index().rename(columns={"index": "brand"})
             _detail = _detail.merge(_meta, on="brand", how="left")
             _detail = _detail.sort_values("플래그 수", ascending=False).reset_index(drop=True)
-            st.dataframe(_detail, use_container_width=True, hide_index=True)
+            st.dataframe(
+                _detail,
+                column_config={
+                    "brand":       st.column_config.TextColumn("브랜드"),
+                    "building":    st.column_config.TextColumn("건물"),
+                    "floor":       st.column_config.TextColumn("층"),
+                    "size_m2":     st.column_config.NumberColumn("면적 (m²)", format="%.0f"),
+                    "kwh_total":   st.column_config.ProgressColumn(
+                        "KWH", format="%,.0f", min_value=0,
+                        max_value=int(_detail["kwh_total"].max()) if not _detail["kwh_total"].empty and _detail["kwh_total"].max() > 0 else 1,
+                    ),
+                    "grand_excl":  st.column_config.NumberColumn("전용부과 (원)", format="%,.0f"),
+                    "grand_comm":  st.column_config.NumberColumn("공용부과 (원)", format="%,.0f"),
+                    "grand_total": st.column_config.NumberColumn("총부과 (원)", format="%,.0f"),
+                    "플래그 수":   st.column_config.NumberColumn("플래그", format="%d"),
+                    "등급":        st.column_config.TextColumn("등급"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
