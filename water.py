@@ -266,6 +266,95 @@ def render_water_view(df: pd.DataFrame) -> None:
         df_m = df[df["usage_m3"] > 0].copy()
         df_m["cost_per_m3"] = (df_m["total_excl"] / df_m["usage_m3"]).round(0)
 
+        # ── Building summary ──────────────────────────────────────────────────
+        st.subheader("건물별 집계")
+        _bld_grp = df.groupby("building").agg(
+            브랜드수=("brand", "count"),
+            계량브랜드=("usage_m3", lambda x: (x > 0).sum()),
+            총사용량=("usage_m3", "sum"),
+            총부과=("total", "sum"),
+            총면적=("size_m2", "sum"),
+        ).reindex(["A", "B", "C", "D"]).dropna(how="all").reset_index()
+        _bld_grp["면적당비용"] = (_bld_grp["총부과"] / _bld_grp["총면적"]).round(0)
+        _bld_grp["브랜드당사용량"] = (_bld_grp["총사용량"] / _bld_grp["계량브랜드"].replace(0, np.nan)).round(1)
+
+        _bc1, _bc2 = st.columns(2)
+        with _bc1:
+            fig_bu = go.Figure()
+            for _, row in _bld_grp.iterrows():
+                fig_bu.add_trace(go.Bar(
+                    x=[row["building"] + "동"], y=[row["총사용량"]],
+                    name=row["building"] + "동",
+                    marker_color=_BLD_COLOR.get(row["building"], "#888"),
+                    text=[f"{int(row['총사용량']):,} m³"],
+                    textposition="outside", textfont=dict(size=11),
+                    showlegend=False,
+                ))
+            fig_bu.update_layout(
+                title="건물별 총 사용량 (m³)", height=300,
+                plot_bgcolor="white", showlegend=False,
+                yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+                margin=dict(l=10, r=10, t=50, b=30),
+            )
+            st.plotly_chart(fig_bu, use_container_width=True, key="water_bld_usage")
+
+        with _bc2:
+            fig_bt = go.Figure()
+            for _, row in _bld_grp.iterrows():
+                fig_bt.add_trace(go.Bar(
+                    x=[row["building"] + "동"], y=[row["총부과"]],
+                    name=row["building"] + "동",
+                    marker_color=_BLD_COLOR.get(row["building"], "#888"),
+                    text=[f"{row['총부과']/1e6:.2f}M"],
+                    textposition="outside", textfont=dict(size=11),
+                    showlegend=False,
+                ))
+            fig_bt.update_layout(
+                title="건물별 총 부과금액 (원)", height=300,
+                plot_bgcolor="white", showlegend=False,
+                yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+                margin=dict(l=10, r=10, t=50, b=30),
+            )
+            st.plotly_chart(fig_bt, use_container_width=True, key="water_bld_total")
+
+        # Fee composition stacked by building
+        fig_bcomp = go.Figure()
+        for label, col, clr in _COMP_COLS:
+            fig_bcomp.add_trace(go.Bar(
+                x=[r["building"] + "동" for _, r in _bld_grp.iterrows()],
+                y=[df[df["building"] == r["building"]][col].sum() for _, r in _bld_grp.iterrows()],
+                name=label, marker_color=clr,
+                text=[f"{df[df['building']==r['building']][col].sum()/1e6:.2f}M"
+                      for _, r in _bld_grp.iterrows()],
+                textposition="inside", textfont=dict(size=10, color="white"),
+            ))
+        fig_bcomp.update_layout(
+            barmode="stack", title="건물별 요금 구성",
+            height=320, plot_bgcolor="white",
+            yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+            legend=dict(orientation="h", y=1.12),
+            margin=dict(l=10, r=10, t=70, b=30),
+        )
+        st.plotly_chart(fig_bcomp, use_container_width=True, key="water_bld_comp")
+
+        # Summary table
+        _bld_disp = _bld_grp.copy()
+        _bld_disp["총사용량"] = _bld_disp["총사용량"].apply(lambda v: f"{int(v):,} m³")
+        _bld_disp["총부과"]   = _bld_disp["총부과"].apply(lambda v: f"{v:,.0f} 원")
+        _bld_disp["면적당비용"] = _bld_disp["면적당비용"].apply(lambda v: f"{v:,.0f} 원/m²")
+        _bld_disp["브랜드당사용량"] = _bld_disp["브랜드당사용량"].apply(
+            lambda v: f"{v:.1f} m³" if pd.notna(v) else "-"
+        )
+        _bld_disp["building"] = _bld_disp["building"] + "동"
+        _bld_disp = _bld_disp.rename(columns={
+            "building": "건물", "브랜드수": "브랜드", "계량브랜드": "계량",
+            "총사용량": "사용량 합계", "총부과": "부과 합계",
+            "면적당비용": "원/m²", "브랜드당사용량": "계량브랜드당 평균",
+        })
+        st.dataframe(_bld_disp, use_container_width=True, hide_index=True)
+
+        st.divider()
+
         _uview = st.radio(
             "차트", ["사용량 순위", "사용량 vs 면적 산점도", "m³당 단가"],
             horizontal=True, key="water_usage_view"
