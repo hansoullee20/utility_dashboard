@@ -77,18 +77,6 @@ def render_water_view(df: pd.DataFrame) -> None:
     mc[3].metric("총 사용량",   f"{int(df['usage_m3'].sum()):,} m³")
     mc[4].metric("계량 브랜드", f"{n_metered} / {n_total}")
 
-    # ── Revenue leakage estimate ───────────────────────────────────────────────
-    if n_unmet > 0:
-        _met = df[df["usage_m3"] > 0]
-        if len(_met) >= 2:
-            _med_rate = (_met["total"] / _met["size_m2"].replace(0, np.nan)).median()
-            _leakage = (df[df["usage_m3"] == 0]["size_m2"] * _med_rate).sum()
-            if pd.notna(_leakage) and _leakage > 0:
-                st.error(
-                    f"💸 미계량 {n_unmet}개 브랜드 — 추정 월 미청구 손실: "
-                    f"**{_leakage:,.0f} 원** (계량 브랜드 중앙 원/m² 기준, 행동 필요)"
-                )
-
     # ── Anomaly flags ─────────────────────────────────────────────────────────
     _flags = pd.DataFrame(index=df["brand"].values)
     _total_up = _iqr_upper(df["total"])

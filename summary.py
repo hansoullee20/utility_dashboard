@@ -325,17 +325,19 @@ def render_summary_view(
         _total_spend = merged["util_total"].sum()
         _top5_pct = merged.nlargest(5, "util_total")["util_total"].sum() / _total_spend * 100 if _total_spend else 0
 
-        # ── Total unmetered count ──────────────────────────────────────────────
+        # ── Unmetered summary ──────────────────────────────────────────────────
         _all_unmet_brands = set(_w_per_brand) | set(_hw_per_brand) | set(_el_per_brand)
+        # Brands unmetered across ALL three sheets are the most suspicious
+        _all3_unmet = set(_w_per_brand) & set(_hw_per_brand) & set(_el_per_brand)
 
         # ── KPI row ────────────────────────────────────────────────────────────
         kc = st.columns(4)
-        kc[0].metric("월 추정 미청구 손실",
-                     f"{_total_leakage:,.0f} 원",
-                     help="미계량 브랜드 면적 × 계량 브랜드 중앙 원/m² 합산")
-        kc[1].metric("미계량 브랜드",
+        kc[0].metric("미계량 브랜드 (검토 필요)",
                      f"{len(_all_unmet_brands)}개",
-                     help="수도/온수/전기 중 하나 이상 미계량")
+                     help="수도/온수/전기 중 하나 이상 미계량. 업종 특성상 정상일 수 있습니다.")
+        kc[1].metric("전 유틸리티 미계량",
+                     f"{len(_all3_unmet)}개",
+                     help="수도·온수·전기 모두 미계량 — 계약·미터 점검 권장")
         kc[2].metric("이상 징후 브랜드",
                      f"{_n_anomaly}개",
                      help="총 유틸리티 비용 IQR 상한 초과")
@@ -343,17 +345,20 @@ def render_summary_view(
                      f"{_top5_pct:.1f}%",
                      help="전체 유틸리티 지출에서 상위 5개 브랜드 비중")
 
-        if _total_leakage > 0:
-            st.error(
-                f"💸 총 추정 월 미청구 손실 **{_total_leakage:,.0f} 원** — "
-                f"수도 {_w_total_leak:,.0f} / 온수 {_hw_total_leak:,.0f} / 전기 {_el_total_leak:,.0f} 원"
+        if _all3_unmet:
+            st.warning(
+                f"⚠️ 수도·온수·전기 **전부** 미계량 브랜드 {len(_all3_unmet)}개: "
+                f"{', '.join(sorted(_all3_unmet)[:8])}{'…' if len(_all3_unmet) > 8 else ''} — 계약 및 미터 설치 여부 확인 권장"
             )
 
         st.divider()
 
         # ── Priority action table ──────────────────────────────────────────────
         st.markdown("#### 우선 조치 브랜드")
-        st.caption("미계량·이상치·고비용 기준으로 조치 우선순위를 산정합니다. (점수 = 이상치×3 + 미계량수×2)")
+        st.caption(
+            "이상치·고비용 기준으로 조치 우선순위를 산정합니다. (점수 = 이상치×3 + 전체미계량×2 + 저납부×1) "
+            "미계량은 업종 특성상 정상일 수 있으므로 참고 정보로만 표시됩니다."
+        )
 
         _action_rows = []
         for _, row in merged.iterrows():
@@ -363,9 +368,9 @@ def render_summary_view(
             _hw_u = b in _hw_per_brand
             _el_u = b in _el_per_brand
             _unmet_cnt = int(_w_u) + int(_hw_u) + int(_el_u)
-            _brand_leak = _w_per_brand.get(b, 0) + _hw_per_brand.get(b, 0) + _el_per_brand.get(b, 0)
+            _all3 = _w_u and _hw_u and _el_u  # missing from ALL sheets — more suspicious
             _pm2 = row["util_total"] / row["size_m2"] if row.get("size_m2", 0) > 0 else np.nan
-            _score = (_is_anom * 3) + (_unmet_cnt * 2)
+            _score = (_is_anom * 3) + (_all3 * 2)
 
             # Per-building median util/m² for underpay flag
             _bld = str(row.get("building", ""))
@@ -386,8 +391,8 @@ def render_summary_view(
                 "총 유틸리티 (원)": int(row["util_total"]),
                 "원/m²":         round(_pm2, 0) if pd.notna(_pm2) else None,
                 "건물중앙 원/m²": round(_bld_med_pm2, 0) if pd.notna(_bld_med_pm2) else None,
-                "미계량":        ("수도 " if _w_u else "") + ("온수 " if _hw_u else "") + ("전기" if _el_u else "") or "-",
-                "추정 손실 (원)": int(_brand_leak),
+                "미계량 (참고)":  ("수도 " if _w_u else "") + ("온수 " if _hw_u else "") + ("전기" if _el_u else "") or "-",
+                "전체미계량":    "⚠" if _all3 else "-",
                 "이상치":        "⛔" if _is_anom else "✓",
                 "저납부":        "⚠" if _underpay else "-",
                 "우선순위 점수": _score,
@@ -410,14 +415,14 @@ def render_summary_view(
         _buf = io.BytesIO()
         with pd.ExcelWriter(_buf, engine="openpyxl") as _xw:
             _action_df.to_excel(_xw, sheet_name="우선조치목록", index=True)
-            # Per-sheet leakage detail
+            # Unmetered brand detail per sheet (for manual review — not assumed leakage)
             for _sheet_label, _per_brand in [("수도_미계량", _w_per_brand),
                                               ("온수_미계량", _hw_per_brand),
                                               ("전기_미계량", _el_per_brand)]:
                 if _per_brand:
                     _detail = pd.DataFrame(
-                        [{"브랜드": k, "추정 손실 (원)": int(v)} for k, v in _per_brand.items()]
-                    ).sort_values("추정 손실 (원)", ascending=False)
+                        [{"브랜드": k} for k in _per_brand]
+                    )
                     _detail.to_excel(_xw, sheet_name=_sheet_label, index=False)
         st.download_button(
             "📥 경영 보고서 다운로드 (Excel)",
