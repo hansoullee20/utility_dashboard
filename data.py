@@ -70,10 +70,12 @@ def read_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     raise ValueError("Unsupported file type")
 
 
-BILLING_SHEET_NAME  = "수도광열비 부과 내역"
-EHP_OAC_SHEET_NAME  = "EHP(OAC)검침자료"
-HVAC_SHEET_NAME     = "관리비 고지서 EHP 열(냉난방)"
-WATER_SHEET_NAME    = "수도 사용 내역"
+BILLING_SHEET_NAME    = "수도광열비 부과 내역"
+EHP_OAC_SHEET_NAME    = "EHP(OAC)검침자료"
+HVAC_SHEET_NAME       = "관리비 고지서 EHP 열(냉난방)"
+WATER_SHEET_NAME      = "수도 사용 내역"
+HOTWATER_SHEET_NAME   = "온수 사용 내역"
+ELECTRICITY_SHEET_NAME = "전체 전기 사용내역"
 
 
 @st.cache_data(show_spinner="Loading water sheet...")
@@ -143,6 +145,142 @@ def read_water_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
             ).fillna(0)
         else:
             df[c] = to_numeric_series(df[c])
+
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner="Loading hot water sheet...")
+def read_hotwater_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Parse 온수 사용 내역 sheet into a clean flat DataFrame.
+
+    Layout identical to 수도 사용 내역:
+      row 0: ▣ 온수 사용 내역  |  rows 2-4: headers  |  row 5+: data
+    Key columns:
+      10: usage_m3 (급탕 사용량)  11: fee_excl  12: fee_comm (always 0)  14: total
+    """
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+
+    data_rows = raw.iloc[5:].copy()
+    data_rows = data_rows[
+        data_rows[2].astype(str).str.strip().isin({"A", "B", "C", "D"})
+    ].copy()
+
+    col_map = {
+        2:  "building",
+        3:  "floor",
+        4:  "unit",
+        5:  "size_m2",
+        8:  "size_py",
+        9:  "brand",
+        10: "usage_m3",
+        11: "fee_excl",
+        12: "fee_comm",
+        14: "total",
+    }
+
+    present_cols = [c for c in col_map if c in data_rows.columns]
+    df = data_rows[present_cols].copy()
+    df.columns = [col_map[c] for c in present_cols]
+
+    brand_str = df["brand"].astype(str).str.strip()
+    df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+
+    str_cols = {"building", "floor", "unit", "brand"}
+    num_cols  = set(col_map.values()) - str_cols
+    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+
+    for c in df.columns:
+        if c in str_cols:
+            df[c] = df[c].astype(str).str.strip()
+        elif c in num_cols:
+            cleaned = df[c].astype(str).str.strip().replace(_blank, "0")
+            df[c] = pd.to_numeric(
+                cleaned.str.replace(",", "", regex=False), errors="coerce"
+            ).fillna(0)
+        else:
+            df[c] = to_numeric_series(df[c])
+
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(show_spinner="Loading electricity sheet...")
+def read_electricity_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
+    """Parse 전체 전기 사용내역 sheet into a clean flat DataFrame.
+
+    Layout: same ▣ header + 3-row headers + data from row 5.
+    Usage (KWH): cols 10-17  |  Fees (원): cols 18-44
+    """
+    raw = pd.read_excel(io.BytesIO(data), sheet_name=sheet, header=None, engine="calamine")
+
+    data_rows = raw.iloc[5:].copy()
+    data_rows = data_rows[
+        data_rows[2].astype(str).str.strip().isin({"A", "B", "C", "D"})
+    ].copy()
+
+    col_map = {
+        2:  "building",
+        3:  "floor",
+        4:  "unit",
+        5:  "size_m2",
+        8:  "size_py",
+        9:  "brand",
+        # usage KWH
+        10: "kwh_elec02",
+        11: "kwh_elec01",
+        12: "kwh_kitchen_fan",
+        13: "kwh_fcu",
+        14: "kwh_ahu",
+        15: "kwh_ehp",
+        16: "kwh_pump",
+        17: "kwh_total",
+        # exclusive fees
+        18: "excl_base",
+        19: "excl_energy",
+        20: "excl_climate",
+        21: "excl_pfactor",
+        22: "excl_subtotal",
+        24: "excl_fund",
+        25: "excl_total",
+        # EHP fees
+        26: "ehp_base",
+        27: "ehp_energy",
+        28: "ehp_climate",
+        29: "ehp_pfactor",
+        30: "ehp_subtotal",
+        32: "ehp_fund",
+        33: "ehp_total",
+        # common fees
+        34: "comm_base",
+        35: "comm_energy",
+        36: "comm_climate",
+        37: "comm_pfactor",
+        38: "comm_subtotal",
+        40: "comm_fund",
+        41: "comm_total",
+        # grand totals
+        42: "grand_excl",
+        43: "grand_comm",
+        44: "grand_total",
+    }
+
+    present_cols = [c for c in col_map if c in data_rows.columns]
+    df = data_rows[present_cols].copy()
+    df.columns = [col_map[c] for c in present_cols]
+
+    brand_str = df["brand"].astype(str).str.strip()
+    df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+
+    str_cols = {"building", "floor", "unit", "brand"}
+    _blank = {"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"}
+
+    for c in df.columns:
+        if c in str_cols:
+            df[c] = df[c].astype(str).str.strip()
+        else:
+            cleaned = df[c].astype(str).str.strip().replace(_blank, "0")
+            df[c] = pd.to_numeric(
+                cleaned.str.replace(",", "", regex=False), errors="coerce"
+            ).fillna(0)
 
     return df.reset_index(drop=True)
 

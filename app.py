@@ -7,10 +7,20 @@ import plotly.express as px
 from scipy import stats
 from typing import Dict
 
-from data import get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe, read_billing_sheet, get_billing_period, BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, HVAC_SHEET_NAME, read_hvac_sheet, read_water_sheet, WATER_SHEET_NAME
+from data import (
+    get_sheet_names, read_sheet, apply_header_rows, to_numeric_series, st_safe,
+    read_billing_sheet, get_billing_period,
+    BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, HVAC_SHEET_NAME,
+    read_hvac_sheet,
+    read_water_sheet, WATER_SHEET_NAME,
+    read_hotwater_sheet, HOTWATER_SHEET_NAME,
+    read_electricity_sheet, ELECTRICITY_SHEET_NAME,
+)
 from billing import render_billing_view
 from ehp import render_ehp_view
 from water import render_water_view
+from hotwater import render_hotwater_view
+from electricity import render_electricity_view
 from features import (
     create_change_columns,
     aggregate_by_brand,
@@ -133,7 +143,10 @@ def main():
     file_name = st.selectbox("Select file", list(file_map.keys()))
     all_sheet_keys = sheet_map[file_name]
 
-    SUPPORTED_SHEETS = {"검침 내역", BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, HVAC_SHEET_NAME, WATER_SHEET_NAME}
+    SUPPORTED_SHEETS = {
+        "검침 내역", BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME, HVAC_SHEET_NAME,
+        WATER_SHEET_NAME, HOTWATER_SHEET_NAME, ELECTRICITY_SHEET_NAME,
+    }
     sheet_keys = [s for s in all_sheet_keys if s.strip() in SUPPORTED_SHEETS]
     if not sheet_keys:
         st.warning("No supported sheets found in this file. Expected '검침 내역' or '수도광열비 부과 내역'.")
@@ -151,6 +164,26 @@ def main():
             st.error(f"Failed to parse HVAC sheet: {e}")
             st.stop()
         render_hvac_view(hvac_df)
+        return
+
+    # ── Hot water sheet ───────────────────────────────────────────────────────
+    if sheet_name.strip() == HOTWATER_SHEET_NAME:
+        try:
+            hw_df = read_hotwater_sheet(file_name, file_map[file_name], sheet_name)
+        except Exception as e:
+            st.error(f"Failed to parse hot water sheet: {e}")
+            st.stop()
+        render_hotwater_view(hw_df)
+        return
+
+    # ── Electricity sheet ─────────────────────────────────────────────────────
+    if sheet_name.strip() == ELECTRICITY_SHEET_NAME:
+        try:
+            elec_df = read_electricity_sheet(file_name, file_map[file_name], sheet_name)
+        except Exception as e:
+            st.error(f"Failed to parse electricity sheet: {e}")
+            st.stop()
+        render_electricity_view(elec_df)
         return
 
     # ── Water sheet: separate pipeline ───────────────────────────────────────
