@@ -545,9 +545,9 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     pivot = pd.DataFrame(_pivot_dict, index=top_brands)
                     pivot = pivot.assign(_total=pivot.sum(axis=1)).sort_values("_total", ascending=False).drop(columns="_total")
                     fig = go.Figure()
-                    _stacked_traces = [("기본요금", "#9B59B6"), ("사용요금", "#C084D4")]
+                    _stacked_traces = [("기본요금", "#9B59B6"), ("사용요금", "#27AE60")]
                     if comm_fee_col:
-                        _stacked_traces.append(("공용요금", "#7D3C98"))
+                        _stacked_traces.append(("공용요금", "#E67E22"))
                     for label, color in _stacked_traces:
                         if label in pivot.columns:
                             fig.add_trace(go.Bar(
@@ -591,9 +591,9 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     if fee_sel == "기본요금":
                         fee_col, color = base_col, "#9B59B6"
                     elif fee_sel == "사용요금":
-                        fee_col, color = usage_fee_col, "#C084D4"
+                        fee_col, color = usage_fee_col, "#27AE60"
                     else:  # 공용요금
-                        fee_col, color = comm_fee_col, "#7D3C98"
+                        fee_col, color = comm_fee_col, "#E67E22"
                     grp = sub_fdf.groupby("브랜드")[fee_col].sum().reindex(top_brands).fillna(0)
                     grp = grp.sort_values(ascending=False)
                     _overall_total = sub_fdf.groupby("브랜드")[amount_col].sum().reindex(top_brands).fillna(0).sum()
@@ -710,11 +710,11 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                 with _col_donut:
                     _donut_labels = ["기본요금", "사용요금"]
                     _donut_values = [_total_base_pct, _total_usage_pct]
-                    _donut_colors = ["#9B59B6", "#C084D4"]
+                    _donut_colors = ["#9B59B6", "#27AE60"]
                     if comm_fee_col and _total_comm_pct > 0:
                         _donut_labels.append("공용요금")
                         _donut_values.append(_total_comm_pct)
-                        _donut_colors.append("#7D3C98")
+                        _donut_colors.append("#E67E22")
                     _fig_donut = go.Figure(go.Pie(
                         labels=_donut_labels,
                         values=_donut_values,
@@ -737,9 +737,9 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                 with _col_bar:
                     _sorted = _agg.sort_values("기본요금 비중(%)", ascending=True)
                     _fig_prop = go.Figure()
-                    _bar_traces = [("기본요금 비중(%)", "#9B59B6"), ("사용요금 비중(%)", "#C084D4")]
+                    _bar_traces = [("기본요금 비중(%)", "#9B59B6"), ("사용요금 비중(%)", "#27AE60")]
                     if comm_fee_col:
-                        _bar_traces.append(("공용요금 비중(%)", "#7D3C98"))
+                        _bar_traces.append(("공용요금 비중(%)", "#E67E22"))
                     for _lbl, _clr in _bar_traces:
                         _fig_prop.add_trace(go.Bar(
                             name=_lbl.replace(" 비중(%)", ""),
@@ -843,7 +843,7 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     x=_ratio_sorted.values,
                     y=_ratio_sorted.index.astype(str),
                     orientation="h",
-                    marker_color=["#9B59B6" if v >= 100 else "#C084D4" for v in _ratio_sorted.values],
+                    marker_color=["#9B59B6" if v >= 100 else "#27AE60" for v in _ratio_sorted.values],
                     text=[f"{v:.1f}%" for v in _ratio_sorted.values],
                     textposition="outside",
                     textfont=dict(color="#000000"),
