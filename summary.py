@@ -16,39 +16,57 @@ def _iqr_upper(s: pd.Series) -> float:
 
 
 def render_summary_view(
-    water_df: pd.DataFrame,
-    hotwater_df: pd.DataFrame,
-    elec_df: pd.DataFrame,
+    water_df: pd.DataFrame | None,
+    hotwater_df: pd.DataFrame | None,
+    elec_df: pd.DataFrame | None,
 ) -> None:
+    _available = [n for n, d in [("수도", water_df), ("온수", hotwater_df), ("전기", elec_df)] if d is not None]
     st.header("📊 통합 유틸리티 분석")
-    st.caption("수도 + 온수 + 전기 데이터를 브랜드 기준으로 통합한 종합 분석입니다.")
+    st.caption(f"{'·'.join(_available)} 데이터를 브랜드 기준으로 통합한 종합 분석입니다.")
 
-    # ── Building filter ────────────────────────────────────────────────────────
-    all_blds = sorted(set(water_df["building"].unique()) |
-                      set(hotwater_df["building"].unique()) |
-                      set(elec_df["building"].unique()))
+    # ── Building filter (collect from all available sources) ───────────────────
+    _bld_sets: set = set()
+    for _src in [water_df, hotwater_df, elec_df]:
+        if _src is not None:
+            _bld_sets |= set(_src["building"].dropna().unique())
+    all_blds = sorted(_bld_sets)
     sel_bld = st.multiselect("건물 선택", ["All"] + all_blds, default=["All"], key="sum_bld")
     if "All" not in sel_bld and sel_bld:
-        water_df    = water_df[water_df["brand"].isin(water_df[water_df["building"].isin(sel_bld)]["brand"])].copy()
-        hotwater_df = hotwater_df[hotwater_df["building"].isin(sel_bld)].copy()
-        elec_df     = elec_df[elec_df["building"].isin(sel_bld)].copy()
+        if water_df    is not None: water_df    = water_df[water_df["building"].isin(sel_bld)].copy()
+        if hotwater_df is not None: hotwater_df = hotwater_df[hotwater_df["building"].isin(sel_bld)].copy()
+        if elec_df     is not None: elec_df     = elec_df[elec_df["building"].isin(sel_bld)].copy()
 
-    # ── Merge on brand ─────────────────────────────────────────────────────────
-    _w  = water_df.groupby("brand").agg(
-        building=("building","first"), floor=("floor","first"),
-        size_m2=("size_m2","sum"),
-        water_total=("total","sum"),
-    ).reset_index()
-    _hw = hotwater_df.groupby("brand").agg(hw_total=("total","sum")).reset_index()
-    _el = elec_df.groupby("brand").agg(elec_total=("grand_total","sum"),
-                                        kwh_total=("kwh_total","sum")).reset_index()
+    # ── Aggregate each available sheet by brand ────────────────────────────────
+    if water_df is not None and not water_df.empty:
+        _w = water_df.groupby("brand").agg(
+            building=("building","first"), floor=("floor","first"),
+            size_m2=("size_m2","sum"), water_total=("total","sum"),
+        ).reset_index()
+    else:
+        _w = pd.DataFrame(columns=["brand","building","floor","size_m2","water_total"])
+
+    if hotwater_df is not None and not hotwater_df.empty:
+        _hw = hotwater_df.groupby("brand").agg(hw_total=("total","sum")).reset_index()
+    else:
+        _hw = pd.DataFrame(columns=["brand","hw_total"])
+
+    if elec_df is not None and not elec_df.empty:
+        _el = elec_df.groupby("brand").agg(
+            elec_total=("grand_total","sum"), kwh_total=("kwh_total","sum")
+        ).reset_index()
+    else:
+        _el = pd.DataFrame(columns=["brand","elec_total","kwh_total"])
 
     merged = _w.merge(_hw, on="brand", how="outer").merge(_el, on="brand", how="outer")
-    # Fill missing utilities with 0 (brand not in that sheet)
+    # Fill missing utilities with 0
     for col in ["water_total","hw_total","elec_total","kwh_total","size_m2"]:
-        merged[col] = merged[col].fillna(0)
-    # Fill building/floor from any available source
+        if col in merged.columns:
+            merged[col] = merged[col].fillna(0)
+        else:
+            merged[col] = 0
+    # Fill building/floor/size_m2 from any available source
     for df_src in [hotwater_df, elec_df]:
+        if df_src is None or df_src.empty: continue
         _bld_map = df_src.groupby("brand")[["building","floor","size_m2"]].first()
         for idx, row in merged.iterrows():
             b = row["brand"]
@@ -312,9 +330,9 @@ def render_summary_view(
             total = sum(per_brand.values())
             return per_brand, total
 
-        _w_per_brand,  _w_total_leak  = _leakage_for(water_df,    "usage_m3",  "total")
-        _hw_per_brand, _hw_total_leak = _leakage_for(hotwater_df, "usage_m3",  "total")
-        _el_per_brand, _el_total_leak = _leakage_for(elec_df,     "kwh_total", "grand_total")
+        _w_per_brand,  _w_total_leak  = _leakage_for(water_df,    "usage_m3",  "total")    if water_df    is not None else ({}, 0.0)
+        _hw_per_brand, _hw_total_leak = _leakage_for(hotwater_df, "usage_m3",  "total")    if hotwater_df is not None else ({}, 0.0)
+        _el_per_brand, _el_total_leak = _leakage_for(elec_df,     "kwh_total", "grand_total") if elec_df     is not None else ({}, 0.0)
         _total_leakage = _w_total_leak + _hw_total_leak + _el_total_leak
 
         # ── IQR anomaly count ──────────────────────────────────────────────────

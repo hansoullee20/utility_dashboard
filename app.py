@@ -153,26 +153,30 @@ def main():
         st.warning("No supported sheets found in this file. Expected '검침 내역' or '수도광열비 부과 내역'.")
         st.stop()
 
-    # Add virtual "📊 통합 분석" option when all three utility sheets are present
+    # Add virtual "📊 통합 분석" option whenever ANY utility sheet is present
     _SUMMARY_VIRTUAL = "📊 통합 분석"
-    _has_all_util = all(s in [k.strip() for k in all_sheet_keys]
-                        for s in [WATER_SHEET_NAME, HOTWATER_SHEET_NAME, ELECTRICITY_SHEET_NAME])
-    display_keys = sheet_keys + ([_SUMMARY_VIRTUAL] if _has_all_util else [])
+    _UTIL_SHEET_NAMES = {WATER_SHEET_NAME, HOTWATER_SHEET_NAME, ELECTRICITY_SHEET_NAME}
+    _has_any_util = any(s.strip() in _UTIL_SHEET_NAMES for s in all_sheet_keys)
+    display_keys = sheet_keys + ([_SUMMARY_VIRTUAL] if _has_any_util else [])
 
     default_sheet = "검침 내역" if "검침 내역" in display_keys else display_keys[0]
     sheet_name = st.selectbox("Select sheet", display_keys, index=display_keys.index(default_sheet), key=f"sheet_{file_name}")
 
     # ── 통합 분석 virtual sheet ────────────────────────────────────────────────
     if sheet_name == _SUMMARY_VIRTUAL:
-        try:
-            _w_key  = next(k for k in all_sheet_keys if k.strip() == WATER_SHEET_NAME)
-            _hw_key = next(k for k in all_sheet_keys if k.strip() == HOTWATER_SHEET_NAME)
-            _el_key = next(k for k in all_sheet_keys if k.strip() == ELECTRICITY_SHEET_NAME)
-            _w_df   = read_water_sheet(file_name, file_map[file_name], _w_key)
-            _hw_df  = read_hotwater_sheet(file_name, file_map[file_name], _hw_key)
-            _el_df  = read_electricity_sheet(file_name, file_map[file_name], _el_key)
-        except Exception as e:
-            st.error(f"통합 분석 데이터 로드 실패: {e}")
+        def _try_load(reader, sheet_const):
+            key = next((k for k in all_sheet_keys if k.strip() == sheet_const), None)
+            if key is None: return None
+            try:
+                return reader(file_name, file_map[file_name], key)
+            except Exception as e:
+                st.warning(f"{sheet_const} 로드 실패 (제외됨): {e}")
+                return None
+        _w_df  = _try_load(read_water_sheet,       WATER_SHEET_NAME)
+        _hw_df = _try_load(read_hotwater_sheet,    HOTWATER_SHEET_NAME)
+        _el_df = _try_load(read_electricity_sheet, ELECTRICITY_SHEET_NAME)
+        if all(d is None for d in [_w_df, _hw_df, _el_df]):
+            st.error("로드 가능한 유틸리티 시트가 없습니다.")
             st.stop()
         render_summary_view(_w_df, _hw_df, _el_df)
         return
