@@ -5,11 +5,14 @@ DataFrame with component scores [0, 1] and a weighted composite_score.
 
 Anomaly dimensions
 ------------------
-consumption  (40 %) — quadrant classification per utility from 검침내역
+spike        (30 %) — absolute MoM % change magnitude per utility (NEW — primary signal)
+             pct ≥ 200% → critical · ≥ 100% → high · ≥ 50% → medium · ≥ 20% → low
+             score = normalised max spike magnitude across all utilities
+consumption  (25 %) — quadrant classification per utility from 검침내역
              HH=4 · HL=3 · LH=2 · Normal=1 · LL=0  → sum, normalised
-cost         (35 %) — unit cost Z-scores from 수도광열비 부과 내역
+cost         (25 %) — unit cost Z-scores from 수도광열비 부과 내역
              max |Z| across water ₩/m³, elect ₩/kWh, total 만원/m²
-hvac         (15 %) — HVAC intensity from 전체 전기 사용내역
+hvac         (10 %) — HVAC intensity from 전체 전기 사용내역
              normalised kWh/m² (IQR-aware)
 consistency  (10 %) — zero-usage count across all utility columns
 
@@ -18,6 +21,14 @@ Public API
 build_anomaly_df(meter_df, billing_df, elec_df, water_df, hotwater_df, q0, q1)
     Returns per-brand DataFrame with all anomaly signals +
     composite_score [0, 1] and risk_level label.
+
+Spike columns added
+-------------------
+{pfx}_spike_pct   — raw MoM % change for that utility (positive = increase)
+{pfx}_spike_flag  — 🔴 급등(≥100%) / 🟠 주의(≥50%) / 🟡 관찰(≥20%) / "" normal
+spike_score       — normalised max positive spike across all utilities [0, 1]
+spike_max_pct     — the highest single-utility MoM % increase
+spike_worst_util  — which utility had the largest spike
 """
 from __future__ import annotations
 
@@ -28,13 +39,20 @@ from cross_features import build_unit_costs, build_elec_breakdown
 from data import to_numeric_series
 
 _UTIL_PREFIXES = ["water", "hwater", "elect", "heat"]
+_UTIL_LABELS   = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "난방"}
 _QUAD_SCORE = {"HH": 4, "HL": 3, "LH": 2, "Normal": 1, "LL": 0, "No Data": 0}
 _WEIGHTS = {
-    "consumption_score": 0.40,
-    "cost_score":        0.35,
-    "hvac_score":        0.15,
+    "spike_score":       0.30,
+    "consumption_score": 0.25,
+    "cost_score":        0.25,
+    "hvac_score":        0.10,
     "consistency_score": 0.10,
 }
+
+# Absolute spike thresholds (% change from previous month)
+_SPIKE_CRITICAL = 100.0   # ≥ 100% increase
+_SPIKE_HIGH     =  50.0   # ≥  50%
+_SPIKE_MEDIUM   =  20.0   # ≥  20%
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -57,6 +75,79 @@ def _normalize(s: pd.Series) -> pd.Series:
 def _iqr_upper(s: pd.Series) -> float:
     q1, q3 = float(s.quantile(0.25)), float(s.quantile(0.75))
     return q3 + 1.5 * (q3 - q1)
+
+
+# ── 0. Spike signals — absolute MoM change detection ─────────────────────────
+
+def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """Detect abrupt MoM usage spikes using absolute % change thresholds.
+
+    Unlike the quadrant approach (relative: brand vs other brands), this flags
+    brands that spiked by a large % regardless of what other brands did.
+    A brand that goes from 100 → 300 units (+200%) is always flagged, even if
+    the whole building increased.
+    """
+    out = df.copy()
+    spike_pct_cols: list[str] = []
+
+    for pfx in _UTIL_PREFIXES:
+        pct_col = f"{pfx}_pct"
+        chg_col = f"{pfx}_change"
+        out_col = f"{pfx}_spike_pct"
+
+        if pct_col not in df.columns:
+            continue
+
+        p = to_numeric_series(df[pct_col])   # % change (can be NaN for new tenants)
+        c = to_numeric_series(df[chg_col]) if chg_col in df.columns else pd.Series(np.nan, index=df.index)
+
+        # Only positive changes count as spikes; drops are handled by quadrant LH/LL
+        spike_pct = p.clip(lower=0).fillna(0)
+        out[out_col] = p.round(1)   # store raw (signed) for display
+
+        # Severity flag
+        def _flag(v):
+            if pd.isna(v) or v <= 0:
+                return ""
+            if v >= _SPIKE_CRITICAL:
+                return "🔴 급등"
+            if v >= _SPIKE_HIGH:
+                return "🟠 주의"
+            if v >= _SPIKE_MEDIUM:
+                return "🟡 관찰"
+            return ""
+
+        out[f"{pfx}_spike_flag"] = p.apply(_flag)
+
+        # Weight spike magnitude by absolute change size (large pct on tiny base = less alarming)
+        if c.dropna().any():
+            c_pos = c.clip(lower=0).fillna(0)
+            # Blend: 60% pct magnitude + 40% absolute change (both normalised)
+            c_norm = _normalize(c_pos)
+            p_norm = _normalize(spike_pct)
+            spike_pct_cols.append((p_norm * 0.6 + c_norm * 0.4).rename(out_col))
+        else:
+            spike_pct_cols.append(_normalize(spike_pct).rename(out_col))
+
+    if spike_pct_cols:
+        spike_mat = pd.concat(spike_pct_cols, axis=1)
+        out["spike_score"]    = spike_mat.max(axis=1).round(4)
+
+        # Which utility spiked most, and by how much
+        raw_pct_cols = [f"{pfx}_spike_pct" for pfx in _UTIL_PREFIXES
+                        if f"{pfx}_spike_pct" in out.columns]
+        raw_mat = out[raw_pct_cols].clip(lower=0).fillna(0)
+        out["spike_max_pct"]   = raw_mat.max(axis=1).round(1)
+        worst_idx = raw_mat.idxmax(axis=1)
+        out["spike_worst_util"] = worst_idx.map(
+            lambda c: _UTIL_LABELS.get(c.replace("_spike_pct", ""), c) if isinstance(c, str) else ""
+        )
+    else:
+        out["spike_score"]     = 0.0
+        out["spike_max_pct"]   = 0.0
+        out["spike_worst_util"] = ""
+
+    return out
 
 
 # ── 1. Consumption signals (always available from meter) ──────────────────────
@@ -246,6 +337,9 @@ def build_anomaly_df(
         risk_level: 🔴 위험 / 🟠 주의 / 🟡 관찰 / 🟢 정상
     """
     df = meter_df.copy()
+
+    # 0. Spike signals (absolute MoM — primary anomaly signal)
+    df = _add_spike_signals(df)
 
     # 1. Consumption signals (always available)
     df = _add_consumption_signals(df, q0=q0, q1=q1)

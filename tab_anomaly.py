@@ -20,7 +20,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from anomaly_features import build_anomaly_df, _UTIL_PREFIXES
+from anomaly_features import (
+    build_anomaly_df, _UTIL_PREFIXES, _UTIL_LABELS,
+    _SPIKE_CRITICAL, _SPIKE_HIGH, _SPIKE_MEDIUM,
+)
 from data import (
     read_billing_sheet,    BILLING_SHEET_NAME,
     read_electricity_sheet, ELECTRICITY_SHEET_NAME,
@@ -458,6 +461,113 @@ def _render_hvac_tab(df: pd.DataFrame, split_by_building: bool) -> None:
                 st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
+# ── Tab: 급등 감지 (MoM Spike Detection) ─────────────────────────────────────
+
+def _render_spike_tab(df: pd.DataFrame, split_by_building: bool) -> None:
+    st.subheader("📈 전월 대비 급등 감지")
+    st.caption(
+        f"전월 대비 사용량 증가율이 🔴 {_SPIKE_CRITICAL:.0f}% 이상 / "
+        f"🟠 {_SPIKE_HIGH:.0f}% 이상 / 🟡 {_SPIKE_MEDIUM:.0f}% 이상인 브랜드를 탐지합니다. "
+        "다른 브랜드와의 상대 비교 없이 **절대 증가율** 기준으로 판단합니다."
+    )
+
+    spike_pct_cols = [f"{p}_spike_pct" for p in _UTIL_PREFIXES if f"{p}_spike_pct" in df.columns]
+    flag_cols      = [f"{p}_spike_flag" for p in _UTIL_PREFIXES if f"{p}_spike_flag" in df.columns]
+    if not spike_pct_cols:
+        st.info("전월 데이터가 없어 급등 감지를 수행할 수 없습니다.")
+        return
+
+    # ── Threshold selector ────────────────────────────────────────────────────
+    thresh = st.slider(
+        "급등 기준 (전월 대비 증가율 %)", 10, 300, int(_SPIKE_HIGH), step=10,
+        key="spike_thresh",
+        help="선택한 % 이상 증가한 브랜드만 표시합니다.",
+    )
+
+    # ── KPI row ───────────────────────────────────────────────────────────────
+    raw_pct = df[spike_pct_cols].clip(lower=0).fillna(0)
+    n_critical = int((df["spike_max_pct"] >= _SPIKE_CRITICAL).sum())
+    n_high     = int(((df["spike_max_pct"] >= _SPIKE_HIGH) & (df["spike_max_pct"] < _SPIKE_CRITICAL)).sum())
+    n_medium   = int(((df["spike_max_pct"] >= _SPIKE_MEDIUM) & (df["spike_max_pct"] < _SPIKE_HIGH)).sum())
+    n_above    = int((df["spike_max_pct"] >= thresh).sum())
+    kc = st.columns(4)
+    kc[0].metric(f"🔴 급등 (≥{_SPIKE_CRITICAL:.0f}%)", f"{n_critical}개")
+    kc[1].metric(f"🟠 주의 (≥{_SPIKE_HIGH:.0f}%)",     f"{n_high}개")
+    kc[2].metric(f"🟡 관찰 (≥{_SPIKE_MEDIUM:.0f}%)",   f"{n_medium}개")
+    kc[3].metric(f"기준 초과 (≥{thresh}%)",             f"{n_above}개")
+
+    # ── Spike brands table ────────────────────────────────────────────────────
+    spike_df = df[df["spike_max_pct"] >= thresh].copy()
+    if spike_df.empty:
+        st.success(f"기준({thresh}%) 초과 브랜드 없음 — 급격한 급등 없음")
+    else:
+        disp_cols = (
+            [c for c in ["brand", "building", "floor"] if c in spike_df.columns]
+            + ["spike_max_pct", "spike_worst_util"]
+            + spike_pct_cols
+        )
+        col_cfg: dict = {
+            "spike_max_pct":    st.column_config.NumberColumn("최대 증가율 (%)", format="%.1f"),
+            "spike_worst_util": st.column_config.TextColumn("급등 항목"),
+        }
+        util_labels = {f"{p}_spike_pct": f"{lbl} 증가율(%)" for p, lbl in _UTIL_LABELS.items()}
+        for c, lbl in util_labels.items():
+            if c in spike_df.columns:
+                col_cfg[c] = st.column_config.NumberColumn(lbl, format="%.1f")
+
+        st.dataframe(
+            spike_df[disp_cols].sort_values("spike_max_pct", ascending=False).reset_index(drop=True),
+            column_config=col_cfg,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    # ── Spike bar chart per utility ───────────────────────────────────────────
+    st.divider()
+    util_sel = st.selectbox(
+        "유틸리티별 전월 대비 증가율",
+        [p for p in _UTIL_PREFIXES if f"{p}_spike_pct" in df.columns],
+        format_func=lambda p: _UTIL_LABELS.get(p, p),
+        key="spike_util_sel",
+    )
+    pct_col = f"{util_sel}_spike_pct"
+    flag_col = f"{util_sel}_spike_flag"
+
+    chart_df = df[["brand"] + [c for c in ["building", pct_col, flag_col] if c in df.columns]].copy()
+    chart_df = chart_df[chart_df[pct_col].notna()].sort_values(pct_col, ascending=False).head(50)
+
+    color_col = "building" if split_by_building and "building" in chart_df.columns else None
+    fig = px.bar(
+        chart_df, x="brand", y=pct_col,
+        color=color_col, color_discrete_map=_BLDG_COLOR,
+        title=f"{_UTIL_LABELS.get(util_sel, util_sel)} 전월 대비 증가율 (%) — 상위 50개",
+        labels={pct_col: "증가율 (%)", "brand": "브랜드"},
+    )
+    # Reference lines
+    for lvl, color, label in [
+        (_SPIKE_CRITICAL, "#C44E52", f"급등 {_SPIKE_CRITICAL:.0f}%"),
+        (_SPIKE_HIGH,     "#DD8A00", f"주의 {_SPIKE_HIGH:.0f}%"),
+        (_SPIKE_MEDIUM,   "#F0C040", f"관찰 {_SPIKE_MEDIUM:.0f}%"),
+    ]:
+        fig.add_hline(y=lvl, line_dash="dot", line_color=color,
+                      annotation_text=label, annotation_position="top right")
+    fig.update_layout(
+        height=420, xaxis_tickangle=-45,
+        plot_bgcolor="white", margin=dict(t=55, b=90),
+    )
+    _ev_spike = st.plotly_chart(fig, use_container_width=True, key="anom_spike_bar", on_select="rerun")
+    _sel_spike = _ev_spike.selection.points if _ev_spike and hasattr(_ev_spike, "selection") else []
+    if _sel_spike:
+        _pt = _sel_spike[0]
+        _brand = _pt.get("x") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = chart_df[chart_df["brand"] == _brand] if _brand else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
+
+
 # ── Tab: 일관성 검사 ──────────────────────────────────────────────────────────
 
 def _render_consistency_tab(df: pd.DataFrame) -> None:
@@ -577,10 +687,11 @@ def render_anomaly_tab(
     # ── Score breakdown legend ────────────────────────────────────────────────
     with st.expander("📖 이상 점수 계산 방법", expanded=False):
         st.markdown("""
-**복합 점수** = 소비(40%) + 비용(35%) + HVAC(15%) + 일관성(10%)  — 각 구성 요소 [0, 1]
+**복합 점수** = 급등(30%) + 소비(25%) + 비용(25%) + HVAC(10%) + 일관성(10%)  — 각 구성 요소 [0, 1]
 
 | 구성 요소 | 신호 | 시트 |
 |---|---|---|
+| **급등** ★ | 전월 대비 사용량 증가율 절대값 기준 — 🔴 ≥100% / 🟠 ≥50% / 🟡 ≥20% (상대 비교 없음) | 검침내역 |
 | **소비** | 유틸리티별 사분면 점수 합산 정규화 (HH=4, HL=3, LH=2, Normal=1, LL=0) | 검침내역 |
 | **비용** | 수도 ₩/m³, 전기 ₩/kWh, 총비용 만원/m² Z-점수의 최댓값 정규화 | 수도광열비 부과 내역 |
 | **HVAC** | HVAC 강도 (kWh/m²) IQR-보정 정규화 | 전체 전기 사용내역 |
@@ -602,9 +713,12 @@ def render_anomaly_tab(
     st.divider()
 
     # ── Detail tabs ───────────────────────────────────────────────────────────
-    tab_cons, tab_cost, tab_hvac, tab_chk, tab_full = st.tabs([
-        "🔺 소비 이상", "💰 비용 이상", "❄️ HVAC 이상", "🔍 일관성 검사", "📋 전체 결과",
+    tab_spike, tab_cons, tab_cost, tab_hvac, tab_chk, tab_full = st.tabs([
+        "📈 급등 감지", "🔺 소비 이상", "💰 비용 이상", "❄️ HVAC 이상", "🔍 일관성 검사", "📋 전체 결과",
     ])
+
+    with tab_spike:
+        _render_spike_tab(anomaly_df, split_by_building)
 
     with tab_cons:
         _render_consumption_tab(anomaly_df, split_by_building)
@@ -623,6 +737,7 @@ def render_anomaly_tab(
 
         id_cols    = [c for c in ["brand", "building", "floor", "size_m2"] if c in anomaly_df.columns]
         score_cols = [c for c in ["composite_score", "risk_level",
+                                  "spike_score", "spike_max_pct", "spike_worst_util",
                                   "consumption_score", "cost_score",
                                   "hvac_score", "consistency_score"] if c in anomaly_df.columns]
         quad_cols  = [f"{p}_quadrant" for p in _UTIL_PREFIXES if f"{p}_quadrant" in anomaly_df.columns]
@@ -637,6 +752,11 @@ def render_anomaly_tab(
             column_config={
                 "composite_score":    st.column_config.ProgressColumn(
                     "복합 점수", format="%.3f", min_value=0, max_value=1),
+                "spike_score":        st.column_config.ProgressColumn(
+                    "급등", format="%.3f", min_value=0, max_value=1),
+                "spike_max_pct":      st.column_config.NumberColumn(
+                    "최대 증가율(%)", format="%.1f"),
+                "spike_worst_util":   st.column_config.TextColumn("급등 항목"),
                 "consumption_score":  st.column_config.ProgressColumn(
                     "소비", format="%.3f", min_value=0, max_value=1),
                 "cost_score":         st.column_config.ProgressColumn(
