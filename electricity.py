@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
+from filters import render_sheet_filters
 
 _USAGE_COLS = [
     ("전기01 (검침)",  "kwh_elec01",      "#4C72B0"),
@@ -26,13 +27,7 @@ _FEE_GROUPS = [
 def render_electricity_view(df: pd.DataFrame) -> None:
     st.header("⚡ 전체 전기 사용내역 분석")
 
-    buildings = sorted(df["building"].unique())
-    sel_bld = st.multiselect(
-        "건물 선택", ["All"] + buildings, default=["All"], key="elec_bld"
-    )
-    if "All" not in sel_bld and sel_bld:
-        df = df[df["building"].isin(sel_bld)].copy()
-
+    df = render_sheet_filters(df, key_prefix="elec")
     if df.empty:
         st.warning("선택된 조건에 해당하는 데이터가 없습니다.")
         return

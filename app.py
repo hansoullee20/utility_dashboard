@@ -19,17 +19,23 @@ from hotwater import render_hotwater_view
 from electricity import render_electricity_view
 from summary import render_summary_view
 from sidebar import setup_sidebar
-from meter_view import render_meter_view
+from meter_view import render_meter_view, load_meter_df, load_raw_meter_df
+from filters import render_meter_filters, render_sheet_filters, show_filter_widgets, apply_sheet_filter
+from data import to_numeric_series as _to_num
+from tab_cross import render_cross_tab
+from tab_efficiency import render_efficiency_tab
+from tab_anomaly import render_anomaly_tab
+from lang import t
 
 
 def main():
     st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
     st.title("Utility Analysis Dashboard")
 
-    uploads, bins, tail, q_change, q_pct, debug = setup_sidebar()
+    uploads, bins, tail, q, debug = setup_sidebar()
 
     if not uploads:
-        st.info("Upload at least one file.")
+        st.info(t("upload_prompt"))
         st.stop()
 
     # ── Load files ─────────────────────────────────────────────────────────────
@@ -46,7 +52,7 @@ def main():
     if not file_map:
         st.stop()
 
-    file_name = st.selectbox("Select file", list(file_map.keys()))
+    file_name = st.selectbox(t("select_file"), list(file_map.keys()))
     all_sheet_keys = sheet_map[file_name]
 
     SUPPORTED_SHEETS = {
@@ -55,40 +61,139 @@ def main():
     }
     sheet_keys = [s for s in all_sheet_keys if s.strip() in SUPPORTED_SHEETS]
     if not sheet_keys:
-        st.warning("No supported sheets found in this file. Expected '검침 내역' or '수도광열비 부과 내역'.")
+        st.warning(t("no_sheets_warn"))
         st.stop()
 
-    _SUMMARY_VIRTUAL = "📊 통합 분석"
-    _UTIL_SHEET_NAMES = {WATER_SHEET_NAME, HOTWATER_SHEET_NAME, ELECTRICITY_SHEET_NAME}
-    _has_any_util = any(s.strip() in _UTIL_SHEET_NAMES for s in all_sheet_keys)
-    display_keys = sheet_keys + ([_SUMMARY_VIRTUAL] if _has_any_util else [])
+    # ── Top-level navigation ───────────────────────────────────────────────────
+    _UTIL_SHEETS = {WATER_SHEET_NAME, HOTWATER_SHEET_NAME, ELECTRICITY_SHEET_NAME}
+    _has_util    = any(s.strip() in _UTIL_SHEETS for s in all_sheet_keys)
+    _has_meter   = "검침 내역" in all_sheet_keys
 
-    default_sheet = "검침 내역" if "검침 내역" in display_keys else display_keys[0]
-    sheet_name = st.selectbox(
-        "Select sheet", display_keys,
-        index=display_keys.index(default_sheet),
-        key=f"sheet_{file_name}",
-    )
+    # Build analysis options using current-language labels
+    _OPT_SUMMARY = t("summary_analysis")
+    _OPT_BIZ     = t("biz_analysis")
+    _analysis_options = []
+    if _has_util:
+        _analysis_options.append(_OPT_SUMMARY)
+    if _has_meter:
+        _analysis_options.append(_OPT_BIZ)
 
-    # ── Route: 통합 분석 ───────────────────────────────────────────────────────
-    if sheet_name == _SUMMARY_VIRTUAL:
-        def _try_load(reader, sheet_const):
-            key = next((k for k in all_sheet_keys if k.strip() == sheet_const), None)
-            if key is None:
-                return None
+    _NAV_SHEET    = t("nav_sheet_view")
+    _NAV_ANALYSIS = t("nav_analysis")
+    _nav_options  = [_NAV_SHEET]
+    if _analysis_options:
+        _nav_options.append(_NAV_ANALYSIS)
+
+    _nc1, _nc2 = st.columns([2, 5])
+    with _nc1:
+        nav_mode = st.radio(
+            "Navigation", _nav_options,
+            horizontal=True, label_visibility="collapsed",
+            key=f"nav_{file_name}",
+        )
+
+    # ── 분석 branch ────────────────────────────────────────────────────────────
+    if nav_mode == _NAV_ANALYSIS:
+        with _nc2:
+            analysis_name = st.selectbox(
+                t("analysis_select"), _analysis_options,
+                key=f"analysis_{file_name}",
+            )
+
+        if analysis_name == _OPT_SUMMARY:
+            st.header(t("summary_header"))
+            def _try_load(reader, sheet_const):
+                key = next((k for k in all_sheet_keys if k.strip() == sheet_const), None)
+                if key is None:
+                    return None
+                try:
+                    return reader(file_name, file_map[file_name], key)
+                except Exception as e:
+                    st.warning(f"{sheet_const} 로드 실패 (제외됨): {e}")
+                    return None
+            _w_df  = _try_load(read_water_sheet,       WATER_SHEET_NAME)
+            _hw_df = _try_load(read_hotwater_sheet,    HOTWATER_SHEET_NAME)
+            _el_df = _try_load(read_electricity_sheet, ELECTRICITY_SHEET_NAME)
+            if all(d is None for d in [_w_df, _hw_df, _el_df]):
+                st.error(t("no_util_sheets"))
+                st.stop()
+            # Build a combined reference df for the filter widgets
+            import pandas as _pd
+            _ref = _pd.concat(
+                [d[["building", "floor", "brand"]] for d in [_w_df, _hw_df, _el_df]
+                 if d is not None and all(c in d.columns for c in ["building", "floor", "brand"])],
+                ignore_index=True,
+            ).drop_duplicates()
+            _sel_bldg, _sel_floor, _gong_mode = show_filter_widgets(_ref, key_prefix="summary")
+            _split_bldg = not ("All" in _sel_bldg and "All" in _sel_floor)
+            render_summary_view(
+                apply_sheet_filter(_w_df,  _sel_bldg, _sel_floor, _gong_mode) if _w_df  is not None else None,
+                apply_sheet_filter(_hw_df, _sel_bldg, _sel_floor, _gong_mode) if _hw_df is not None else None,
+                apply_sheet_filter(_el_df, _sel_bldg, _sel_floor, _gong_mode) if _el_df is not None else None,
+                split_by_building=_split_bldg,
+            )
+            return
+
+        if analysis_name == _OPT_BIZ:
+            st.header(t("biz_header"))
+            _meter_sheet = next((k for k in all_sheet_keys if k.strip() == "검침 내역"), None)
             try:
-                return reader(file_name, file_map[file_name], key)
+                _raw_df = load_raw_meter_df(file_name, file_map, _meter_sheet)
             except Exception as e:
-                st.warning(f"{sheet_const} 로드 실패 (제외됨): {e}")
-                return None
-        _w_df  = _try_load(read_water_sheet,       WATER_SHEET_NAME)
-        _hw_df = _try_load(read_hotwater_sheet,    HOTWATER_SHEET_NAME)
-        _el_df = _try_load(read_electricity_sheet, ELECTRICITY_SHEET_NAME)
-        if all(d is None for d in [_w_df, _hw_df, _el_df]):
-            st.error("로드 가능한 유틸리티 시트가 없습니다.")
-            st.stop()
-        render_summary_view(_w_df, _hw_df, _el_df)
-        return
+                st.error(f"{t('meter_load_fail')}: {e}")
+                st.stop()
+
+            _cur_df, _, _, _, _split_bldg = render_meter_filters(_raw_df, key_prefix="biz")
+
+            # ── Per-area columns (needed by efficiency tab) ─────────────────────
+            _size_m2 = _to_num(_cur_df["size_m2"]).replace(0, float("nan")) if "size_m2" in _cur_df.columns else None
+            _size_py = _to_num(_cur_df["size_py"]).replace(0, float("nan")) if "size_py" in _cur_df.columns else None
+            for _uc, (_pm2, _ppy) in {
+                "water_current":  ("water_usage_per_m2",  "water_usage_per_py"),
+                "hwater_current": ("hwater_usage_per_m2", "hwater_usage_per_py"),
+                "elect_current":  ("elect_usage_per_m2",  "elect_usage_per_py"),
+                "heat_current":   ("heat_usage_per_m2",   "heat_usage_per_py"),
+            }.items():
+                if _uc in _cur_df.columns:
+                    _u = _to_num(_cur_df[_uc])
+                    if _size_m2 is not None:
+                        _cur_df[_pm2] = (_u / _size_m2).round(4)
+                    if _size_py is not None:
+                        _cur_df[_ppy] = (_u / _size_py).round(4)
+            _allowed = ["water", "hwater", "elect", "heat"]
+            _present = [p for p in _allowed if f"{p}_change" in _cur_df.columns]
+            _ehp_sheet = EHP_OAC_SHEET_NAME if EHP_OAC_SHEET_NAME in all_sheet_keys else None
+
+            # ── Tabs ────────────────────────────────────────────────────────────
+            _tab_cost, _tab_eff, _tab_anom = st.tabs([
+                t("biz_tab_cost"), t("biz_tab_eff"), t("biz_tab_anom"),
+            ])
+            with _tab_cost:
+                render_cross_tab(_cur_df, file_name, file_map[file_name], all_sheet_keys,
+                                 split_by_building=_split_bldg)
+            with _tab_eff:
+                render_efficiency_tab(
+                    _cur_df, _present,
+                    file_name=file_name,
+                    file_data=file_map[file_name],
+                    ehp_sheet=_ehp_sheet,
+                    split_by_building=_split_bldg,
+                )
+            with _tab_anom:
+                render_anomaly_tab(
+                    _cur_df, file_name, file_map[file_name], all_sheet_keys,
+                    split_by_building=_split_bldg,
+                )
+            return
+
+    # ── 시트 보기 branch ────────────────────────────────────────────────────────
+    with _nc2:
+        default_sheet = "검침 내역" if "검침 내역" in sheet_keys else sheet_keys[0]
+        sheet_name = st.selectbox(
+            t("select_sheet"), sheet_keys,
+            index=sheet_keys.index(default_sheet),
+            key=f"sheet_{file_name}",
+        )
 
     # ── Route: HVAC ────────────────────────────────────────────────────────────
     if sheet_name.strip() == HVAC_SHEET_NAME:
@@ -147,7 +252,7 @@ def main():
         return
 
     # ── Route: 검침 내역 ────────────────────────────────────────────────────────
-    render_meter_view(file_name, file_map, sheet_name, bins, tail, q_change, q_pct, debug)
+    render_meter_view(file_name, file_map, sheet_name, bins, tail, q, debug)
 
 
 if __name__ == "__main__":

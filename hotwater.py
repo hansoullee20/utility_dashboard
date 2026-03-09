@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
+from filters import render_sheet_filters
 
 
 def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
@@ -12,10 +13,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
     if season:
         st.caption(f"적용 시즌: **{season}**")
 
-    buildings = sorted(df["building"].unique())
-    sel_bld = st.multiselect("건물 선택", ["All"] + buildings, default=["All"], key="hw_bld")
-    if "All" not in sel_bld and sel_bld:
-        df = df[df["building"].isin(sel_bld)].copy()
+    df = render_sheet_filters(df, key_prefix="hotwater")
     if df.empty:
         st.warning("선택된 조건에 해당하는 데이터가 없습니다."); return
 

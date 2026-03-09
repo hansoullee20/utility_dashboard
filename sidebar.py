@@ -1,36 +1,55 @@
-"""sidebar.py — Sidebar UI: file upload, presets, bins, tail %, debug toggle."""
+"""sidebar.py — Sidebar UI: language, file upload, presets, bins, tail %, debug."""
 import streamlit as st
+from lang import t
 
 
 def setup_sidebar():
-    """Render sidebar and return (uploads, bins, tail, q_change, q_pct, debug)."""
+    """Render sidebar and return (uploads, bins, tail, q, debug)."""
     with st.sidebar:
-        st.header("Upload")
-        uploads = st.file_uploader(
-            "Upload CSV/XLSX/Parquet",
-            type=["csv", "xlsx", "xls", "xlsm", "parquet"],
-            accept_multiple_files=True,
-        )
+        # Language locked to Korean until dashboard is finalized
+        st.session_state["lang"] = "ko"
 
         st.divider()
-        st.header("⚙️ Settings")
+        st.header(t("upload"))
+        uploads = st.file_uploader(
+            t("upload_label"),
+            type=["csv", "xlsx", "xls", "xlsm", "parquet"],
+            accept_multiple_files=True,
+            key="file_uploader",
+        )
+
+        # Persist uploaded files across reruns (e.g. language switches).
+        # file_uploader returns [] when no new interaction — fall back to cache.
+        if uploads:
+            st.session_state["_cached_uploads"] = uploads
+        else:
+            uploads = st.session_state.get("_cached_uploads", [])
+
+        st.divider()
+        st.header(t("settings"))
 
         # ---- Presets ----
-        preset_map = {"Default (20%)": 20, "Gentle (10%)": 10, "Dense (30%)": 30}
+        _preset_labels = [
+            t("preset_custom"),
+            t("preset_default"),
+            t("preset_gentle"),
+            t("preset_dense"),
+        ]
+        _preset_values = [None, 20, 10, 30]
 
         def apply_preset():
-            val = preset_map.get(st.session_state["preset_select"])
+            idx = _preset_labels.index(st.session_state["preset_select"])
+            val = _preset_values[idx]
             if val is not None:
                 st.session_state["tail"]       = val
                 st.session_state["tail_input"] = val
 
-        preset = st.selectbox(
-            "⚡ Quick presets",
-            ["Custom", "Default (20%)", "Gentle (10%)", "Dense (30%)"],
+        st.selectbox(
+            "⚡ " + t("quick_presets"),
+            _preset_labels,
             index=0,
             key="preset_select",
             on_change=apply_preset,
-            help="Pick a preset to quickly adjust tail percentage",
         )
 
         st.divider()
@@ -49,9 +68,10 @@ def setup_sidebar():
 
         b1, b2 = st.columns([3, 1])
         with b1:
-            st.slider("Bins", 5, 200, step=1, key="bins", on_change=sync_bins_slider)
+            st.slider(t("bins"), 5, 200, step=1, key="bins", on_change=sync_bins_slider)
         with b2:
-            st.number_input("Bins value", 5, 200, step=1, key="bins_input", label_visibility="hidden", on_change=sync_bins_input)
+            st.number_input(t("bins"), 5, 200, step=1, key="bins_input",
+                            label_visibility="hidden", on_change=sync_bins_input)
         bins = st.session_state["bins"]
 
         # ---- Tail % ----
@@ -69,19 +89,19 @@ def setup_sidebar():
         t1, t2 = st.columns([3, 1])
         with t1:
             st.slider(
-                "Tail %", 1, 50, step=1, key="tail",
+                t("tail_pct"), 1, 50, step=1, key="tail",
                 on_change=sync_tail_slider,
-                help="Show the bottom N% and top N% of both change and pct values",
+                help=t("tail_help"),
             )
         with t2:
-            st.number_input("Tail value", 1, 50, step=1, key="tail_input", label_visibility="hidden", on_change=sync_tail_input)
+            st.number_input(t("tail_pct"), 1, 50, step=1, key="tail_input",
+                            label_visibility="hidden", on_change=sync_tail_input)
 
         st.divider()
-        debug = st.checkbox("Debug", value=False)
+        debug = st.checkbox(t("debug"), value=False)
 
     tail = st.session_state["tail"]
-    q_change = (tail / 100.0, 1.0 - tail / 100.0)
-    q_pct = q_change
+    q = (tail / 100.0, 1.0 - tail / 100.0)
     bins = st.session_state["bins"]
 
-    return uploads, bins, tail, q_change, q_pct, debug
+    return uploads, bins, tail, q, debug

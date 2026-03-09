@@ -1,7 +1,6 @@
 import io
 import numpy as np
 import pandas as pd
-from typing import List, Optional
 from data import to_numeric_series
 import streamlit as st
 
@@ -140,64 +139,40 @@ def split_brand_by_floor(agg_df: pd.DataFrame, ref_df: pd.DataFrame, selected_fl
         and c not in ["size_m2", "size_py"]
     ]
 
-    # Build brand -> set of simple floors from ref_df
-    brand_floors: dict = {}
-    for _, row in ref_df.dropna(subset=["floor"]).iterrows():
-        brand = row["brand"]
-        parsed = parse_floor_value(str(row["floor"]))
-        brand_floors.setdefault(brand, set()).update(parsed)
+    # Build brand -> set of simple floors via explode (no iterrows)
+    floor_df = ref_df.dropna(subset=["floor"])[["brand", "floor"]].copy()
+    floor_df["parsed"] = floor_df["floor"].astype(str).apply(parse_floor_value)
+    floor_df = floor_df.explode("parsed")
+    brand_floors: dict[str, set] = floor_df.groupby("brand")["parsed"].apply(set).to_dict()
 
     selected_set = set(selected_floors)
 
-    rows = []
-    for _, brand_row in agg_df.iterrows():
-        brand = brand_row["brand"]
-        all_floors = sorted(brand_floors.get(brand, set()))
-        n_floors = len(all_floors) if all_floors else 1
-        floors_to_show = [f for f in all_floors if f in selected_set]
+    # Per-brand: total floor count + which selected floors to show
+    brand_meta: dict[str, tuple[int, list]] = {}
+    for brand, floors in brand_floors.items():
+        all_floors = sorted(floors)
+        to_show = [f for f in all_floors if f in selected_set]
+        if to_show:
+            brand_meta[brand] = (len(all_floors), to_show)
 
-        if not floors_to_show:
-            continue
-
-        for floor in floors_to_show:
-            row = brand_row.copy()
-            row["floor"] = floor
-            for c in numeric_cols:
-                row[c] = round(brand_row[c] / n_floors, 4) if pd.notna(brand_row[c]) else np.nan
-            rows.append(row)
-
-    if not rows:
+    if not brand_meta:
         return pd.DataFrame(columns=agg_df.columns)
 
-    return pd.DataFrame(rows).reset_index(drop=True)
+    # Filter, attach floor lists, explode, divide numeric cols
+    out = agg_df[agg_df["brand"].isin(brand_meta)].copy()
+    if out.empty:
+        return pd.DataFrame(columns=agg_df.columns)
+
+    out["__n__"] = out["brand"].map(lambda b: brand_meta[b][0])
+    out["floor"] = out["brand"].map(lambda b: brand_meta[b][1])
+    out = out.explode("floor")
+
+    for c in numeric_cols:
+        out[c] = (out[c] / out["__n__"]).round(4)
+
+    return out.drop(columns=["__n__"]).reset_index(drop=True)
 
 
-def detect_usage_col(df: pd.DataFrame, prefix: str) -> Optional[str]:
-    for c in (f"{prefix}_usage_m3", f"{prefix}_usage_kw", f"{prefix}_usage_m3_mwh"):
-        if c in df.columns:
-            return c
-    return None
-
-
-def display_cols_for_prefix(df: pd.DataFrame, prefix: str) -> List[str]:
-    usage = detect_usage_col(df, prefix)
-    cols = ["brand", "building", "floor", "size_m2", "size_py"]
-    cols += [
-        c for c in [
-            f"{prefix}_previous",
-            f"{prefix}_current",
-            usage,
-            f"{prefix}_change",
-            f"{prefix}_pct",
-        ] if c in df.columns
-    ]
-    return cols
-
-
-def sort_df(df: pd.DataFrame, cols, asc, mode: str):
-    if mode != "extreme" or df.empty:
-        return df
-    return df.sort_values(cols, ascending=asc)
 
 def cols_brand_then_category(df, prefix: str, mode: str = "change") -> list[str]:
     df_cols = list(df.columns)
@@ -253,3 +228,67 @@ def download_df_as_excel(df: pd.DataFrame, filename: str, sheet_name: str = "dat
         file_name=filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+def apply_header_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean MultiIndex headers from the 검침 내역 sheet into a flat English-named DataFrame."""
+    df = df.copy()
+
+    if df.shape[1] > 0:
+        df = df.drop(df.columns[0], axis=1)
+
+    if not isinstance(df.columns, pd.MultiIndex):
+        df.columns = [str(c).replace(" ", "").replace("\n", "") for c in df.columns]
+        return df
+
+    # Drop "구분" block
+    if "구분" in df.columns.get_level_values(0):
+        df = df.drop(columns="구분", level=0, errors="ignore")
+
+    # Under "동별 건물 면적 현황" keep only 건물/층수/전용면적
+    target = "동별 건물 면적 현황"
+    if target in df.columns.get_level_values(0):
+        cols_to_drop = [
+            (target,) + sub
+            for sub in df[target].columns
+            if sub[0] not in ("건물", "층수", "전용면적")
+        ]
+        df = df.drop(columns=cols_to_drop, errors="ignore")
+        df.columns = df.columns.remove_unused_levels()
+
+    # Cut columns at '전기 \n배율'
+    all_lvl0 = df.columns.get_level_values(0).unique()
+    if "전기 \n배율" in list(all_lvl0):
+        pos = all_lvl0.get_loc("전기 \n배율")
+        df = df[all_lvl0[:pos]]
+
+    # Normalize level-0 names
+    lvl0_unique = df.columns.get_level_values(0).unique()
+    name_map = {old: str(old).replace(" ", "").replace("\n", "") for old in lvl0_unique}
+    df.columns = pd.MultiIndex.from_tuples([(name_map[col[0]], *col[1:]) for col in df.columns])
+
+    # Translate level-1 category names
+    df = df.rename(columns={
+        "급수 지침": "수도", "온수(급탕) 지침": "온수",
+        "전기 지침": "전기", "FCU (냉,난방 지침)": "열요금",
+    }, level=1)
+
+    # Flatten and rename to English
+    df_flat = df.droplevel(0, axis=1)
+    df_flat.columns = [
+        str(col[0]).replace(" ", "").replace("\n", "") if isinstance(col, tuple)
+        else str(col).replace(" ", "").replace("\n", "")
+        for col in df_flat.columns
+    ]
+    new_names = [
+        "building", "floor", "size_m2", "size_py", "brand",
+        "water_previous", "water_current", "water_usage_m3",
+        "hwater_previous", "hwater_current", "hwater_usage_m3",
+        "elect_previous", "elect_current", "elect_usage_kw",
+        "heat_previous", "heat_current", "heat_usage_m3_mwh",
+    ]
+    if len(df_flat.columns) == len(new_names):
+        df_flat.columns = new_names
+    else:
+        df_flat = df_flat.rename(columns=dict(zip(df_flat.columns, new_names)))
+    return df_flat

@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
+from filters import render_sheet_filters
 
 _COMP_COLS = [
     ("상수도 전용",  "water_excl",  "#4C72B0"),
@@ -51,10 +52,7 @@ def _scatter_with_trendline(df_sub, x_col, y_col, color_col, title, xlab, ylab, 
 def render_water_view(df: pd.DataFrame) -> None:
     st.header("💧 수도 사용 내역 분석")
 
-    buildings = sorted(df["building"].unique())
-    sel_bld = st.multiselect("건물 선택", ["All"] + buildings, default=["All"], key="water_bld")
-    if "All" not in sel_bld and sel_bld:
-        df = df[df["building"].isin(sel_bld)].copy()
+    df = render_sheet_filters(df, key_prefix="water")
     if df.empty:
         st.warning("선택된 조건에 해당하는 데이터가 없습니다."); return
 

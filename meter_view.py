@@ -3,24 +3,75 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import streamlit as st
-from scipy import stats
 from typing import Dict
 
 from data import (
-    read_sheet, apply_header_rows, get_billing_period,
+    read_sheet, get_billing_period,
     to_numeric_series, st_safe,
-    read_billing_sheet, get_sheet_names,
-    BILLING_SHEET_NAME,
+    get_sheet_names,
+    BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME,
 )
 from features import (
-    create_change_columns, aggregate_by_brand, split_brand_by_floor,
-    get_simple_floors, sanitize, sort_df, display_cols_for_prefix,
+    apply_header_rows, create_change_columns, aggregate_by_brand, split_brand_by_floor,
+    get_simple_floors, sanitize,
     cols_brand_then_category, add_display_index, download_df_as_excel,
 )
 from viz import plot_hist_with_tails
 from report import generate_report_pdf
+from tab_corr import render_corr_tab
+from tab_efficiency import render_efficiency_tab
+from tab_reconciliation import render_reconciliation
+from lang import t
+
+_ROW_PX = 35   # pixels per data row in full-height dataframes
+_HDR_PX = 38   # pixels for the header row
+
+
+def _full_height(n_rows: int) -> int:
+    return _ROW_PX * n_rows + _HDR_PX
+
+
+def load_raw_meter_df(file_name: str, file_map: Dict[str, bytes], sheet_name: str) -> pd.DataFrame:
+    """Load meter sheet and return pre-aggregation row-level DataFrame."""
+    raw_df = read_sheet(file_name, file_map[file_name], sheet_name)
+    df = apply_header_rows(raw_df)
+    df = create_change_columns(df)
+    df["building"] = df["building"].astype(str).str.strip()
+    return df[df["building"].isin({"A", "B", "C", "D"})].copy()
+
+
+def load_meter_df(file_name: str, file_map: Dict[str, bytes], sheet_name: str) -> pd.DataFrame:
+    """Load and aggregate meter data without rendering any UI.
+
+    Returns an all-buildings, all-floors aggregated DataFrame with per-area
+    columns (*_usage_per_m2, *_usage_per_py) derived from size_m2/size_py.
+    """
+    raw_df = read_sheet(file_name, file_map[file_name], sheet_name)
+    df = apply_header_rows(raw_df)
+    df = create_change_columns(df)
+    df["building"] = df["building"].astype(str).str.strip()
+    df = df[df["building"].isin({"A", "B", "C", "D"})].copy()
+    df = aggregate_by_brand(df)
+
+    # Derive per-area columns (same logic as render_meter_view)
+    _usage_cols = {
+        "water_current":  ("water_usage_per_m2",  "water_usage_per_py"),
+        "hwater_current": ("hwater_usage_per_m2", "hwater_usage_per_py"),
+        "elect_current":  ("elect_usage_per_m2",  "elect_usage_per_py"),
+        "heat_current":   ("heat_usage_per_m2",   "heat_usage_per_py"),
+    }
+    size_m2 = to_numeric_series(df["size_m2"]).replace(0, float("nan")) if "size_m2" in df.columns else None
+    size_py = to_numeric_series(df["size_py"]).replace(0, float("nan")) if "size_py" in df.columns else None
+    for usage_col, (per_m2_col, per_py_col) in _usage_cols.items():
+        if usage_col in df.columns:
+            usage = to_numeric_series(df[usage_col])
+            if size_m2 is not None:
+                df[per_m2_col] = (usage / size_m2).round(4)
+            if size_py is not None:
+                df[per_py_col] = (usage / size_py).round(4)
+
+    return df
 
 
 def render_meter_view(
@@ -29,8 +80,7 @@ def render_meter_view(
     sheet_name: str,
     bins: int,
     tail: int,
-    q_change: tuple,
-    q_pct: tuple,
+    q: tuple,
     debug: bool,
 ) -> None:
     """Full 검침 내역 analysis: pipeline, filters, histograms, 5 tabs, reconciliation."""
@@ -86,12 +136,8 @@ def render_meter_view(
                 "Drop":     round(float(curr_s.at[idx] - prev_s.at[idx]), 2),
             })
     if backward_rows:
-        with st.expander(f"⚠️ Data Quality — {len(backward_rows)} backward meter reading(s) detected", expanded=True):
-            st.warning(
-                "The following tenants have a **current meter reading lower than the previous reading**. "
-                "This is physically impossible without a meter reset and likely indicates a data entry error. "
-                "These rows are still included in the analysis but their change values will appear negative."
-            )
+        with st.expander(f"{t('backward_expander')} ({len(backward_rows)})", expanded=True):
+            st.warning(t("backward_warning"))
             st.dataframe(pd.DataFrame(backward_rows), hide_index=True, use_container_width=True)
 
     # ---------------- Filters ─────────────────────────────────────────────────
@@ -103,7 +149,7 @@ def render_meter_view(
 
     allowed = ["water", "hwater", "elect", "heat"]
     present_all = [p for p in allowed if f"{p}_change" in df.columns]
-    _CATEGORY_LABELS = {"water": "💧 수도", "hwater": "🌡️ 온수", "elect": "⚡ 전기", "heat": "🔥 난방"}
+    _CATEGORY_LABELS = {"water": t("cat_water"), "hwater": t("cat_hwater"), "elect": t("cat_elect"), "heat": t("cat_heat")}
     has_gongshil_any = df["brand"].astype(str).str.contains("공실", na=False).any()
 
     def on_building_change():
@@ -124,22 +170,31 @@ def render_meter_view(
         elif "All" in sel:
             st.session_state["floor_select"] = [s for s in sel if s != "All"]
 
+    _VACANCY_OPTS = ["All", "Exclude Vacancy", "Vacancy Only"]
+    _VACANCY_LABELS = {
+        "All":             {"ko": "전체",     "en": "All"},
+        "Exclude Vacancy": {"ko": "공실 제외", "en": "Exclude Vacancy"},
+        "Vacancy Only":    {"ko": "공실만",    "en": "Vacancy Only"},
+    }
     fc1, fc2, fc3, fc4 = st.columns([2, 2, 1, 2])
     with fc1:
         selected_buildings = st.multiselect(
-            "Building", building_options, default=["All"],
+            t("building"), building_options, default=["All"],
             key="building_select", on_change=on_building_change,
         )
     with fc2:
         selected_floors = st.multiselect(
-            "Floor", floor_options, default=["All"],
+            t("floor"), floor_options, default=["All"],
             key="floor_select", on_change=on_floor_change,
         )
     with fc3:
-        prefix = st.selectbox("Category", present_all, format_func=lambda x: _CATEGORY_LABELS.get(x, x))
+        prefix = st.selectbox(t("category"), present_all, format_func=lambda x: _CATEGORY_LABELS.get(x, x))
     with fc4:
+        import streamlit as _st
+        _lang = _st.session_state.get("lang", "ko")
         gongshil_mode = st.radio(
-            "공실", ["All", "Exclude 공실", "공실 only"],
+            t("vacancy"), _VACANCY_OPTS,
+            format_func=lambda x: _VACANCY_LABELS[x][_lang],
             index=0, horizontal=True,
             disabled=not has_gongshil_any,
             key="gongshil_mode_radio",
@@ -153,7 +208,7 @@ def render_meter_view(
     floors_filtered = "All" not in selected_floors
 
     if ref_df.empty:
-        st.warning("No data for the selected building.")
+        st.warning(t("no_data_building"))
         st.stop()
 
     # Aggregate by brand using all floors, then split if specific floors selected
@@ -164,7 +219,7 @@ def render_meter_view(
         cur_df = agg_df
 
     if cur_df.empty:
-        st.warning("No data for the selected floor combination.")
+        st.warning(t("no_data_floor"))
         st.stop()
 
     # ---------------- Per-size derived columns ----------------
@@ -194,12 +249,12 @@ def render_meter_view(
         st.dataframe(st_safe(cur_df.head(20)), width="stretch", hide_index=True)
 
     # ---------------- Apply 공실 filter ----------------
-    if gongshil_mode == "공실 only":
+    if gongshil_mode == "Vacancy Only":
         cur_df = cur_df[cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
         if cur_df.empty:
             st.warning("No 공실 entries for the current selection.")
             st.stop()
-    elif gongshil_mode == "Exclude 공실":
+    elif gongshil_mode == "Exclude Vacancy":
         cur_df = cur_df[~cur_df["brand"].astype(str).str.contains("공실", na=False)].copy()
         if cur_df.empty:
             st.warning("No entries remaining after excluding 공실.")
@@ -221,15 +276,15 @@ def render_meter_view(
 
     valid = cur_df[["brand", "building", change_col, pct_col]].dropna()
     if valid.empty:
-        st.error("No numeric data.")
+        st.error(t("no_numeric"))
         st.stop()
 
     s_change = valid[change_col]
     s_pct = valid[pct_col]
 
     # ---------------- Thresholds ----------------
-    q0c, q1c = sanitize(*q_change)
-    q0p, q1p = sanitize(*q_pct)
+    q0c, q1c = sanitize(*q)
+    q0p, q1p = sanitize(*q)
 
     lo_c, hi_c = valid[change_col].quantile([q0c, q1c])
     lo_p, hi_p = valid[pct_col].quantile([q0p, q1p])
@@ -264,34 +319,35 @@ def render_meter_view(
     q_LL = q_LL.sort_values([pct_col, change_col], ascending=False)
 
     # ---------------- Summary KPI bar ----------------
-    _status_counts = {"Critical": set(), "Watch": set(), "Alert": set(),
-                      "Stable": set(), "No Data": set()}
+    _status_counts: dict[str, set] = {"Critical": set(), "Watch": set(), "Alert": set(),
+                                      "Stable": set(), "No Data": set()}
     _q = tail / 100.0
+    _keys = list(zip(cur_df["brand"].astype(str).values, cur_df["building"].astype(str).values))
     for _p in present:
         _cc = f"{_p}_change"; _pc = f"{_p}_pct"
         if _cc not in cur_df.columns or _pc not in cur_df.columns:
             continue
-        _sc = to_numeric_series(cur_df[_cc]); _sp = to_numeric_series(cur_df[_pc])
-        _valid = _sc.notna() & _sp.notna()
+        _sc = to_numeric_series(cur_df[_cc]).values
+        _sp = to_numeric_series(cur_df[_pc]).values
+        _valid = ~(np.isnan(_sc) | np.isnan(_sp))
         if not _valid.any():
             continue
-        _hi_c = float(_sc[_valid].quantile(1 - _q)); _lo_c = float(_sc[_valid].quantile(_q))
-        _hi_p = float(_sp[_valid].quantile(1 - _q)); _lo_p = float(_sp[_valid].quantile(_q))
-        for _idx in cur_df.index:
-            _ch = _sc.at[_idx] if _idx in _sc.index else float("nan")
-            _pt = _sp.at[_idx] if _idx in _sp.index else float("nan")
-            _key = (str(cur_df.at[_idx, "brand"]), str(cur_df.at[_idx, "building"]))
-            import math
-            if math.isnan(_ch) or math.isnan(_pt):
-                _status_counts["No Data"].add(_key)
-            elif _ch >= _hi_c and _pt >= _hi_p:
-                _status_counts["Critical"].add(_key)
-            elif _ch >= _hi_c or _pt >= _hi_p:
-                _status_counts["Watch"].add(_key)
-            elif _ch <= _lo_c and _pt <= _lo_p:
-                _status_counts["Stable"].add(_key)
-            elif _ch <= _lo_c or _pt <= _lo_p:
-                _status_counts["Alert"].add(_key)
+        _hi_c = float(np.quantile(_sc[_valid], 1 - _q))
+        _lo_c = float(np.quantile(_sc[_valid], _q))
+        _hi_p = float(np.quantile(_sp[_valid], 1 - _q))
+        _lo_p = float(np.quantile(_sp[_valid], _q))
+
+        _nan_m      = ~_valid
+        _critical_m = _valid & (_sc >= _hi_c) & (_sp >= _hi_p)
+        _watch_m    = _valid & ~_critical_m & ((_sc >= _hi_c) | (_sp >= _hi_p))
+        _stable_m   = _valid & (_sc <= _lo_c) & (_sp <= _lo_p)
+        _alert_m    = _valid & ~_stable_m & ((_sc <= _lo_c) | (_sp <= _lo_p))
+
+        _status_counts["No Data"].update(k for k, m in zip(_keys, _nan_m)      if m)
+        _status_counts["Critical"].update(k for k, m in zip(_keys, _critical_m) if m)
+        _status_counts["Watch"].update(k for k, m in zip(_keys, _watch_m)       if m)
+        _status_counts["Stable"].update(k for k, m in zip(_keys, _stable_m)     if m)
+        _status_counts["Alert"].update(k for k, m in zip(_keys, _alert_m)       if m)
 
     _n_critical  = len(_status_counts["Critical"])
     _n_watch     = len(_status_counts["Watch"])
@@ -300,42 +356,39 @@ def render_meter_view(
     _n_backward  = len(backward_rows)
 
     _k1, _k2, _k3, _k4, _k5 = st.columns(5)
-    _k1.metric("Tenants", len(cur_df))
-    _k2.metric("🔴 Critical",  _n_critical,  delta=None if _n_critical  == 0 else f"across any utility")
-    _k3.metric("🟠 Watch",     _n_watch,     delta=None if _n_watch     == 0 else f"elevated usage")
-    _k4.metric("🟡 Alert",     _n_alert,     delta=None if _n_alert     == 0 else f"sharp % rise")
+    _k1.metric(t("tenants"), len(cur_df))
+    _k2.metric(t("critical"), _n_critical,  delta=None if _n_critical == 0 else t("kpi_across"))
+    _k3.metric(t("watch"),    _n_watch,     delta=None if _n_watch    == 0 else t("kpi_elevated"))
+    _k4.metric(t("alert"),    _n_alert,     delta=None if _n_alert    == 0 else t("kpi_sharp_rise"))
     _k5.metric("🏚 공실 / ⚠ Data", f"{_n_vacancy} / {_n_backward}")
     st.divider()
 
     # ---------------- Summary Report download ─────────────────────────────────
-    with st.expander("Download Summary Report", expanded=False):
-        st.caption(
-            "Generates a business-ready PDF report covering all utility types — "
-            "with charts, plain-language explanations, and flagged tenants."
-        )
+    with st.expander(t("download_report"), expanded=False):
+        st.caption(t("report_caption"))
         report_lang = st.radio(
-            "Report language / 보고서 언어",
+            t("report_lang"),
             ["한국어", "English"],
             horizontal=True,
             key="report_lang",
         )
         lang_code = "ko" if report_lang == "한국어" else "en"
 
-        if st.button("Generate Report", key="gen_report"):
+        if st.button(t("gen_report_btn"), key="gen_report"):
             report_context = {
                 "date":      str(date.today()),
                 "period":    billing_period or str(date.today()),
                 "buildings": ", ".join(active_buildings) if active_buildings else "All",
                 "floors":    ", ".join(active_floors) if floors_filtered else "All",
             }
-            with st.spinner("보고서 생성 중…" if lang_code == "ko" else "Building PDF report…"):
+            with st.spinner(t("report_spinning")):
                 report_bytes = generate_report_pdf(
                     cur_df, present, tail,
                     context=report_context, lang=lang_code,
                 )
             bldg_tag_rpt = "all" if "All" in selected_buildings else "_".join(selected_buildings)
             st.download_button(
-                label="PDF 다운로드" if lang_code == "ko" else "Download PDF Report",
+                label=t("dl_pdf_btn"),
                 data=report_bytes,
                 file_name=f"utility_report_{bldg_tag_rpt}_{date.today()}.pdf",
                 mime="application/pdf",
@@ -343,54 +396,107 @@ def render_meter_view(
             )
 
     # ---------------- Histograms ─────────────────────────────────────────────
+    _HIST_OPTS = ["Side by Side", "Change only", "% Change only"]
+    _HIST_LABELS = {
+        "Side by Side":  {"ko": "나란히",    "en": "Side by Side"},
+        "Change only":   {"ko": "변화량만",  "en": "Change only"},
+        "% Change only": {"ko": "% 변화만", "en": "% Change only"},
+    }
+    _hlang = st.session_state.get("lang", "ko")
     hist_layout = st.radio(
-        "Histogram view",
-        ["Side by Side", "Change only", "% Change only"],
+        t("hist_view"),
+        _HIST_OPTS,
+        format_func=lambda x: _HIST_LABELS[x][_hlang],
         horizontal=True,
         key="hist_layout",
     )
 
+    def _hist_controls(key_prefix: str):
+        """Render slider+input bins & tail controls; return (bins, lo, hi, tail_pct)."""
+        bk, bik = f"{key_prefix}_bins", f"{key_prefix}_bins_i"
+        tk, tik = f"{key_prefix}_tail", f"{key_prefix}_tail_i"
+        if bk  not in st.session_state: st.session_state[bk]  = 50
+        if bik not in st.session_state: st.session_state[bik] = 50
+        if tk  not in st.session_state: st.session_state[tk]  = 20
+        if tik not in st.session_state: st.session_state[tik] = 20
+
+        def _sync_bs(): st.session_state[bik] = st.session_state[bk]
+        def _sync_bi(): st.session_state[bk]  = st.session_state[bik]
+        def _sync_ts(): st.session_state[tik] = st.session_state[tk]
+        def _sync_ti(): st.session_state[tk]  = st.session_state[tik]
+
+        _b1, _b2 = st.columns([3, 1])
+        with _b1:
+            st.slider("Bins", 5, 200, value=st.session_state[bk], step=5, key=bk, on_change=_sync_bs)
+        with _b2:
+            st.number_input("Bins", 5, 200, value=st.session_state[bik], step=5, key=bik,
+                            label_visibility="hidden", on_change=_sync_bi)
+
+        _t1, _t2 = st.columns([3, 1])
+        with _t1:
+            st.slider("Tail %", 1, 50, value=st.session_state[tk], step=1, key=tk, on_change=_sync_ts)
+        with _t2:
+            st.number_input("Tail %", 1, 50, value=st.session_state[tik], step=1, key=tik,
+                            label_visibility="hidden", on_change=_sync_ti)
+
+        _s = s_change if "chg" in key_prefix else s_pct
+        _t = int(st.session_state[tk])
+        _lo, _hi = _s.quantile([_t / 100, 1 - _t / 100])
+        return int(st.session_state[bk]), float(_lo), float(_hi), _t
+
     if hist_layout == "Side by Side":
         hc1, hc2 = st.columns(2)
         with hc1:
+            _b_c, _lo_c2, _hi_c2, _t_c = _hist_controls("chg")
             plot_hist_with_tails(
-                s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}",
+                s_change, _b_c, _lo_c2, _hi_c2, f"Change: {change_col}",
                 source_df=cur_df, val_col=change_col, key="hist_change",
                 display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
-                tail_pct=tail,
+                tail_pct=_t_c,
             )
         with hc2:
+            _b_p, _lo_p2, _hi_p2, _t_p = _hist_controls("pct")
             plot_hist_with_tails(
-                s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}",
+                s_pct, _b_p, _lo_p2, _hi_p2, f"Pct: {pct_col}",
                 source_df=cur_df, val_col=pct_col, key="hist_pct",
                 display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
-                tail_pct=tail,
+                tail_pct=_t_p,
             )
     elif hist_layout == "Change only":
+        _b_c, _lo_c2, _hi_c2, _t_c = _hist_controls("chg")
         plot_hist_with_tails(
-            s_change, bins, float(lo_c), float(hi_c), f"Change: {change_col}",
+            s_change, _b_c, _lo_c2, _hi_c2, f"Change: {change_col}",
             source_df=cur_df, val_col=change_col, key="hist_change",
             display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
-            tail_pct=tail,
+            tail_pct=_t_c,
         )
     else:
+        _b_p, _lo_p2, _hi_p2, _t_p = _hist_controls("pct")
         plot_hist_with_tails(
-            s_pct, bins, float(lo_p), float(hi_p), f"Pct: {pct_col}",
+            s_pct, _b_p, _lo_p2, _hi_p2, f"Pct: {pct_col}",
             source_df=cur_df, val_col=pct_col, key="hist_pct",
             display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
-            tail_pct=tail,
+            tail_pct=_t_p,
         )
 
+    _sheet_names = get_sheet_names(file_name, file_map[file_name])
+    _ehp_sheet = EHP_OAC_SHEET_NAME if EHP_OAC_SHEET_NAME in _sheet_names else None
+
     tab_change, tab_pct, tab_overlap, tab_ranking, tab_corr = st.tabs([
-        "Quantitative Change", "Percentage Change", "Quadrant Analysis", "Brand Ranking", "Correlation"
+        t("tab_change"), t("tab_pct"),
+        t("tab_quadrant"), t("tab_ranking"), t("tab_corr"),
     ])
 
     # ---------------- Change tab ----------------
     with tab_change:
-        st.subheader(f"Quantitative Change — {change_col}")
+        st.subheader(f"{t('tab_change')} — {change_col}")
         chg_label = f"{tail}%"
+        _show_opts = ["All", "Top", "Bottom"]
+        _show_labels = {"All": {"ko": "전체", "en": "All"}, "Top": {"ko": "상위", "en": "Top"}, "Bottom": {"ko": "하위", "en": "Bottom"}}
+        _slang = st.session_state.get("lang", "ko")
         chg_view_mode = st.radio(
-            "Show", ["All", "Top", "Bottom"], index=0, horizontal=True, key="chg_view_mode"
+            t("show"), _show_opts, format_func=lambda x: _show_labels[x][_slang],
+            index=0, horizontal=True, key="chg_view_mode"
         )
 
         chg_display_cols = cols_brand_then_category(cur_df, prefix, mode="change")
@@ -398,18 +504,18 @@ def render_meter_view(
         if chg_view_mode == "All":
             chg_all = cur_df[chg_display_cols].dropna(subset=[change_col]).sort_values(change_col, ascending=False).copy()
             chg_all_view = add_display_index(chg_all)
-            st.markdown(f"**All entries** — sorted high→low ({len(chg_all)})")
-            st.dataframe(st_safe(chg_all_view), width="stretch", hide_index=True, height=35 * len(chg_all_view) + 38)
+            st.markdown(f"**{t('all_entries')}** — {t('sorted_hl')} ({len(chg_all)})")
+            st.dataframe(st_safe(chg_all_view), width="stretch", hide_index=True, height=_full_height(len(chg_all_view)))
             download_df_as_excel(chg_all_view, filename=f"{df_key}_{prefix}_change_all.xlsx", sheet_name="change_all")
 
         elif chg_view_mode == "Top":
-            st.markdown(f"**Top {chg_label} (>= {float(hi_c):.4g})** — sorted high→low ({len(chg_top)})")
+            st.markdown(f"**{t('show_top')} {chg_label} (>= {float(hi_c):.4g})** — {t('sorted_hl')} ({len(chg_top)})")
             chg_top_view = add_display_index(chg_top[cols_brand_then_category(chg_top, prefix, mode="change")])
             st.dataframe(st_safe(chg_top_view), width="stretch", hide_index=True)
             download_df_as_excel(chg_top_view, filename=f"{df_key}_{prefix}_change_top.xlsx", sheet_name="change_top")
 
         else:  # Bottom
-            st.markdown(f"**Bottom {chg_label} (<= {float(lo_c):.4g})** — sorted high→low ({len(chg_bot)})")
+            st.markdown(f"**{t('show_bottom')} {chg_label} (<= {float(lo_c):.4g})** — {t('sorted_hl')} ({len(chg_bot)})")
             chg_bot_view = add_display_index(chg_bot[cols_brand_then_category(chg_bot, prefix, mode="change")])
             st.dataframe(st_safe(chg_bot_view), width="stretch", hide_index=True)
             download_df_as_excel(chg_bot_view, filename=f"{df_key}_{prefix}_change_bottom.xlsx", sheet_name="change_bottom")
@@ -417,17 +523,19 @@ def render_meter_view(
         chg_nan = cur_df[cur_df[change_col].isna()][chg_display_cols].copy()
         if not chg_nan.empty:
             st.divider()
-            st.markdown(f"**No Data (NaN)** — missing quantitative change ({len(chg_nan)})")
+            st.markdown(f"**{t('no_data_nan')}** — {t('missing_change')} ({len(chg_nan)})")
             chg_nan_view = add_display_index(chg_nan)
             st.dataframe(st_safe(chg_nan_view), width="stretch", hide_index=True)
             download_df_as_excel(chg_nan_view, filename=f"{df_key}_{prefix}_change_nan.xlsx", sheet_name="change_nan")
 
     # ---------------- Pct tab ----------------
     with tab_pct:
-        st.subheader(f"Percentage Change — {pct_col}")
+        st.subheader(f"{t('tab_pct')} — {pct_col}")
         pct_label = f"{tail}%"
+        _slang2 = st.session_state.get("lang", "ko")
         pct_view_mode = st.radio(
-            "Show", ["All", "Top", "Bottom"], index=0, horizontal=True, key="pct_view_mode"
+            t("show"), _show_opts, format_func=lambda x: _show_labels[x][_slang2],
+            index=0, horizontal=True, key="pct_view_mode"
         )
 
         pct_display_cols = cols_brand_then_category(cur_df, prefix, mode="pct")
@@ -435,18 +543,18 @@ def render_meter_view(
         if pct_view_mode == "All":
             pct_all = cur_df[pct_display_cols].dropna(subset=[pct_col]).sort_values(pct_col, ascending=False).copy()
             pct_all_view = add_display_index(pct_all)
-            st.markdown(f"**All entries** — sorted high→low ({len(pct_all)})")
-            st.dataframe(st_safe(pct_all_view), width="stretch", hide_index=True, height=35 * len(pct_all_view) + 38)
+            st.markdown(f"**{t('all_entries')}** — {t('sorted_hl')} ({len(pct_all)})")
+            st.dataframe(st_safe(pct_all_view), width="stretch", hide_index=True, height=_full_height(len(pct_all_view)))
             download_df_as_excel(pct_all_view, filename=f"{df_key}_{prefix}_pct_all.xlsx", sheet_name="pct_all")
 
         elif pct_view_mode == "Top":
-            st.markdown(f"**Top {pct_label} (>= {float(hi_p):.4g})** — sorted high→low ({len(pct_top)})")
+            st.markdown(f"**{t('show_top')} {pct_label} (>= {float(hi_p):.4g})** — {t('sorted_hl')} ({len(pct_top)})")
             pct_top_view = add_display_index(pct_top[cols_brand_then_category(pct_top, prefix, mode="pct")])
             st.dataframe(st_safe(pct_top_view), width="stretch", hide_index=True)
             download_df_as_excel(pct_top_view, filename=f"{df_key}_{prefix}_pct_top.xlsx", sheet_name="pct_top")
 
         else:  # Bottom
-            st.markdown(f"**Bottom {pct_label} (<= {float(lo_p):.4g})** — sorted high→low ({len(pct_bot)})")
+            st.markdown(f"**{t('show_bottom')} {pct_label} (<= {float(lo_p):.4g})** — {t('sorted_hl')} ({len(pct_bot)})")
             pct_bot_view = add_display_index(pct_bot[cols_brand_then_category(pct_bot, prefix, mode="pct")])
             st.dataframe(st_safe(pct_bot_view), width="stretch", hide_index=True)
             download_df_as_excel(pct_bot_view, filename=f"{df_key}_{prefix}_pct_bottom.xlsx", sheet_name="pct_bottom")
@@ -454,16 +562,16 @@ def render_meter_view(
         pct_nan = cur_df[cur_df[pct_col].isna()][pct_display_cols].copy()
         if not pct_nan.empty:
             st.divider()
-            st.markdown(f"**No Data (NaN)** — missing percentage change ({len(pct_nan)})")
+            st.markdown(f"**{t('no_data_nan')}** — {t('missing_pct')} ({len(pct_nan)})")
             pct_nan_view = add_display_index(pct_nan)
             st.dataframe(st_safe(pct_nan_view), width="stretch", hide_index=True)
             download_df_as_excel(pct_nan_view, filename=f"{df_key}_{prefix}_pct_nan.xlsx", sheet_name="pct_nan")
 
     # ---------------- Overlap tab ----------------
     with tab_overlap:
-        st.subheader("Outlier Quadrant Analysis — Change × Pct Cross-Filter")
+        st.subheader(t("quadrant_title"))
 
-        st.markdown(f"**Critical Surge** — Change HIGH · Pct HIGH ({len(q_HH)})")
+        st.markdown(f"{t('q_HH')} ({len(q_HH)})")
         q_cols = cols_brand_then_category(q_HH, prefix, mode="change")
         q_view = add_display_index(q_HH[q_cols])
         st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
@@ -471,7 +579,7 @@ def render_meter_view(
 
         st.divider()
 
-        st.markdown(f"**Large Base, Moderate Surge** — Change HIGH · Pct LOW ({len(q_HL)})")
+        st.markdown(f"{t('q_HL')} ({len(q_HL)})")
         q_cols = cols_brand_then_category(q_HL, prefix, mode="change")
         q_view = add_display_index(q_HL[q_cols])
         st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
@@ -479,7 +587,7 @@ def render_meter_view(
 
         st.divider()
 
-        st.markdown(f"**Small Base, Sharp Drop** — Change LOW · Pct HIGH ({len(q_LH)})")
+        st.markdown(f"{t('q_LH')} ({len(q_LH)})")
         q_cols = cols_brand_then_category(q_LH, prefix, mode="change")
         q_view = add_display_index(q_LH[q_cols])
         st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
@@ -487,7 +595,7 @@ def render_meter_view(
 
         st.divider()
 
-        st.markdown(f"**Stable / No Significant Change** — Change LOW · Pct LOW ({len(q_LL)})")
+        st.markdown(f"{t('q_LL')} ({len(q_LL)})")
         q_cols = cols_brand_then_category(q_LL, prefix, mode="change")
         q_view = add_display_index(q_LL[q_cols])
         st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
@@ -499,14 +607,14 @@ def render_meter_view(
         q_normal = cur_df.loc[~cur_df.index.isin(all_quadrant_idx)].dropna(subset=[change_col, pct_col]).copy()
         q_normal = q_normal.sort_values(change_col, ascending=False)
         q_normal_cols = cols_brand_then_category(q_normal, prefix, mode="change")
-        st.markdown(f"**Normal (non-outliers)** — not in any quadrant ({len(q_normal)})")
+        st.markdown(f"{t('q_normal')} ({len(q_normal)})")
         q_normal_view = add_display_index(q_normal[q_normal_cols])
         st.dataframe(st_safe(q_normal_view), width="stretch", hide_index=True)
         download_df_as_excel(q_normal_view, filename=f"{df_key}_{prefix}_normal.xlsx", sheet_name="normal")
 
     # ---------------- Brand Ranking tab ----------------
     with tab_ranking:
-        st.subheader(f"Brand Significance Ranking — {prefix}")
+        st.subheader(f"{t('ranking_title')} — {prefix}")
 
         valid_brands = cur_df["brand"].dropna().unique()
         rows = []
@@ -539,7 +647,7 @@ def render_meter_view(
             })
 
         if not rows:
-            st.info("No brand data available.")
+            st.info(t("no_brand_data"))
         else:
             rank_df = pd.DataFrame(rows)
 
@@ -571,7 +679,7 @@ def render_meter_view(
             rank_view["mean_change"] = rank_view["mean_change"].round(2)
             rank_view["mean_pct"]    = rank_view["mean_pct"].round(2)
 
-            with st.expander("How is the significance score calculated?"):
+            with st.expander(t("score_explain")):
                 ex = rank_df.iloc[1] if len(rank_df) > 1 else rank_df.iloc[0]
                 ex_quad_raw  = int(ex["quad_score"])
                 ex_norm_quad = round(float(ex["norm_quad"]), 4)
@@ -635,469 +743,12 @@ All three normalized to [0, 1], then averaged:
 - `mean_pct` — mean percentage change across brand's entries
 """)
             st.dataframe(st_safe(rank_view), width="stretch", hide_index=True,
-                         height=35 * len(rank_view) + 38)
+                         height=_full_height(len(rank_view)))
             download_df_as_excel(rank_view, filename=f"{df_key}_{prefix}_brand_ranking.xlsx", sheet_name="brand_ranking")
 
-    # ---------------- Correlation tab ----------------
     with tab_corr:
-        _all_numeric = sorted([
-            c for c in cur_df.columns
-            if pd.api.types.is_numeric_dtype(cur_df[c])
-            and cur_df[c].notna().any()
-        ])
-
-        _cat_cols = {}
-        for _cat, _match in [
-            ("m²",          lambda c: c == "size_m2"),
-            ("평 (py)",      lambda c: c == "size_py"),
-            ("Water",        lambda c: c.startswith("water_")),
-            ("Hot Water",    lambda c: c.startswith("hwater_")),
-            ("Electricity",  lambda c: c.startswith("elect_")),
-            ("Heat",         lambda c: c.startswith("heat_")),
-        ]:
-            cols = [c for c in _all_numeric if _match(c)]
-            if cols:
-                _cat_cols[_cat] = cols
-        categories = list(_cat_cols.keys())
-
-        _SUFFIX_ORDER = [
-            "change", "pct",
-            "current", "previous",
-            "usage_m3", "usage_kw", "usage_m3_mwh",
-            "usage_per_m2", "usage_per_py",
-        ]
-        _SUFFIX_LABELS = {
-            "previous":      "Previous Usage",
-            "current":       "Current Usage",
-            "usage_m3":      "Usage (m³)",
-            "usage_kw":      "Usage (kWh)",
-            "usage_m3_mwh":  "Usage (m³/MWh)",
-            "usage_per_m2":  "Usage per m²",
-            "usage_per_py":  "Usage per 평",
-            "change":        "Quantitative Change",
-            "pct":           "Percentage Change",
-        }
-        _COL_LABELS = {"size_m2": "m²", "size_py": "평 (py)"}
-        def _col_label(col):
-            if col in _COL_LABELS:
-                return _COL_LABELS[col]
-            for prefix in ["water_", "hwater_", "elect_", "heat_"]:
-                if col.startswith(prefix):
-                    suffix = col[len(prefix):]
-                    return _SUFFIX_LABELS.get(suffix, suffix)
-            return col
-        def _col_sort_key(col):
-            for prefix in ["water_", "hwater_", "elect_", "heat_"]:
-                if col.startswith(prefix):
-                    suffix = col[len(prefix):]
-                    try:
-                        return _SUFFIX_ORDER.index(suffix)
-                    except ValueError:
-                        return len(_SUFFIX_ORDER)
-            return -1
-        _cat_cols = {cat: sorted(cols, key=_col_sort_key) for cat, cols in _cat_cols.items()}
-
-        # ── helper: map a column back to its display category ──────────────
-        def _find_cat(col):
-            for cat, cols in _cat_cols.items():
-                if col in cols:
-                    return cat
-            return None
-
-        # ── helper: which utility prefix owns a column ─────────────────────
-        _UTIL_PREFIXES = ["water_", "hwater_", "elect_", "heat_"]
-        def _col_util(col):
-            for p in _UTIL_PREFIXES:
-                if col.startswith(p):
-                    return p
-            return col   # size columns are their own "group"
-
-        if sum(len(v) for v in _cat_cols.values()) < 2:
-            st.info("Not enough numeric columns for correlation.")
-        else:
-            # ── AUTO-DISCOVERY ────────────────────────────────────────────
-            st.subheader("Auto-Discover Correlations")
-
-            # Columns worth scanning: change, pct, current + size
-            _SCAN_SUFFIXES = {"change", "pct", "current"}
-            _scan_cols = [
-                c for c in _all_numeric
-                if any(c.endswith(f"_{s}") for s in _SCAN_SUFFIXES)
-                or c in ("size_m2", "size_py")
-            ]
-
-            _disc_rows = []
-            for _i, _ca in enumerate(_scan_cols):
-                for _cb in _scan_cols[_i + 1:]:
-                    if _col_util(_ca) == _col_util(_cb):   # skip same-utility pairs
-                        continue
-                    _dp = cur_df[[_ca, _cb]].dropna()
-                    if len(_dp) < 5:
-                        continue
-                    _r, _p = stats.pearsonr(_dp[_ca].values, _dp[_cb].values)
-                    _disc_rows.append({
-                        "X":         _ca,
-                        "Y":         _cb,
-                        "r":         round(_r, 3),
-                        "R²":        round(_r ** 2, 3),
-                        "p-value":   round(_p, 4),
-                        "n":         len(_dp),
-                        "Direction": "positive" if _r > 0 else "negative",
-                        "Strength":  (
-                            "Strong"   if abs(_r) >= 0.6 else
-                            "Moderate" if abs(_r) >= 0.35 else
-                            "Weak"
-                        ),
-                    })
-
-            if not _disc_rows:
-                st.info("Not enough cross-category data to run discovery.")
-            else:
-                _disc_df = (
-                    pd.DataFrame(_disc_rows)
-                    .sort_values("R²", ascending=False)
-                    .reset_index(drop=True)
-                )
-
-                # Filter controls
-                _dc1, _dc2, _dc3 = st.columns([2, 2, 3])
-                with _dc1:
-                    _min_r2 = st.slider(
-                        "Min R²", 0.0, 1.0, 0.05, 0.05, key="disc_min_r2",
-                        help="Only show pairs where R² is at least this value",
-                    )
-                with _dc2:
-                    _show_nonsig = st.checkbox(
-                        "Include p ≥ 0.05", value=False, key="disc_show_nonsig",
-                        help="Also show pairs that are not statistically significant",
-                    )
-                with _dc3:
-                    _strength_filter = st.multiselect(
-                        "Strength filter", ["Strong", "Moderate", "Weak"],
-                        default=["Strong", "Moderate"], key="disc_strength",
-                    )
-
-                _shown = _disc_df[
-                    (_disc_df["R²"] >= _min_r2) &
-                    (_disc_df["Strength"].isin(_strength_filter)) &
-                    (_show_nonsig | (_disc_df["p-value"] < 0.05))
-                ].reset_index(drop=True)
-
-                if _shown.empty:
-                    st.info("No pairs match the current filters.")
-                else:
-                    st.caption(
-                        f"{len(_shown)} pair(s) found · "
-                        "Select a row to load it into the scatter below"
-                    )
-                    _disc_event = st.dataframe(
-                        _shown,
-                        hide_index=True,
-                        use_container_width=True,
-                        on_select="rerun",
-                        selection_mode="single-row",
-                        column_config={
-                            "r":       st.column_config.NumberColumn("r",   format="%.3f"),
-                            "R²":      st.column_config.NumberColumn("R²",  format="%.3f"),
-                            "p-value": st.column_config.NumberColumn("p",   format="%.4f"),
-                            "X":       st.column_config.TextColumn("X Column",  width="medium"),
-                            "Y":       st.column_config.TextColumn("Y Column",  width="medium"),
-                        },
-                    )
-
-                    # Load selected row into scatter selectors
-                    _sel_rows = (
-                        _disc_event.selection.rows
-                        if _disc_event and hasattr(_disc_event, "selection")
-                        else []
-                    )
-                    if _sel_rows:
-                        _sel = _shown.iloc[_sel_rows[0]]
-                        _xc  = _sel["X"];  _yc = _sel["Y"]
-                        _xct = _find_cat(_xc); _yct = _find_cat(_yc)
-                        if _xct and _yct:
-                            st.session_state["corr_x_cat"]        = _xct
-                            st.session_state[f"corr_x_{_xct}"]   = _xc
-                            st.session_state["corr_y_cat"]        = _yct
-                            st.session_state[f"corr_y_{_yct}"]   = _yc
-                            st.success(
-                                f"Loaded **{_col_label(_xc)}** vs **{_col_label(_yc)}** "
-                                f"(R² = {_sel['R²']:.3f}) — scroll down to scatter"
-                            )
-
-                # Correlation heatmap of change + pct columns
-                _hm_cols = [c for c in _scan_cols if c in cur_df.columns
-                            and (c.endswith("_change") or c.endswith("_pct"))]
-                if len(_hm_cols) >= 3:
-                    _hm_data = cur_df[_hm_cols].dropna()
-                    if len(_hm_data) >= 3:
-                        _corr_mat = _hm_data.corr()
-                        _labels   = [_col_label(c) for c in _corr_mat.columns]
-                        _fig_hm   = px.imshow(
-                            _corr_mat,
-                            x=_labels, y=_labels,
-                            color_continuous_scale="RdBu_r",
-                            zmin=-1, zmax=1,
-                            text_auto=".2f",
-                            title="Correlation Matrix — Change & % Change",
-                            aspect="auto",
-                        )
-                        _fig_hm.update_layout(
-                            height=420,
-                            margin=dict(l=10, r=10, t=50, b=10),
-                            coloraxis_colorbar=dict(title="r"),
-                            font=dict(size=11),
-                        )
-                        _fig_hm.update_traces(textfont_size=10)
-                        st.plotly_chart(_fig_hm, use_container_width=True)
-
-            st.divider()
-            st.subheader("Manual Scatter")
-
-            xc1, xc2, yc1, yc2, cc3 = st.columns(5)
-            with xc1:
-                x_cat = st.selectbox("X Category", categories, index=0, key="corr_x_cat")
-            with xc2:
-                x_col = st.selectbox("X Column", _cat_cols[x_cat], index=0, key=f"corr_x_{x_cat}", format_func=_col_label)
-            with yc1:
-                _y_cat_default = min(1, len(categories) - 1)
-                y_cat = st.selectbox("Y Category", categories, index=_y_cat_default, key="corr_y_cat")
-            with yc2:
-                y_col = st.selectbox("Y Column", _cat_cols[y_cat], index=0, key=f"corr_y_{y_cat}", format_func=_col_label)
-            with cc3:
-                color_by = st.selectbox("Color by", ["brand", "building"], index=0, key="corr_color")
-
-            lc1, lc2, oc1, oc2 = st.columns([1, 1, 1, 4])
-            with lc1:
-                log_x = st.checkbox("Log X", value=False, key="corr_log_x")
-            with lc2:
-                log_y = st.checkbox("Log Y", value=False, key="corr_log_y")
-            with oc1:
-                remove_outliers = st.checkbox("Remove outliers", value=False, key="corr_remove_outliers")
-            with oc2:
-                iqr_k = st.slider("IQR multiplier", 0.5, 3.0, 1.5, 0.1, key="corr_iqr_k", disabled=not remove_outliers)
-
-            if x_col == y_col:
-                st.info("Please select different columns for X and Y axes.")
-            else:
-                hover_extra = [c for c in ["brand", "building", "size_m2", "size_py"] if c in cur_df.columns and c not in [x_col, y_col]]
-                corr_df = cur_df[[x_col, y_col] + hover_extra].dropna(subset=[x_col, y_col]).copy()
-
-                if remove_outliers:
-                    for col in [x_col, y_col]:
-                        q1, q3 = corr_df[col].quantile(0.25), corr_df[col].quantile(0.75)
-                        iqr = q3 - q1
-                        corr_df = corr_df[(corr_df[col] >= q1 - iqr_k * iqr) & (corr_df[col] <= q3 + iqr_k * iqr)]
-
-                if corr_df.empty:
-                    st.warning("No data with valid values for both selected columns.")
-                else:
-                    # Regression on (optionally log-transformed) values
-                    x_vals = corr_df[x_col].values.astype(float)
-                    y_vals = corr_df[y_col].values.astype(float)
-                    if log_x:
-                        mask = x_vals > 0
-                        x_vals, y_vals = np.log10(x_vals[mask]), y_vals[mask]
-                    if log_y:
-                        mask = y_vals > 0
-                        x_vals, y_vals = x_vals[mask], np.log10(y_vals[mask])
-
-                    _BLDG_COLOR_MAP = {
-                        "A": "#1f77b4",
-                        "B": "#d62728",
-                        "C": "#2ca02c",
-                        "D": "#9467bd",
-                    }
-                    plot_df = corr_df.copy()
-                    if color_by == "building" and "building" in plot_df.columns:
-                        unique_bldgs = plot_df["building"].astype(str).unique()
-                        color_map = {
-                            b: _BLDG_COLOR_MAP.get(b, "#aaaaaa")
-                            for b in unique_bldgs
-                        }
-                    else:
-                        color_map = None
-                    category_orders = (
-                        {color_by: sorted(plot_df[color_by].astype(str).unique())}
-                        if color_by in plot_df.columns else None
-                    )
-                    fig = px.scatter(
-                        plot_df,
-                        x=x_col,
-                        y=y_col,
-                        color=color_by if color_by in corr_df.columns else None,
-                        hover_data=hover_extra,
-                        log_x=log_x,
-                        log_y=log_y,
-                        title=f"{x_col} vs {y_col}",
-                        color_discrete_map=color_map,
-                        category_orders=category_orders,
-                    )
-
-                    if len(x_vals) >= 2:
-                        slope, intercept, r_value, p_value, std_err = stats.linregress(x_vals, y_vals)
-
-                        # Build trendline points in original (non-log) space for plotly
-                        x_line = np.linspace(x_vals.min(), x_vals.max(), 200)
-                        y_line = slope * x_line + intercept
-                        if log_x:
-                            x_line = 10 ** x_line
-                        if log_y:
-                            y_line = 10 ** y_line
-
-                        fig.add_scatter(
-                            x=x_line, y=y_line,
-                            mode="lines",
-                            name="Trendline",
-                            line=dict(color="red", width=2, dash="dash"),
-                        )
-
-                        x_label = f"log10({x_col})" if log_x else x_col
-                        y_label = f"log10({y_col})" if log_y else y_col
-                        sign = "+" if intercept >= 0 else "-"
-                        eq_text = f"y = {slope:.4f}x {sign} {abs(intercept):.4f}"
-                        fig.add_annotation(
-                            xref="paper", yref="paper",
-                            x=0.01, y=0.99,
-                            text=eq_text,
-                            showarrow=False,
-                            align="left",
-                            bgcolor="rgba(255,255,255,0.8)",
-                            bordercolor="red",
-                            borderwidth=1,
-                            font=dict(size=12, color="red"),
-                        )
-                        reg_row = pd.DataFrame([{
-                            "equation":   f"{y_label} = {slope:.4f} × {x_label} + {intercept:.4f}",
-                            "slope":      round(slope, 6),
-                            "intercept":  round(intercept, 6),
-                            "R²":         round(r_value ** 2, 6),
-                            "p-value":    f"{p_value:.4e}",
-                            "std_err":    round(std_err, 6),
-                            "n":          len(x_vals),
-                        }])
-
-                    fig.update_layout(height=550)
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    if len(x_vals) >= 2:
-                        st.dataframe(reg_row, hide_index=True, width="stretch")
-
-                        # Interpretation
-                        r2 = r_value ** 2
-                        direction = "positive" if slope > 0 else "negative"
-                        direction_meaning = (
-                            f"As **{x_col}** increases, **{y_col}** tends to **increase**."
-                            if slope > 0 else
-                            f"As **{x_col}** increases, **{y_col}** tends to **decrease**."
-                        )
-
-                        if r2 >= 0.7:
-                            strength = "very strong"
-                        elif r2 >= 0.5:
-                            strength = "strong"
-                        elif r2 >= 0.3:
-                            strength = "moderate"
-                        elif r2 >= 0.1:
-                            strength = "weak"
-                        else:
-                            strength = "very weak"
-
-                        if p_value < 0.001:
-                            sig_text = "highly statistically significant (p < 0.001)"
-                        elif p_value < 0.01:
-                            sig_text = "very statistically significant (p < 0.01)"
-                        elif p_value < 0.05:
-                            sig_text = "statistically significant (p < 0.05)"
-                        else:
-                            sig_text = "**not statistically significant** (p ≥ 0.05) — treat this result with caution"
-
-                        st.markdown(f"""
-**Interpretation**
-
-There is a **{strength} {direction} linear relationship** between {x_col} and {y_col} (R² = {r2:.4f}). {direction_meaning}
-
-The model explains **{r2*100:.1f}%** of the variance in {y_col}. The relationship is {sig_text}.
-
-For every 1-unit increase in {x_col}, {y_col} changes by **{slope:.4f}** on average.
-""")
+        render_corr_tab(cur_df)
 
     # ---------------- Billing ↔ Meter reconciliation ─────────────────────────
-    _sheet_names = get_sheet_names(file_name, file_map[file_name])
-    if BILLING_SHEET_NAME in _sheet_names:
-        with st.expander("Billing ↔ Meter Reconciliation", expanded=False):
-            st.caption(
-                "Compares the billing sheet (수도광열비 부과 내역) against meter readings. "
-                "Flags tenants present in one source but missing in the other."
-            )
-            try:
-                _bill_df = read_billing_sheet(file_name, file_map[file_name], BILLING_SHEET_NAME)
-                _bill_key = (
-                    _bill_df[["brand", "building"]]
-                    .dropna(subset=["brand"])
-                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
-                            building=lambda d: d["building"].astype(str).str.strip())
-                    .drop_duplicates()
-                )
-                _meter_key = (
-                    cur_df[["brand", "building"]]
-                    .assign(brand=lambda d: d["brand"].astype(str).str.strip(),
-                            building=lambda d: d["building"].astype(str).str.strip())
-                    .drop_duplicates()
-                )
-                _bill_set  = set(zip(_bill_key["brand"],  _bill_key["building"]))
-                _meter_set = set(zip(_meter_key["brand"], _meter_key["building"]))
+    render_reconciliation(file_name, file_map, cur_df, present, _sheet_names)
 
-                _billed_not_metered = sorted(_bill_set  - _meter_set)
-                _metered_not_billed = sorted(_meter_set - _bill_set)
-
-                _rc1, _rc2 = st.columns(2)
-                with _rc1:
-                    st.markdown(f"**Billed but no meter reading** — {len(_billed_not_metered)}")
-                    if _billed_not_metered:
-                        st.dataframe(
-                            pd.DataFrame(_billed_not_metered, columns=["Brand", "Building"]),
-                            hide_index=True, use_container_width=True,
-                        )
-                    else:
-                        st.success("All billed tenants have meter readings.")
-                with _rc2:
-                    st.markdown(f"**Metered but not billed** — {len(_metered_not_billed)}")
-                    if _metered_not_billed:
-                        st.dataframe(
-                            pd.DataFrame(_metered_not_billed, columns=["Brand", "Building"]),
-                            hide_index=True, use_container_width=True,
-                        )
-                    else:
-                        st.success("All metered tenants appear on the billing sheet.")
-
-                # Shared tenants: compare billed total vs any zero-usage flag
-                _shared = _bill_set & _meter_set
-                _zero_billed = []
-                for _br, _bl in sorted(_shared):
-                    _brow = _bill_df[
-                        (_bill_df["brand"].astype(str).str.strip() == _br) &
-                        (_bill_df["building"].astype(str).str.strip() == _bl)
-                    ]
-                    _mrow = cur_df[
-                        (cur_df["brand"].astype(str).str.strip() == _br) &
-                        (cur_df["building"].astype(str).str.strip() == _bl)
-                    ]
-                    if _brow.empty or _mrow.empty:
-                        continue
-                    _total = to_numeric_series(_brow["total"].iloc[[0]]).iloc[0] if "total" in _brow.columns else float("nan")
-                    _has_usage = any(
-                        not pd.isna(to_numeric_series(_mrow[f"{_px}_current"]).iloc[0])
-                        and to_numeric_series(_mrow[f"{_px}_current"]).iloc[0] > 0
-                        for _px in present
-                        if f"{_px}_current" in _mrow.columns
-                    )
-                    if not pd.isna(_total) and _total > 0 and not _has_usage:
-                        _zero_billed.append({"Brand": _br, "Building": _bl, "Billed Total (₩)": f"{int(_total):,}"})
-
-                if _zero_billed:
-                    st.markdown(f"**Billed non-zero but zero meter usage** — {len(_zero_billed)}")
-                    st.dataframe(pd.DataFrame(_zero_billed), hide_index=True, use_container_width=True)
-
-            except Exception as _e:
-                st.warning(f"Reconciliation failed: {_e}")
