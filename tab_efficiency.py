@@ -23,7 +23,7 @@ _BLDG_COLOR_MAP = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd
 
 
 def _bar(df: pd.DataFrame, x: str, y: str, title: str, y_label: str,
-         split_by_building: bool = True) -> None:
+         split_by_building: bool = True, key: str | None = None) -> None:
     fig = px.bar(
         df, x=x, y=y,
         color="building" if split_by_building and "building" in df.columns else None,
@@ -33,7 +33,18 @@ def _bar(df: pd.DataFrame, x: str, y: str, title: str, y_label: str,
     )
     fig.update_layout(height=420, xaxis_tickangle=-45, showlegend=True, margin=dict(t=50, b=80))
     fig.update_traces(marker_line_width=0.5, marker_line_color="white")
-    st.plotly_chart(fig, use_container_width=True)
+    _chart_key = key or f"eff_bar_{title[:30].replace(' ', '_')}"
+    _ev = st.plotly_chart(fig, use_container_width=True, key=_chart_key, on_select="rerun")
+    _sel = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
+    if _sel:
+        _pt = _sel[0]
+        _brand = _pt.get("x") or _pt.get("customdata") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = df[df[x] == _brand] if _brand and x in df.columns else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
 def _render_single_utility(cur_df: pd.DataFrame, avail: dict[str, str],
@@ -66,7 +77,8 @@ def _render_single_utility(cur_df: pd.DataFrame, avail: dict[str, str],
     unit = _UNIT_LABELS.get(sel, "unit/m²")
     _bar(eff_df, x="brand", y=per_m2_col,
          title=f"{_UTIL_LABELS.get(sel, sel)} — Usage per m² ({unit})",
-         y_label=unit, split_by_building=split_by_building)
+         y_label=unit, split_by_building=split_by_building,
+         key=f"eff_single_{sel}_per_m2")
 
     eff_view = add_display_index(eff_df)
     st.dataframe(eff_view, hide_index=True, use_container_width=True)
@@ -114,7 +126,8 @@ def _render_ehp(cur_df: pd.DataFrame, ehp_annual: pd.DataFrame,
     st.caption(f"Based on {latest} annual EHP usage (kWh) across all meters per brand.")
     _bar(ehp_merged, x="brand", y="ehp_per_m2",
          title=f"EHP Usage per m² — {latest} (kWh/m²)",
-         y_label="kWh/m²", split_by_building=split_by_building)
+         y_label="kWh/m²", split_by_building=split_by_building,
+         key=f"eff_ehp_per_m2_{latest}")
 
     ehp_view = add_display_index(ehp_merged[["brand", "building", "size_m2", "ehp_kwh", "ehp_per_m2"]])
     st.dataframe(ehp_view, hide_index=True, use_container_width=True)
@@ -163,7 +176,8 @@ def _render_combined(cur_df: pd.DataFrame, avail: dict[str, str], ehp_merged: pd
 
     _bar(combined, x="brand", y="efficiency_score",
          title="Combined Efficiency Score (higher = more consumption per m²)",
-         y_label="Score [0–1]", split_by_building=split_by_building)
+         y_label="Score [0–1]", split_by_building=split_by_building,
+         key="eff_combined_score")
 
     combined_view = add_display_index(combined.drop(columns=["Rank"]))
     st.dataframe(combined_view, hide_index=True, use_container_width=True)

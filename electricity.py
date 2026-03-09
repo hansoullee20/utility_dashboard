@@ -121,7 +121,19 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
             yaxis=dict(tickfont=dict(size=10), categoryorder="total ascending"),
         )
-        st.plotly_chart(fig_r, use_container_width=True, key="elec_rank_chart")
+        _ev_rank = st.plotly_chart(fig_r, use_container_width=True, key="elec_rank_chart", on_select="rerun")
+        _sel_rank = _ev_rank.selection.points if _ev_rank and hasattr(_ev_rank, "selection") else []
+        if _sel_rank:
+            _pt = _sel_rank[0]
+            _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            if isinstance(_brand, str):
+                _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+            _fdf = _df_r[_df_r["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _s = _df_r[_col]
         sc = st.columns(4)
@@ -157,7 +169,15 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
                 margin=dict(l=10, r=10, t=50, b=30),
             )
-            st.plotly_chart(fig_bku, use_container_width=True, key="elec_bld_kwh")
+            _ev_bld_kwh = st.plotly_chart(fig_bku, use_container_width=True, key="elec_bld_kwh", on_select="rerun")
+            _sel_bld_kwh = _ev_bld_kwh.selection.points if _ev_bld_kwh and hasattr(_ev_bld_kwh, "selection") else []
+            if _sel_bld_kwh:
+                _pt = _sel_bld_kwh[0]
+                _bld = str(_pt.get("x") or "").replace("동", "")
+                _fdf = _bgrp[_bgrp["building"] == _bld] if _bld else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_bld}동**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         with _gc2:
             fig_bkt = go.Figure()
@@ -174,7 +194,15 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
                 margin=dict(l=10, r=10, t=50, b=30),
             )
-            st.plotly_chart(fig_bkt, use_container_width=True, key="elec_bld_total")
+            _ev_bld_total = st.plotly_chart(fig_bkt, use_container_width=True, key="elec_bld_total", on_select="rerun")
+            _sel_bld_total = _ev_bld_total.selection.points if _ev_bld_total and hasattr(_ev_bld_total, "selection") else []
+            if _sel_bld_total:
+                _pt = _sel_bld_total[0]
+                _bld = str(_pt.get("x") or "").replace("동", "")
+                _fdf = _bgrp[_bgrp["building"] == _bld] if _bld else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_bld}동**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         # Stacked KWH by source per building
         fig_bsrc = go.Figure()
@@ -197,7 +225,15 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             legend=dict(orientation="h", y=1.12),
             margin=dict(l=10, r=10, t=70, b=30),
         )
-        st.plotly_chart(fig_bsrc, use_container_width=True, key="elec_bld_src")
+        _ev_bld_src = st.plotly_chart(fig_bsrc, use_container_width=True, key="elec_bld_src", on_select="rerun")
+        _sel_bld_src = _ev_bld_src.selection.points if _ev_bld_src and hasattr(_ev_bld_src, "selection") else []
+        if _sel_bld_src:
+            _pt = _sel_bld_src[0]
+            _bld = str(_pt.get("x") or "").replace("동", "")
+            _fdf = _bgrp[_bgrp["building"] == _bld] if _bld else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_bld}동**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _bgrp_disp = _bgrp.copy()
         _bgrp_disp["총KWH"]  = _bgrp_disp["총KWH"].apply(lambda v: f"{int(v):,} KWH")
@@ -243,7 +279,19 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
             legend=dict(orientation="h", y=1.06),
         )
-        st.plotly_chart(fig_us, use_container_width=True, key="elec_usage_stacked")
+        _ev_usage = st.plotly_chart(fig_us, use_container_width=True, key="elec_usage_stacked", on_select="rerun")
+        _sel_usage = _ev_usage.selection.points if _ev_usage and hasattr(_ev_usage, "selection") else []
+        if _sel_usage:
+            _pt = _sel_usage[0]
+            _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            if isinstance(_brand, str):
+                _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+            _fdf = _top[_top["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         # EHP vs 비-EHP comparison
         st.divider()
@@ -288,7 +336,15 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 fig_cmp.update_layout(title=f"{label} 평균 비교", height=280, plot_bgcolor="white",
                                       yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                       showlegend=False, margin=dict(l=10,r=10,t=50,b=30))
-                st.plotly_chart(fig_cmp, use_container_width=True, key=f"elec_ehp_cmp_{col}")
+                _ev_cmp = st.plotly_chart(fig_cmp, use_container_width=True, key=f"elec_ehp_cmp_{col}", on_select="rerun")
+                _sel_cmp = _ev_cmp.selection.points if _ev_cmp and hasattr(_ev_cmp, "selection") else []
+                if _sel_cmp:
+                    _pt = _sel_cmp[0]
+                    _grp_lbl = str(_pt.get("x") or "")
+                    _src_df = df_ehp if "있음" in _grp_lbl else df_noehp if "없음" in _grp_lbl else pd.DataFrame()
+                    if not _src_df.empty:
+                        st.caption(f"선택됨: **{_grp_lbl}**")
+                        st.dataframe(_src_df[["brand", "building", col]].reset_index(drop=True), hide_index=True, use_container_width=True)
 
     # ═══════════════════════════ 요금 구성 ════════════════════════════════════
     with tab_fee:
@@ -367,7 +423,17 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                         plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                         margin=dict(l=10,r=130,t=40,b=40),
                     )
-                    st.plotly_chart(fig_pf, use_container_width=True, key="elec_pfactor_chart")
+                    _ev_pf = st.plotly_chart(fig_pf, use_container_width=True, key="elec_pfactor_chart", on_select="rerun")
+                    _sel_pf = _ev_pf.selection.points if _ev_pf and hasattr(_ev_pf, "selection") else []
+                    if _sel_pf:
+                        _pt = _sel_pf[0]
+                        _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+                        if isinstance(_brand, (list, tuple)):
+                            _brand = _brand[0]
+                        _fdf = df_pf[df_pf["brand"].str.contains(str(_brand)[:20], regex=False)] if _brand else pd.DataFrame()
+                        if not _fdf.empty:
+                            st.caption(f"선택됨: **{_brand}**")
+                            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
                     _disc = df_pf[df_pf["역률요금_합계"] < 0]
                     _surch = df_pf[df_pf["역률요금_합계"] > 0]
                     pc = st.columns(3)
@@ -399,7 +465,19 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
                 legend=dict(orientation="h", y=1.02),
             )
-            st.plotly_chart(fig_fs, use_container_width=True, key="elec_fee_stacked")
+            _ev_fee = st.plotly_chart(fig_fs, use_container_width=True, key="elec_fee_stacked", on_select="rerun")
+            _sel_fee = _ev_fee.selection.points if _ev_fee and hasattr(_ev_fee, "selection") else []
+            if _sel_fee:
+                _pt = _sel_fee[0]
+                _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                if isinstance(_brand, str):
+                    _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+                _fdf = _top2[_top2["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
     # ═══════════════════════════ 면적당 비용 ══════════════════════════════════
     with tab_fair:
@@ -444,7 +522,19 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
             margin=dict(l=10, r=150, t=40, b=40),
         )
-        st.plotly_chart(fig_f, use_container_width=True, key="elec_fair_chart")
+        _ev_fair = st.plotly_chart(fig_f, use_container_width=True, key="elec_fair_chart", on_select="rerun")
+        _sel_fair = _ev_fair.selection.points if _ev_fair and hasattr(_ev_fair, "selection") else []
+        if _sel_fair:
+            _pt = _sel_fair[0]
+            _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            if isinstance(_brand, str):
+                _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+            _fdf = _df_f[_df_f["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         fc = st.columns(4)
         fc[0].metric("중앙값",    f"{_sf.median():,.0f} 원/{_u}")
@@ -483,7 +573,17 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             plot_bgcolor="white",
             yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
         )
-        st.plotly_chart(fig_hm, use_container_width=True, key="elec_anom_heatmap")
+        _ev_heatmap = st.plotly_chart(fig_hm, use_container_width=True, key="elec_anom_heatmap", on_select="rerun")
+        _sel_heatmap = _ev_heatmap.selection.points if _ev_heatmap and hasattr(_ev_heatmap, "selection") else []
+        if _sel_heatmap:
+            _pt = _sel_heatmap[0]
+            _brand = _pt.get("y") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            _fdf = df[df["brand"] == _brand] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _flagged_idx = _flags[_flags["플래그 수"] > 0].index
         if len(_flagged_idx) > 0:

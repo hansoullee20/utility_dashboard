@@ -24,7 +24,7 @@ _Z_THRESH = 2.0   # |z| above this → anomaly flag
 
 
 def _bar(df: pd.DataFrame, x: str, y: str, title: str, y_label: str,
-         color_col: str | None = "building") -> None:
+         color_col: str | None = "building", key: str | None = None):
     fig = px.bar(
         df, x=x, y=y,
         color=color_col if color_col and color_col in df.columns else None,
@@ -35,7 +35,18 @@ def _bar(df: pd.DataFrame, x: str, y: str, title: str, y_label: str,
     fig.update_layout(height=420, xaxis_tickangle=-45, showlegend=True,
                       margin=dict(t=50, b=80))
     fig.update_traces(marker_line_width=0.5, marker_line_color="white")
-    st.plotly_chart(fig, use_container_width=True)
+    _chart_key = key or f"cross_bar_{title[:30].replace(' ', '_')}"
+    _ev = st.plotly_chart(fig, use_container_width=True, key=_chart_key, on_select="rerun")
+    _sel = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
+    if _sel:
+        _pt = _sel[0]
+        _brand = _pt.get("x") or _pt.get("customdata") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = df[df[x] == _brand] if _brand and x in df.columns else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
 def _flag_anomalies(df: pd.DataFrame, z_col: str, label_col: str) -> pd.DataFrame:
@@ -77,7 +88,8 @@ def _render_unit_costs(unit_df: pd.DataFrame, split_by_building: bool = True) ->
 
             _bar(plot_df, x="brand", y=val_col,
                  title=f"{label} Unit Cost ({unit})", y_label=unit,
-                 color_col="building" if split_by_building else None)
+                 color_col="building" if split_by_building else None,
+                 key=f"cross_unit_{val_col}")
 
             # Annotate anomalies
             anomalies = _flag_anomalies(plot_df, z_col, "brand")
@@ -123,7 +135,17 @@ def _render_elec_breakdown(elec_br: pd.DataFrame, split_by_building: bool = True
         barmode="group",
     )
     fig.update_layout(height=420, xaxis_tickangle=-45, margin=dict(t=50, b=80))
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_elec_br = st.plotly_chart(fig, use_container_width=True, key="cross_elec_breakdown_stacked", on_select="rerun")
+    _sel_elec_br = _ev_elec_br.selection.points if _ev_elec_br and hasattr(_ev_elec_br, "selection") else []
+    if _sel_elec_br:
+        _pt = _sel_elec_br[0]
+        _brand = _pt.get("x") or _pt.get("customdata") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = elec_br[elec_br["brand"] == _brand] if _brand else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
     # HVAC intensity bar
     if "hvac_intensity" in elec_br.columns:
@@ -131,7 +153,8 @@ def _render_elec_breakdown(elec_br: pd.DataFrame, split_by_building: bool = True
         _bar(intensity_df, x="brand", y="hvac_intensity",
              title="HVAC Intensity (kWh/m²)",
              y_label="kWh/m²",
-             color_col="building" if split_by_building else None)
+             color_col="building" if split_by_building else None,
+             key="cross_hvac_intensity")
 
     # Electricity unit cost from elec sheet
     if "elect_unit_cost" in elec_br.columns:
@@ -139,7 +162,8 @@ def _render_elec_breakdown(elec_br: pd.DataFrame, split_by_building: bool = True
         _bar(uc_df, x="brand", y="elect_unit_cost",
              title="Electricity Unit Cost from Detail Sheet (₩/kWh)",
              y_label="₩/kWh",
-             color_col="building" if split_by_building else None)
+             color_col="building" if split_by_building else None,
+             key="cross_elect_unit_cost_detail")
 
     with st.expander(t("cross_elec_full"), expanded=False):
         show_cols = [c for c in [

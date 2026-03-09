@@ -43,7 +43,16 @@ def _scatter_with_trendline(df_sub, x_col, y_col, color_col, title, xlab, ylab, 
         yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
         margin=dict(l=20, r=20, t=50, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True, key=key)
+    _ev_sc = st.plotly_chart(fig, use_container_width=True, key=key, on_select="rerun")
+    _sel_sc = _ev_sc.selection.points if _ev_sc and hasattr(_ev_sc, "selection") else []
+    if _sel_sc:
+        _pt_sc = _sel_sc[0]
+        _cd_sc = _pt_sc.get("customdata", [])
+        _brand_sc = _cd_sc[0] if isinstance(_cd_sc, list) and _cd_sc else str(_cd_sc) if _cd_sc else _pt_sc.get("text") or ""
+        _fdf_sc = df_sub[df_sub["brand"] == _brand_sc] if _brand_sc else pd.DataFrame()
+        if not _fdf_sc.empty:
+            st.caption(f"선택됨: **{_brand_sc}**")
+            st.dataframe(_fdf_sc.reset_index(drop=True), hide_index=True, use_container_width=True)
     if len(xa) >= 2:
         r2 = np.corrcoef(xa, ya)[0, 1] ** 2
         st.caption(f"R² = {r2:.3f}  |  면적으로 {y_col}의 {r2*100:.1f}%를 설명")
@@ -128,7 +137,19 @@ def render_water_view(df: pd.DataFrame) -> None:
             plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
             yaxis=dict(tickfont=dict(size=10), categoryorder="total ascending"),
         )
-        st.plotly_chart(fig_r, use_container_width=True, key="water_rank_chart")
+        _ev_rank = st.plotly_chart(fig_r, use_container_width=True, key="water_rank_chart", on_select="rerun")
+        _sel_rank = _ev_rank.selection.points if _ev_rank and hasattr(_ev_rank, "selection") else []
+        if _sel_rank:
+            _pt = _sel_rank[0]
+            _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            if isinstance(_brand, str):
+                _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+            _fdf = df[df["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _s = df[_col]
         sc = st.columns(5)
@@ -159,7 +180,19 @@ def render_water_view(df: pd.DataFrame) -> None:
                 plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
                 legend=dict(orientation="h", y=1.02),
             )
-            st.plotly_chart(fig_c, use_container_width=True, key="water_comp_stacked")
+            _ev_comp = st.plotly_chart(fig_c, use_container_width=True, key="water_comp_stacked", on_select="rerun")
+            _sel_comp = _ev_comp.selection.points if _ev_comp and hasattr(_ev_comp, "selection") else []
+            if _sel_comp:
+                _pt = _sel_comp[0]
+                _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                if isinstance(_brand, str):
+                    _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+                _fdf = df[df["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         else:
             _dvals = {
                 "상수도 전용": df["water_excl"].sum(), "하수도 전용": df["sewage_excl"].sum(),
@@ -214,7 +247,19 @@ def render_water_view(df: pd.DataFrame) -> None:
             plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
             margin=dict(l=10, r=150, t=40, b=40),
         )
-        st.plotly_chart(fig_f, use_container_width=True, key="water_fair_chart")
+        _ev_fair = st.plotly_chart(fig_f, use_container_width=True, key="water_fair_chart", on_select="rerun")
+        _sel_fair = _ev_fair.selection.points if _ev_fair and hasattr(_ev_fair, "selection") else []
+        if _sel_fair:
+            _pt = _sel_fair[0]
+            _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            if isinstance(_brand, str):
+                _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+            _fdf = _df_f[_df_f["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         fc = st.columns(4)
         fc[0].metric("중앙값",    f"{_sf.median():,.0f} 원/{_u_toggle}")
         fc[1].metric("평균",      f"{_sf.mean():,.0f} 원/{_u_toggle}")
@@ -252,7 +297,15 @@ def render_water_view(df: pd.DataFrame) -> None:
             fig_bu.update_layout(title="건물별 총 사용량 (m³)", height=300, plot_bgcolor="white",
                                  yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                  margin=dict(l=10,r=10,t=50,b=30))
-            st.plotly_chart(fig_bu, use_container_width=True, key="water_bld_usage")
+            _ev_bld_usage = st.plotly_chart(fig_bu, use_container_width=True, key="water_bld_usage", on_select="rerun")
+            _sel_bld_usage = _ev_bld_usage.selection.points if _ev_bld_usage and hasattr(_ev_bld_usage, "selection") else []
+            if _sel_bld_usage:
+                _pt = _sel_bld_usage[0]
+                _bld = str(_pt.get("x") or "").replace("동", "")
+                _fdf = _bld_grp[_bld_grp["building"] == _bld] if _bld else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_bld}동**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         with _bc2:
             fig_bt = go.Figure()
             for _, row in _bld_grp.iterrows():
@@ -265,7 +318,15 @@ def render_water_view(df: pd.DataFrame) -> None:
             fig_bt.update_layout(title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="white",
                                  yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                  margin=dict(l=10,r=10,t=50,b=30))
-            st.plotly_chart(fig_bt, use_container_width=True, key="water_bld_total")
+            _ev_bld_total = st.plotly_chart(fig_bt, use_container_width=True, key="water_bld_total", on_select="rerun")
+            _sel_bld_total = _ev_bld_total.selection.points if _ev_bld_total and hasattr(_ev_bld_total, "selection") else []
+            if _sel_bld_total:
+                _pt = _sel_bld_total[0]
+                _bld = str(_pt.get("x") or "").replace("동", "")
+                _fdf = _bld_grp[_bld_grp["building"] == _bld] if _bld else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_bld}동**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         fig_bcomp = go.Figure()
         for label, col, clr in _COMP_COLS:
@@ -279,7 +340,15 @@ def render_water_view(df: pd.DataFrame) -> None:
         fig_bcomp.update_layout(barmode="stack", title="건물별 요금 구성", height=320,
                                 plot_bgcolor="white", yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                 legend=dict(orientation="h",y=1.12), margin=dict(l=10,r=10,t=70,b=30))
-        st.plotly_chart(fig_bcomp, use_container_width=True, key="water_bld_comp")
+        _ev_bld_comp = st.plotly_chart(fig_bcomp, use_container_width=True, key="water_bld_comp", on_select="rerun")
+        _sel_bld_comp = _ev_bld_comp.selection.points if _ev_bld_comp and hasattr(_ev_bld_comp, "selection") else []
+        if _sel_bld_comp:
+            _pt = _sel_bld_comp[0]
+            _bld = str(_pt.get("x") or "").replace("동", "")
+            _fdf = _bld_grp[_bld_grp["building"] == _bld] if _bld else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_bld}동**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _bld_disp = _bld_grp.copy()
         _bld_disp["총사용량"]      = _bld_disp["총사용량"].apply(lambda v: f"{int(v):,} m³")
@@ -339,7 +408,19 @@ def render_water_view(df: pd.DataFrame) -> None:
                 legend=dict(orientation="h",y=1.02,x=1,xanchor="right"),
                 margin=dict(l=10,r=120,t=40,b=40),
             )
-            st.plotly_chart(fig_u, use_container_width=True, key="water_usage_rank")
+            _ev_usage = st.plotly_chart(fig_u, use_container_width=True, key="water_usage_rank", on_select="rerun")
+            _sel_usage = _ev_usage.selection.points if _ev_usage and hasattr(_ev_usage, "selection") else []
+            if _sel_usage:
+                _pt = _sel_usage[0]
+                _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                if isinstance(_brand, str):
+                    _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+                _fdf = _df_u[_df_u["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
             uc = st.columns(4)
             uc[0].metric("총 사용량",   f"{int(df_m['usage_m3'].sum()):,} m³")
             uc[1].metric("평균 사용량", f"{df_m['usage_m3'].mean():.0f} m³")
@@ -385,7 +466,17 @@ def render_water_view(df: pd.DataFrame) -> None:
                 legend=dict(orientation="h",y=1.02,x=1,xanchor="right"),
                 margin=dict(l=10,r=130,t=40,b=40),
             )
-            st.plotly_chart(fig_cpu, use_container_width=True, key="water_cpu_chart")
+            _ev_cpu = st.plotly_chart(fig_cpu, use_container_width=True, key="water_cpu_chart", on_select="rerun")
+            _sel_cpu = _ev_cpu.selection.points if _ev_cpu and hasattr(_ev_cpu, "selection") else []
+            if _sel_cpu:
+                _pt = _sel_cpu[0]
+                _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                _fdf = _df_cpu[_df_cpu["brand"].str.contains(str(_brand)[:20], regex=False)] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
             _outliers = df_m[df_m["cost_per_m3"] > _cpu_up] if _cpu_up < float("inf") else pd.DataFrame()
             if not _outliers.empty:
                 st.warning(f"단가 이탈 브랜드 {len(_outliers)}개 (IQR 상한 {_cpu_up:,.0f}원/m³ 초과)")
@@ -452,7 +543,17 @@ def render_water_view(df: pd.DataFrame) -> None:
             height=max(300, len(_hm_brands)*22+80), margin=dict(l=10,r=20,t=40,b=40),
             plot_bgcolor="white", yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
         )
-        st.plotly_chart(fig_hm, use_container_width=True, key="water_anom_heatmap")
+        _ev_heatmap = st.plotly_chart(fig_hm, use_container_width=True, key="water_anom_heatmap", on_select="rerun")
+        _sel_heatmap = _ev_heatmap.selection.points if _ev_heatmap and hasattr(_ev_heatmap, "selection") else []
+        if _sel_heatmap:
+            _pt = _sel_heatmap[0]
+            _brand = _pt.get("y") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            _fdf = df[df["brand"] == _brand] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _fi = _flags[_flags["플래그 수"] > 0].index
         if len(_fi) > 0:

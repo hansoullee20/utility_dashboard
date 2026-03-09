@@ -115,7 +115,17 @@ def _render_composite_bar(df: pd.DataFrame, n: int, split_by_building: bool) -> 
         margin=dict(l=10, r=170, t=50, b=40),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_comp_bar = st.plotly_chart(fig, use_container_width=True, key="anom_composite_bar", on_select="rerun")
+    _sel_comp_bar = _ev_comp_bar.selection.points if _ev_comp_bar and hasattr(_ev_comp_bar, "selection") else []
+    if _sel_comp_bar:
+        _pt = _sel_comp_bar[0]
+        _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = df[df["brand"].str.contains(str(_brand)[:26], regex=False)] if _brand else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
 # ── Section: Anomaly heatmap ──────────────────────────────────────────────────
@@ -179,7 +189,17 @@ def _render_heatmap(df: pd.DataFrame, n: int) -> None:
         yaxis=dict(autorange="reversed"),
         margin=dict(l=10, r=100, t=120, b=20),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_heatmap = st.plotly_chart(fig, use_container_width=True, key="anom_signal_heatmap", on_select="rerun")
+    _sel_heatmap = _ev_heatmap.selection.points if _ev_heatmap and hasattr(_ev_heatmap, "selection") else []
+    if _sel_heatmap:
+        _pt = _sel_heatmap[0]
+        _brand = _pt.get("y") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = df[df["brand"].str.contains(str(_brand)[:26], regex=False)] if _brand else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
 # ── Tab: 소비 이상 ────────────────────────────────────────────────────────────
@@ -216,7 +236,17 @@ def _render_consumption_tab(df: pd.DataFrame, split_by_building: bool) -> None:
     )
     fig.update_layout(height=400, xaxis_tickangle=-45, plot_bgcolor="white",
                       margin=dict(t=55, b=80))
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_cons = st.plotly_chart(fig, use_container_width=True, key="anom_consumption_bar", on_select="rerun")
+    _sel_cons = _ev_cons.selection.points if _ev_cons and hasattr(_ev_cons, "selection") else []
+    if _sel_cons:
+        _pt = _sel_cons[0]
+        _brand = _pt.get("x") or _pt.get("customdata") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = plot_df[plot_df["brand"] == _brand] if _brand else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
     # Quadrant distribution + per-utility heatmap of all quad scores
     c1, c2 = st.columns([1, 2])
@@ -252,7 +282,17 @@ def _render_consumption_tab(df: pd.DataFrame, split_by_building: bool) -> None:
                 xaxis=dict(side="top"),
                 margin=dict(l=10, r=30, t=80, b=10),
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            _ev_mini_hm = st.plotly_chart(fig2, use_container_width=True, key="anom_mini_heatmap", on_select="rerun")
+            _sel_mini_hm = _ev_mini_hm.selection.points if _ev_mini_hm and hasattr(_ev_mini_hm, "selection") else []
+            if _sel_mini_hm:
+                _pt = _sel_mini_hm[0]
+                _brand = _pt.get("y") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                _fdf = df[df["brand"].str.contains(str(_brand)[:24], regex=False)] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
 # ── Tab: 비용 이상 ────────────────────────────────────────────────────────────
@@ -293,7 +333,17 @@ def _render_cost_tab(df: pd.DataFrame, split_by_building: bool) -> None:
                           annotation_text="−2σ", annotation_position="bottom right")
             fig.update_layout(height=400, xaxis_tickangle=-45, plot_bgcolor="white",
                               margin=dict(t=55, b=80))
-            st.plotly_chart(fig, use_container_width=True)
+            _ev_cost = st.plotly_chart(fig, use_container_width=True, key=f"anom_cost_{z_col}", on_select="rerun")
+            _sel_cost = _ev_cost.selection.points if _ev_cost and hasattr(_ev_cost, "selection") else []
+            if _sel_cost:
+                _pt = _sel_cost[0]
+                _brand = _pt.get("x") or _pt.get("customdata") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                _fdf = plot_df[plot_df["brand"] == _brand] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
             anomalies = plot_df[plot_df[z_col].abs() >= 2.0]
             if not anomalies.empty:
@@ -309,7 +359,7 @@ def _render_cost_tab(df: pd.DataFrame, split_by_building: bool) -> None:
                                      labels={val_col: unit})
                 fig_h.update_layout(height=280, margin=dict(t=45, b=40),
                                     plot_bgcolor="white")
-                st.plotly_chart(fig_h, use_container_width=True)
+                st.plotly_chart(fig_h, use_container_width=True, key=f"anom_hist_{val_col}")
 
 
 # ── Tab: HVAC 이상 ────────────────────────────────────────────────────────────
@@ -345,7 +395,17 @@ def _render_hvac_tab(df: pd.DataFrame, split_by_building: bool) -> None:
                       annotation_text=f"IQR 상한 {iqr_up:.1f}", annotation_position="top right")
     fig.update_layout(height=400, xaxis_tickangle=-45, plot_bgcolor="white",
                       margin=dict(t=55, b=80))
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_hvac = st.plotly_chart(fig, use_container_width=True, key="anom_hvac_intensity_bar", on_select="rerun")
+    _sel_hvac = _ev_hvac.selection.points if _ev_hvac and hasattr(_ev_hvac, "selection") else []
+    if _sel_hvac:
+        _pt = _sel_hvac[0]
+        _brand = _pt.get("x") or _pt.get("customdata") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = plot_df[plot_df["brand"] == _brand] if _brand else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
     # EHP / HVAC share group bar
     pct_cols = [c for c in ["ehp_pct", "hvac_pct", "base_pct"] if c in plot_df.columns]
@@ -360,7 +420,17 @@ def _render_hvac_tab(df: pd.DataFrame, split_by_building: bool) -> None:
                       labels={"brand": "브랜드"})
         fig2.update_layout(height=360, xaxis_tickangle=-45, plot_bgcolor="white",
                            margin=dict(t=50, b=80))
-        st.plotly_chart(fig2, use_container_width=True)
+        _ev_hvac2 = st.plotly_chart(fig2, use_container_width=True, key="anom_hvac_pct_bar", on_select="rerun")
+        _sel_hvac2 = _ev_hvac2.selection.points if _ev_hvac2 and hasattr(_ev_hvac2, "selection") else []
+        if _sel_hvac2:
+            _pt = _sel_hvac2[0]
+            _brand = _pt.get("x") or _pt.get("customdata") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            _fdf = plot_df[plot_df["brand"] == _brand] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
     # Scatter: HVAC intensity vs EHP share
     if "ehp_pct" in plot_df.columns:
@@ -376,7 +446,16 @@ def _render_hvac_tab(df: pd.DataFrame, split_by_building: bool) -> None:
         fig3.update_traces(textposition="top center", textfont_size=8,
                            marker=dict(size=8, opacity=0.75))
         fig3.update_layout(height=380, plot_bgcolor="white", margin=dict(t=50, b=40))
-        st.plotly_chart(fig3, use_container_width=True)
+        _ev_hvac3 = st.plotly_chart(fig3, use_container_width=True, key="anom_hvac_scatter", on_select="rerun")
+        _sel_hvac3 = _ev_hvac3.selection.points if _ev_hvac3 and hasattr(_ev_hvac3, "selection") else []
+        if _sel_hvac3:
+            _pt = _sel_hvac3[0]
+            _cd = _pt.get("customdata", [])
+            _brand = _cd[0] if isinstance(_cd, list) and _cd else str(_cd) if _cd else _pt.get("text") or ""
+            _fdf = plot_df[plot_df["brand"] == _brand] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
 # ── Tab: 일관성 검사 ──────────────────────────────────────────────────────────
@@ -408,7 +487,7 @@ def _render_consistency_tab(df: pd.DataFrame) -> None:
                      title="미계량 항목 수 분포",
                      color_discrete_sequence=["#DD8A00"])
         fig.update_layout(height=280, plot_bgcolor="white", margin=dict(t=45, b=30))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="anom_zero_dist_bar")
 
     if zero_df.empty:
         st.success("미계량 브랜드 없음 — 모든 유틸리티 정상 계량")

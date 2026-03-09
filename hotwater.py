@@ -85,7 +85,19 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
             plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
             yaxis=dict(tickfont=dict(size=10), categoryorder="total ascending"),
         )
-        st.plotly_chart(fig_r, use_container_width=True, key="hw_rank_chart")
+        _ev_rank = st.plotly_chart(fig_r, use_container_width=True, key="hw_rank_chart", on_select="rerun")
+        _sel_rank = _ev_rank.selection.points if _ev_rank and hasattr(_ev_rank, "selection") else []
+        if _sel_rank:
+            _pt = _sel_rank[0]
+            _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            if isinstance(_brand, str):
+                _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+            _fdf = df[df["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         _s = df[_col]
         sc = st.columns(4)
         sc[0].metric("합계",   f"{_s.sum():,.0f} {_unit}")
@@ -119,7 +131,19 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 legend=dict(orientation="h",y=1.02,x=1,xanchor="right"),
                 yaxis=dict(categoryorder="total ascending"),
             )
-            st.plotly_chart(fig_c, use_container_width=True, key="hw_comp_brand")
+            _ev_comp = st.plotly_chart(fig_c, use_container_width=True, key="hw_comp_brand", on_select="rerun")
+            _sel_comp = _ev_comp.selection.points if _ev_comp and hasattr(_ev_comp, "selection") else []
+            if _sel_comp:
+                _pt = _sel_comp[0]
+                _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                if isinstance(_brand, str):
+                    _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+                _fdf = _top[_top["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         elif _cview == "계량/미계량 현황":
             # Donut: metered vs unmetered count by building
@@ -150,7 +174,15 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 fig_met.update_layout(barmode="stack", title="건물별 계량 현황", height=340,
                                       plot_bgcolor="white", yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                       margin=dict(l=10,r=10,t=50,b=30))
-                st.plotly_chart(fig_met, use_container_width=True, key="hw_comp_bld_met")
+                _ev_bld_met = st.plotly_chart(fig_met, use_container_width=True, key="hw_comp_bld_met", on_select="rerun")
+                _sel_bld_met = _ev_bld_met.selection.points if _ev_bld_met and hasattr(_ev_bld_met, "selection") else []
+                if _sel_bld_met:
+                    _pt = _sel_bld_met[0]
+                    _bld = str(_pt.get("x") or "").replace("동", "")
+                    _fdf = df[df["building"] == _bld] if _bld else pd.DataFrame()
+                    if not _fdf.empty:
+                        st.caption(f"선택됨: **{_bld}동**")
+                        st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
             st.caption(f"미계량 브랜드 {n_unmet}개는 온수 사용요금이 없으며 (부과금액=0), 해당 시설이 없거나 해당 기간 미사용입니다.")
 
@@ -200,7 +232,19 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
             plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
             margin=dict(l=10,r=150,t=40,b=40),
         )
-        st.plotly_chart(fig_f, use_container_width=True, key="hw_fair_chart")
+        _ev_fair = st.plotly_chart(fig_f, use_container_width=True, key="hw_fair_chart", on_select="rerun")
+        _sel_fair = _ev_fair.selection.points if _ev_fair and hasattr(_ev_fair, "selection") else []
+        if _sel_fair:
+            _pt = _sel_fair[0]
+            _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            if isinstance(_brand, str):
+                _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+            _fdf = _df_f[_df_f["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         fc = st.columns(4)
         fc[0].metric("중앙값",    f"{_sf.median():,.0f} 원/{_u}")
         fc[1].metric("평균",      f"{_sf.mean():,.0f} 원/{_u}")
@@ -234,7 +278,15 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
             fig_bu.update_layout(title="건물별 총 사용량 (m³)", height=300, plot_bgcolor="white",
                                  yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                  margin=dict(l=10,r=10,t=50,b=30))
-            st.plotly_chart(fig_bu, use_container_width=True, key="hw_bld_usage")
+            _ev_bld_usage = st.plotly_chart(fig_bu, use_container_width=True, key="hw_bld_usage", on_select="rerun")
+            _sel_bld_usage = _ev_bld_usage.selection.points if _ev_bld_usage and hasattr(_ev_bld_usage, "selection") else []
+            if _sel_bld_usage:
+                _pt = _sel_bld_usage[0]
+                _bld = str(_pt.get("x") or "").replace("동", "")
+                _fdf = _bgrp[_bgrp["building"] == _bld] if _bld else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_bld}동**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         with _bc2:
             fig_bt = go.Figure()
             for _,row in _bgrp.iterrows():
@@ -247,7 +299,15 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
             fig_bt.update_layout(title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="white",
                                  yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                  margin=dict(l=10,r=10,t=50,b=30))
-            st.plotly_chart(fig_bt, use_container_width=True, key="hw_bld_total")
+            _ev_bld_total = st.plotly_chart(fig_bt, use_container_width=True, key="hw_bld_total", on_select="rerun")
+            _sel_bld_total = _ev_bld_total.selection.points if _ev_bld_total and hasattr(_ev_bld_total, "selection") else []
+            if _sel_bld_total:
+                _pt = _sel_bld_total[0]
+                _bld = str(_pt.get("x") or "").replace("동", "")
+                _fdf = _bgrp[_bgrp["building"] == _bld] if _bld else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_bld}동**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _bgrp_disp = _bgrp.copy()
         _bgrp_disp["총사용량"] = _bgrp_disp["총사용량"].apply(lambda v: f"{int(v):,} m³")
@@ -280,7 +340,15 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 fig_z.update_layout(title="건물별 무사용 브랜드 수", height=250,
                                     plot_bgcolor="white", yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                                     margin=dict(l=10,r=10,t=50,b=30))
-                st.plotly_chart(fig_z, use_container_width=True, key="hw_zero_bld")
+                _ev_zero = st.plotly_chart(fig_z, use_container_width=True, key="hw_zero_bld", on_select="rerun")
+                _sel_zero = _ev_zero.selection.points if _ev_zero and hasattr(_ev_zero, "selection") else []
+                if _sel_zero:
+                    _pt = _sel_zero[0]
+                    _bld = str(_pt.get("x") or "").replace("동", "")
+                    _fdf = df_zero[df_zero["building"] == _bld] if _bld else pd.DataFrame()
+                    if not _fdf.empty:
+                        st.caption(f"선택됨: **{_bld}동**")
+                        st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
             with zc2:
                 st.dataframe(
                     df_zero[["brand","building","floor","size_m2"]].sort_values(["building","size_m2"], ascending=[True,False]),
@@ -326,7 +394,19 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 legend=dict(orientation="h",y=1.02,x=1,xanchor="right"),
                 margin=dict(l=10,r=120,t=40,b=40),
             )
-            st.plotly_chart(fig_u, use_container_width=True, key="hw_usage_rank")
+            _ev_usage = st.plotly_chart(fig_u, use_container_width=True, key="hw_usage_rank", on_select="rerun")
+            _sel_usage = _ev_usage.selection.points if _ev_usage and hasattr(_ev_usage, "selection") else []
+            if _sel_usage:
+                _pt = _sel_usage[0]
+                _brand = _pt.get("y") or _pt.get("customdata") or _pt.get("x") or ""
+                if isinstance(_brand, (list, tuple)):
+                    _brand = _brand[0]
+                if isinstance(_brand, str):
+                    _brand = _brand.lstrip("🔴 ").lstrip("🟠 ").lstrip("🟢 ")
+                _fdf = _df_u[_df_u["brand"].str.contains(_brand[:20], regex=False)] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         else:
             fig_s = go.Figure()
             for bld in sorted(df_m["building"].unique()):
@@ -351,7 +431,16 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
                 margin=dict(l=20,r=20,t=40,b=40),
             )
-            st.plotly_chart(fig_s, use_container_width=True, key="hw_scatter")
+            _ev_scatter = st.plotly_chart(fig_s, use_container_width=True, key="hw_scatter", on_select="rerun")
+            _sel_scatter = _ev_scatter.selection.points if _ev_scatter and hasattr(_ev_scatter, "selection") else []
+            if _sel_scatter:
+                _pt = _sel_scatter[0]
+                _cd = _pt.get("customdata", [])
+                _brand = _cd[0] if isinstance(_cd, list) and _cd else str(_cd) if _cd else _pt.get("text") or ""
+                _fdf = df_m[df_m["brand"] == _brand] if _brand else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_brand}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
             st.caption(f"R² = {r2:.3f}  |  면적으로 사용량의 {r2*100:.1f}%를 설명")
 
     # ═══════════════════════════ 이상 탐지 ════════════════════════════════════
@@ -379,7 +468,17 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
             height=max(300,len(_hm_brands)*22+80), margin=dict(l=10,r=20,t=40,b=40),
             plot_bgcolor="white", yaxis=dict(autorange="reversed",tickfont=dict(size=10)),
         )
-        st.plotly_chart(fig_hm, use_container_width=True, key="hw_anom_heatmap")
+        _ev_heatmap = st.plotly_chart(fig_hm, use_container_width=True, key="hw_anom_heatmap", on_select="rerun")
+        _sel_heatmap = _ev_heatmap.selection.points if _ev_heatmap and hasattr(_ev_heatmap, "selection") else []
+        if _sel_heatmap:
+            _pt = _sel_heatmap[0]
+            _brand = _pt.get("y") or ""
+            if isinstance(_brand, (list, tuple)):
+                _brand = _brand[0]
+            _fdf = df[df["brand"] == _brand] if _brand else pd.DataFrame()
+            if not _fdf.empty:
+                st.caption(f"선택됨: **{_brand}**")
+                st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _fi = _flags[_flags["플래그 수"]>0].index
         if len(_fi)>0:
