@@ -175,16 +175,32 @@ def plot_hist_with_tails(
     }]), hide_index=True, use_container_width=True)
 
     if source_df is not None and val_col is not None:
-        # ── Outlier tables (top / bottom separated) ───────────────────────────
         _scaled = source_df[val_col] / val_scale
+
+        # ── Bin-click table (directly below stats) ────────────────────────────
+        pts = (event.selection.points if event and hasattr(event, "selection") else [])
+        if pts:
+            cd = pts[0].get("customdata", [])
+            if isinstance(cd, dict):
+                cd = list(cd.values())
+            if len(cd) >= 2:
+                x0, x1 = float(cd[0]), float(cd[1])
+                mask = (_scaled >= x0) & (_scaled <= x1)
+                bin_df = source_df[mask].copy()
+                cols = [c for c in (display_cols or []) if c in bin_df.columns]
+                if not cols:
+                    cols = [c for c in ["brand", "building"] if c in bin_df.columns] + [val_col]
+                st.markdown(f"**Bin {x0:.4g} – {x1:.4g}** — {len(bin_df)} business(es)")
+                st.dataframe(bin_df[cols].reset_index(drop=True),
+                             hide_index=True, use_container_width=True)
+
+        # ── Outlier tables (top / bottom separated) ───────────────────────────
         _top_mask = _scaled > hi
         _bot_mask = _scaled < lo
         _n_top = int(_top_mask.sum())
         _n_bot = int(_bot_mask.sum())
         _n_out = _n_top + _n_bot
 
-        # Column order: identity cols first (brand, floor-independent), then
-        # value col, then building/floor pushed to the back.
         _id_back  = [c for c in ["building", "floor"] if c in source_df.columns]
         _id_front = [c for c in (display_cols or []) if c in source_df.columns
                      and c not in _id_back and c != val_col]
@@ -210,22 +226,5 @@ def plot_hist_with_tails(
                     st.markdown(f"**🔻 하위 이상치** — {lo:.4g} 미만 ({_n_bot}건)")
                     st.dataframe(_bot_df[_out_cols].reset_index(drop=True),
                                  hide_index=True, use_container_width=True)
-
-        # ── Bin-click table ───────────────────────────────────────────────────
-        pts = (event.selection.points if event and hasattr(event, "selection") else [])
-        if pts:
-            cd = pts[0].get("customdata", [])
-            if isinstance(cd, dict):
-                cd = list(cd.values())
-            if len(cd) >= 2:
-                x0, x1 = float(cd[0]), float(cd[1])
-                mask = (_scaled >= x0) & (_scaled <= x1)
-                bin_df = source_df[mask].copy()
-                cols = [c for c in (display_cols or []) if c in bin_df.columns]
-                if not cols:
-                    cols = [c for c in ["brand", "building"] if c in bin_df.columns] + [val_col]
-                st.markdown(f"**Bin {x0:.4g} – {x1:.4g}** — {len(bin_df)} business(es)")
-                st.dataframe(bin_df[cols].reset_index(drop=True),
-                             hide_index=True, use_container_width=True)
 
     return stats
