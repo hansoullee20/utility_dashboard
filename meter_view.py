@@ -297,9 +297,9 @@ def render_meter_view(
     _CATEGORY_LABELS = {
         "water": t("cat_water"), "hwater": t("cat_hwater"),
         "elect": t("cat_elect"), "heat": t("cat_heat"),
-        "__all__": "전체 이상치",
+        "__all__": "🚨 전체 이상치",
     }
-    category_options = present_all + (["__all__"] if len(present_all) > 1 else [])
+    category_options = (["__all__"] if len(present_all) > 1 else []) + present_all
     has_gongshil_any = df["brand"].astype(str).str.contains("공실", na=False).any()
 
     def on_building_change():
@@ -526,6 +526,22 @@ def render_meter_view(
     _k3.metric(t("watch"),    _n_watch,     delta=None if _n_watch    == 0 else t("kpi_elevated"))
     _k4.metric(t("alert"),    _n_alert,     delta=None if _n_alert    == 0 else t("kpi_sharp_rise"))
     _k5.metric("🏚 공실 / ⚠ Data", f"{_n_vacancy} / {_n_backward}")
+
+    with st.expander("📖 위험 등급 기준 설명", expanded=False):
+        st.markdown(f"""
+각 등급은 **Tail {tail}%** 설정을 기준으로 전체 입점 업체의 변화량(MoM) 및 변화율(%)의 분포에서 결정됩니다.
+상위/하위 기준선 = 각 지표의 상위/하위 {tail}번째 백분위수.
+
+| 등급 | 조건 | 해석 |
+|------|------|------|
+| 🔴 **위험** | 변화량 **AND** 변화율 모두 상위 {tail}% 이상 | 사용량이 절대적으로도, 비율로도 급증 — 즉각 점검 필요 |
+| 🟠 **주의** | 변화량 또는 변화율 중 하나만 상위 {tail}% 이상 | 한 지표가 이상치 — 추가 모니터링 필요 |
+| 🟡 **경보** | 변화량 또는 변화율 중 하나가 하위 {tail}% 이하 (단, 둘 다 하위는 아님) | 사용량 급감 — 공실 전환·계량기 오류 의심 |
+| 🟢 **안정** | 변화량 **AND** 변화율 모두 하위 {tail}% 이하 | 사용량이 절대적으로도, 비율로도 크게 감소 |
+
+> 동일 업체가 복수의 유틸리티(수도·전기·열 등)에서 각각 다른 등급을 받을 수 있습니다.
+        """)
+
     st.divider()
 
     # ---------------- Summary Report download ─────────────────────────────────
