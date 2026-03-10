@@ -721,135 +721,67 @@ def render_meter_view(
     _ehp_sheet = EHP_OAC_SHEET_NAME if EHP_OAC_SHEET_NAME in _sheet_names else None
 
     brand_search_bar("meter")
-    tab_change, tab_pct, tab_overlap, tab_ranking, tab_corr = st.tabs([
-        t("tab_change"), t("tab_pct"),
-        t("tab_quadrant"), t("tab_ranking"), t("tab_corr"),
+    tab_data, tab_ranking, tab_corr = st.tabs([
+        t("tab_change"), t("tab_ranking"), t("tab_corr"),
     ])
 
-    # ---------------- Change tab ----------------
-    with tab_change:
-        st.subheader(f"{t('tab_change')} — {change_col}")
-        chg_label = f"{tail}%"
+    # ---------------- Data tab (Change + Pct merged) ----------------
+    with tab_data:
         _show_opts = ["All", "Top", "Bottom"]
         _show_labels = {"All": {"ko": "전체", "en": "All"}, "Top": {"ko": "상위", "en": "Top"}, "Bottom": {"ko": "하위", "en": "Bottom"}}
         _slang = st.session_state.get("lang", "ko")
-        chg_view_mode = st.radio(
-            t("show"), _show_opts, format_func=lambda x: _show_labels[x][_slang],
-            index=0, horizontal=True, key="chg_view_mode"
-        )
+        _dtype_labels = {"change": {"ko": "변화량", "en": "Change"}, "pct": {"ko": "변화율 %", "en": "Pct %"}}
 
-        chg_display_cols = cols_brand_then_category(cur_df, prefix, mode="change")
+        _dcol1, _dcol2 = st.columns([1, 2])
+        with _dcol1:
+            _dtype = st.radio(
+                "보기", ["change", "pct"],
+                format_func=lambda x: _dtype_labels[x][_slang],
+                horizontal=True, key="data_tab_dtype",
+            )
+        with _dcol2:
+            _view_mode = st.radio(
+                t("show"), _show_opts, format_func=lambda x: _show_labels[x][_slang],
+                index=0, horizontal=True, key="data_tab_view_mode",
+            )
 
-        if chg_view_mode == "All":
-            chg_all = cur_df[chg_display_cols].dropna(subset=[change_col]).sort_values(change_col, ascending=False).copy()
-            chg_all_view = add_display_index(chg_all)
-            st.markdown(f"**{t('all_entries')}** — {t('sorted_hl')} ({len(chg_all)})")
-            st.dataframe(st_safe(chg_all_view), width="stretch", hide_index=True, height=_full_height(len(chg_all_view)))
-            download_df_as_excel(chg_all_view, filename=f"{df_key}_{prefix}_change_all.xlsx", sheet_name="change_all")
+        if _dtype == "change":
+            _col, _lo_t, _hi_t = change_col, lo_c, hi_c
+            _top_df, _bot_df = chg_top, chg_bot
+            _display_cols = cols_brand_then_category(cur_df, prefix, mode="change")
+            _label = f"{tail}%"
+        else:
+            _col, _lo_t, _hi_t = pct_col, lo_p, hi_p
+            _top_df, _bot_df = pct_top, pct_bot
+            _display_cols = cols_brand_then_category(cur_df, prefix, mode="pct")
+            _label = f"{tail}%"
 
-        elif chg_view_mode == "Top":
-            st.markdown(f"**{t('show_top')} {chg_label} (>= {float(hi_c):.4g})** — {t('sorted_hl')} ({len(chg_top)})")
-            chg_top_view = add_display_index(chg_top[cols_brand_then_category(chg_top, prefix, mode="change")])
-            st.dataframe(st_safe(chg_top_view), width="stretch", hide_index=True)
-            download_df_as_excel(chg_top_view, filename=f"{df_key}_{prefix}_change_top.xlsx", sheet_name="change_top")
+        st.subheader(f"{_dtype_labels[_dtype][_slang]} — {_col}")
 
-        else:  # Bottom
-            st.markdown(f"**{t('show_bottom')} {chg_label} (<= {float(lo_c):.4g})** — {t('sorted_hl')} ({len(chg_bot)})")
-            chg_bot_view = add_display_index(chg_bot[cols_brand_then_category(chg_bot, prefix, mode="change")])
-            st.dataframe(st_safe(chg_bot_view), width="stretch", hide_index=True)
-            download_df_as_excel(chg_bot_view, filename=f"{df_key}_{prefix}_change_bottom.xlsx", sheet_name="change_bottom")
+        if _view_mode == "All":
+            _all = cur_df[_display_cols].dropna(subset=[_col]).sort_values(_col, ascending=False).copy()
+            _all_view = add_display_index(_all)
+            st.markdown(f"**{t('all_entries')}** — {t('sorted_hl')} ({len(_all)})")
+            st.dataframe(st_safe(_all_view), width="stretch", hide_index=True, height=_full_height(len(_all_view)))
+            download_df_as_excel(_all_view, filename=f"{df_key}_{prefix}_{_dtype}_all.xlsx", sheet_name=f"{_dtype}_all")
+        elif _view_mode == "Top":
+            st.markdown(f"**{t('show_top')} {_label} (>= {float(_hi_t):.4g})** — {t('sorted_hl')} ({len(_top_df)})")
+            _top_view = add_display_index(_top_df[cols_brand_then_category(_top_df, prefix, mode=_dtype)])
+            st.dataframe(st_safe(_top_view), width="stretch", hide_index=True)
+            download_df_as_excel(_top_view, filename=f"{df_key}_{prefix}_{_dtype}_top.xlsx", sheet_name=f"{_dtype}_top")
+        else:
+            st.markdown(f"**{t('show_bottom')} {_label} (<= {float(_lo_t):.4g})** — {t('sorted_hl')} ({len(_bot_df)})")
+            _bot_view = add_display_index(_bot_df[cols_brand_then_category(_bot_df, prefix, mode=_dtype)])
+            st.dataframe(st_safe(_bot_view), width="stretch", hide_index=True)
+            download_df_as_excel(_bot_view, filename=f"{df_key}_{prefix}_{_dtype}_bottom.xlsx", sheet_name=f"{_dtype}_bottom")
 
-        chg_nan = cur_df[cur_df[change_col].isna()][chg_display_cols].copy()
-        if not chg_nan.empty:
+        _nan_df = cur_df[cur_df[_col].isna()][_display_cols].copy()
+        if not _nan_df.empty:
             st.divider()
-            st.markdown(f"**{t('no_data_nan')}** — {t('missing_change')} ({len(chg_nan)})")
-            chg_nan_view = add_display_index(chg_nan)
-            st.dataframe(st_safe(chg_nan_view), width="stretch", hide_index=True)
-            download_df_as_excel(chg_nan_view, filename=f"{df_key}_{prefix}_change_nan.xlsx", sheet_name="change_nan")
-
-    # ---------------- Pct tab ----------------
-    with tab_pct:
-        st.subheader(f"{t('tab_pct')} — {pct_col}")
-        pct_label = f"{tail}%"
-        _slang2 = st.session_state.get("lang", "ko")
-        pct_view_mode = st.radio(
-            t("show"), _show_opts, format_func=lambda x: _show_labels[x][_slang2],
-            index=0, horizontal=True, key="pct_view_mode"
-        )
-
-        pct_display_cols = cols_brand_then_category(cur_df, prefix, mode="pct")
-
-        if pct_view_mode == "All":
-            pct_all = cur_df[pct_display_cols].dropna(subset=[pct_col]).sort_values(pct_col, ascending=False).copy()
-            pct_all_view = add_display_index(pct_all)
-            st.markdown(f"**{t('all_entries')}** — {t('sorted_hl')} ({len(pct_all)})")
-            st.dataframe(st_safe(pct_all_view), width="stretch", hide_index=True, height=_full_height(len(pct_all_view)))
-            download_df_as_excel(pct_all_view, filename=f"{df_key}_{prefix}_pct_all.xlsx", sheet_name="pct_all")
-
-        elif pct_view_mode == "Top":
-            st.markdown(f"**{t('show_top')} {pct_label} (>= {float(hi_p):.4g})** — {t('sorted_hl')} ({len(pct_top)})")
-            pct_top_view = add_display_index(pct_top[cols_brand_then_category(pct_top, prefix, mode="pct")])
-            st.dataframe(st_safe(pct_top_view), width="stretch", hide_index=True)
-            download_df_as_excel(pct_top_view, filename=f"{df_key}_{prefix}_pct_top.xlsx", sheet_name="pct_top")
-
-        else:  # Bottom
-            st.markdown(f"**{t('show_bottom')} {pct_label} (<= {float(lo_p):.4g})** — {t('sorted_hl')} ({len(pct_bot)})")
-            pct_bot_view = add_display_index(pct_bot[cols_brand_then_category(pct_bot, prefix, mode="pct")])
-            st.dataframe(st_safe(pct_bot_view), width="stretch", hide_index=True)
-            download_df_as_excel(pct_bot_view, filename=f"{df_key}_{prefix}_pct_bottom.xlsx", sheet_name="pct_bottom")
-
-        pct_nan = cur_df[cur_df[pct_col].isna()][pct_display_cols].copy()
-        if not pct_nan.empty:
-            st.divider()
-            st.markdown(f"**{t('no_data_nan')}** — {t('missing_pct')} ({len(pct_nan)})")
-            pct_nan_view = add_display_index(pct_nan)
-            st.dataframe(st_safe(pct_nan_view), width="stretch", hide_index=True)
-            download_df_as_excel(pct_nan_view, filename=f"{df_key}_{prefix}_pct_nan.xlsx", sheet_name="pct_nan")
-
-    # ---------------- Overlap tab ----------------
-    with tab_overlap:
-        st.subheader(t("quadrant_title"))
-
-        st.markdown(f"{t('q_HH')} ({len(q_HH)})")
-        q_cols = cols_brand_then_category(q_HH, prefix, mode="change")
-        q_view = add_display_index(q_HH[q_cols])
-        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
-        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_HH.xlsx", sheet_name="overlap_HH")
-
-        st.divider()
-
-        st.markdown(f"{t('q_HL')} ({len(q_HL)})")
-        q_cols = cols_brand_then_category(q_HL, prefix, mode="change")
-        q_view = add_display_index(q_HL[q_cols])
-        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
-        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_HL.xlsx", sheet_name="overlap_HL")
-
-        st.divider()
-
-        st.markdown(f"{t('q_LH')} ({len(q_LH)})")
-        q_cols = cols_brand_then_category(q_LH, prefix, mode="change")
-        q_view = add_display_index(q_LH[q_cols])
-        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
-        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_LH.xlsx", sheet_name="overlap_LH")
-
-        st.divider()
-
-        st.markdown(f"{t('q_LL')} ({len(q_LL)})")
-        q_cols = cols_brand_then_category(q_LL, prefix, mode="change")
-        q_view = add_display_index(q_LL[q_cols])
-        st.dataframe(st_safe(q_view), width="stretch", hide_index=True)
-        download_df_as_excel(q_view, filename=f"{df_key}_{prefix}_overlap_LL.xlsx", sheet_name="overlap_LL")
-
-        st.divider()
-
-        all_quadrant_idx = q_HH.index.union(q_HL.index).union(q_LH.index).union(q_LL.index)
-        q_normal = cur_df.loc[~cur_df.index.isin(all_quadrant_idx)].dropna(subset=[change_col, pct_col]).copy()
-        q_normal = q_normal.sort_values(change_col, ascending=False)
-        q_normal_cols = cols_brand_then_category(q_normal, prefix, mode="change")
-        st.markdown(f"{t('q_normal')} ({len(q_normal)})")
-        q_normal_view = add_display_index(q_normal[q_normal_cols])
-        st.dataframe(st_safe(q_normal_view), width="stretch", hide_index=True)
-        download_df_as_excel(q_normal_view, filename=f"{df_key}_{prefix}_normal.xlsx", sheet_name="normal")
+            st.markdown(f"**{t('no_data_nan')}** ({len(_nan_df)})")
+            _nan_view = add_display_index(_nan_df)
+            st.dataframe(st_safe(_nan_view), width="stretch", hide_index=True)
+            download_df_as_excel(_nan_view, filename=f"{df_key}_{prefix}_{_dtype}_nan.xlsx", sheet_name=f"{_dtype}_nan")
 
     # ---------------- Brand Ranking tab ----------------
     with tab_ranking:
