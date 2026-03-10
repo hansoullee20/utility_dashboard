@@ -33,7 +33,10 @@ def main():
     st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
     st.title("Utility Analysis Dashboard")
 
-    uploads, bins, tail, q, debug, _nav_placeholder = setup_sidebar()
+    tail  = 20
+    bins  = 50
+    q     = (tail / 100.0, 1.0 - tail / 100.0)
+    uploads = setup_sidebar()
 
     if not uploads:
         st.info(t("upload_prompt"))
@@ -101,10 +104,10 @@ def main():
     _OPT_SUMMARY = t("summary_analysis")
     _OPT_BIZ     = t("biz_analysis")
     _analysis_options = []
-    if _has_util:
-        _analysis_options.append(_OPT_SUMMARY)
     if _has_meter:
         _analysis_options.append(_OPT_BIZ)
+    if _has_util:
+        _analysis_options.append(_OPT_SUMMARY)
 
     _NAV_SHEET    = t("nav_sheet_view")
     _NAV_ANALYSIS = t("nav_analysis")
@@ -116,13 +119,16 @@ def main():
         _nav_options.append(_NAV_PROFILE)
 
     import streamlit_antd_components as sac
-    with _nav_placeholder:
+    with st.sidebar:
+        st.divider()
         nav_mode = sac.tabs(
             [sac.TabsItem(label=o) for o in _nav_options],
             position="left",
             height=180,
             key=f"nav_{file_name}",
         )
+        st.divider()
+        debug = st.checkbox(t("debug"), value=False)
 
     # ── 분석 branch ────────────────────────────────────────────────────────────
     if nav_mode == _NAV_ANALYSIS:

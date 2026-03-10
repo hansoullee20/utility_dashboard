@@ -1,4 +1,4 @@
-"""sidebar.py — Sidebar UI: directory input, debug."""
+"""sidebar.py — Sidebar UI: directory input only. Nav + debug rendered in app.py."""
 import os
 import glob as _glob
 import streamlit as st
@@ -16,10 +16,9 @@ class _FileEntry:
 
 
 def setup_sidebar():
-    """Render sidebar and return (uploads, bins, tail, q, debug, nav_placeholder)."""
+    """Render file path widget, return (uploads,)."""
     with st.sidebar:
         st.session_state["lang"] = "ko"
-
         st.header(t("upload"))
         dir_path = st.text_input(
             "데이터 폴더 경로",
@@ -48,14 +47,4 @@ def setup_sidebar():
             else:
                 st.warning("폴더를 찾을 수 없습니다.")
 
-        # Placeholder for nav tabs — filled by app.py after nav options are known
-        nav_placeholder = st.empty()
-
-        st.divider()
-        debug = st.checkbox(t("debug"), value=False)
-
-    tail = 20
-    bins = 50
-    q = (tail / 100.0, 1.0 - tail / 100.0)
-
-    return uploads, bins, tail, q, debug, nav_placeholder
+    return uploads
