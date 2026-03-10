@@ -31,6 +31,24 @@ from lang import t
 
 def main():
     st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
+    st.markdown("""
+<style>
+/* ── st.tabs: larger, bolder tab labels ── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 6px;
+}
+.stTabs [data-baseweb="tab"] {
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    padding: 10px 22px !important;
+    border-radius: 6px 6px 0 0;
+}
+.stTabs [aria-selected="true"] {
+    font-size: 15px !important;
+    font-weight: 700 !important;
+}
+</style>
+""", unsafe_allow_html=True)
     st.title("Utility Analysis Dashboard")
 
     uploads, bins, tail, q = setup_sidebar()
