@@ -175,20 +175,41 @@ def plot_hist_with_tails(
     }]), hide_index=True, use_container_width=True)
 
     if source_df is not None and val_col is not None:
-        # ── Outlier table (always shown) ──────────────────────────────────────
+        # ── Outlier tables (top / bottom separated) ───────────────────────────
         _scaled = source_df[val_col] / val_scale
-        _out_mask = (_scaled < lo) | (_scaled > hi)
-        _out_df = source_df[_out_mask].copy()
-        _out_cols = [c for c in (display_cols or []) if c in _out_df.columns]
-        if not _out_cols:
-            _out_cols = [c for c in ["brand", "building"] if c in _out_df.columns] + [val_col]
-        _n_out = len(_out_df)
-        with st.expander(f"🔶 이상치 목록 — {_n_out}건", expanded=_n_out > 0):
+        _top_mask = _scaled > hi
+        _bot_mask = _scaled < lo
+        _n_top = int(_top_mask.sum())
+        _n_bot = int(_bot_mask.sum())
+        _n_out = _n_top + _n_bot
+
+        # Column order: identity cols first (brand, floor-independent), then
+        # value col, then building/floor pushed to the back.
+        _id_back  = [c for c in ["building", "floor"] if c in source_df.columns]
+        _id_front = [c for c in (display_cols or []) if c in source_df.columns
+                     and c not in _id_back and c != val_col]
+        if not _id_front:
+            _id_front = [c for c in ["brand"] if c in source_df.columns]
+        _usage_cols = [val_col] if val_col in source_df.columns else []
+        _out_cols = _id_front + _usage_cols + _id_back
+
+        with st.expander(f"🔶 이상치 목록 — {_n_out}건  (상위 {_n_top} · 하위 {_n_bot})",
+                         expanded=_n_out > 0):
             if _n_out == 0:
                 st.caption("이상치 없음")
             else:
-                st.dataframe(_out_df[_out_cols].reset_index(drop=True),
-                             hide_index=True, use_container_width=True)
+                if _n_top > 0:
+                    _top_df = source_df[_top_mask].copy().sort_values(val_col, ascending=False)
+                    st.markdown(f"**🔺 상위 이상치** — {hi:.4g} 초과 ({_n_top}건)")
+                    st.dataframe(_top_df[_out_cols].reset_index(drop=True),
+                                 hide_index=True, use_container_width=True)
+                if _n_bot > 0:
+                    if _n_top > 0:
+                        st.divider()
+                    _bot_df = source_df[_bot_mask].copy().sort_values(val_col, ascending=True)
+                    st.markdown(f"**🔻 하위 이상치** — {lo:.4g} 미만 ({_n_bot}건)")
+                    st.dataframe(_bot_df[_out_cols].reset_index(drop=True),
+                                 hide_index=True, use_container_width=True)
 
         # ── Bin-click table ───────────────────────────────────────────────────
         pts = (event.selection.points if event and hasattr(event, "selection") else [])
