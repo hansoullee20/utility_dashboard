@@ -106,7 +106,7 @@ def _render_composite_bar(df: pd.DataFrame, n: int, split_by_building: bool) -> 
         marker_color=marker_color,
         text=[f'{r}  {s:.3f}' for r, s in zip(top["risk_level"], top["composite_score"])],
         textposition="outside",
-        textfont=dict(size=9),
+        textfont=dict(size=9, color="black"),
         hovertemplate="<b>%{y}</b><br>복합 이상 점수: %{x:.3f}<extra></extra>",
     ))
     fig.update_layout(
@@ -702,7 +702,7 @@ def render_anomaly_tab(
 
     # ── Composite bar + heatmap ───────────────────────────────────────────────
     _n = st.slider("표시 브랜드 수", 10, min(60, len(anomaly_df)),
-                   min(40, len(anomaly_df)), key="anom_n")
+                   min(10, len(anomaly_df)), key="anom_n")
 
     _chart_tab_bar, _chart_tab_heat = st.tabs(["📊 복합 점수 순위", "🗺️ 이상 히트맵"])
     with _chart_tab_bar:

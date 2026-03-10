@@ -33,7 +33,7 @@ def main():
     st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
     st.title("Utility Analysis Dashboard")
 
-    uploads, bins, tail, q, debug = setup_sidebar()
+    uploads, bins, tail, q, debug, _nav_placeholder = setup_sidebar()
 
     if not uploads:
         st.info(t("upload_prompt"))
@@ -115,21 +115,21 @@ def main():
     if _has_meter:
         _nav_options.append(_NAV_PROFILE)
 
-    _nc1, _nc2 = st.columns([2, 5])
-    with _nc1:
-        nav_mode = st.radio(
-            "Navigation", _nav_options,
-            horizontal=True, label_visibility="collapsed",
+    import streamlit_antd_components as sac
+    with _nav_placeholder:
+        nav_mode = sac.tabs(
+            [sac.TabsItem(label=o) for o in _nav_options],
+            position="left",
+            height=180,
             key=f"nav_{file_name}",
         )
 
     # ── 분석 branch ────────────────────────────────────────────────────────────
     if nav_mode == _NAV_ANALYSIS:
-        with _nc2:
-            analysis_name = st.selectbox(
-                t("analysis_select"), _analysis_options,
-                key=f"analysis_{file_name}",
-            )
+        analysis_name = st.selectbox(
+            t("analysis_select"), _analysis_options,
+            key=f"analysis_{file_name}",
+        )
 
         if analysis_name == _OPT_SUMMARY:
             st.header(t("summary_header"))
@@ -206,9 +206,14 @@ def main():
             # ── Tabs ────────────────────────────────────────────────────────────
             from filters import brand_search_bar as _bsb
             _bsb("biz")
-            _tab_cost, _tab_eff, _tab_anom = st.tabs([
-                t("biz_tab_cost"), t("biz_tab_eff"), t("biz_tab_anom"),
+            _tab_anom, _tab_cost, _tab_eff = st.tabs([
+                t("biz_tab_anom"), t("biz_tab_cost"), t("biz_tab_eff"),
             ])
+            with _tab_anom:
+                render_anomaly_tab(
+                    _cur_df, file_name, file_map[file_name], all_sheet_keys,
+                    split_by_building=_split_bldg,
+                )
             with _tab_cost:
                 render_cross_tab(_cur_df, file_name, file_map[file_name], all_sheet_keys,
                                  split_by_building=_split_bldg)
@@ -218,11 +223,6 @@ def main():
                     file_name=file_name,
                     file_data=file_map[file_name],
                     ehp_sheet=_ehp_sheet,
-                    split_by_building=_split_bldg,
-                )
-            with _tab_anom:
-                render_anomaly_tab(
-                    _cur_df, file_name, file_map[file_name], all_sheet_keys,
                     split_by_building=_split_bldg,
                 )
             return
@@ -271,13 +271,12 @@ def main():
         return
 
     # ── 시트 보기 branch ────────────────────────────────────────────────────────
-    with _nc2:
-        default_sheet = "검침 내역" if "검침 내역" in sheet_keys else sheet_keys[0]
-        sheet_name = st.selectbox(
-            t("select_sheet"), sheet_keys,
-            index=sheet_keys.index(default_sheet),
-            key=f"sheet_{file_name}",
-        )
+    default_sheet = "검침 내역" if "검침 내역" in sheet_keys else sheet_keys[0]
+    sheet_name = st.selectbox(
+        t("select_sheet"), sheet_keys,
+        index=sheet_keys.index(default_sheet),
+        key=f"sheet_{file_name}",
+    )
 
     # ── Route: HVAC ────────────────────────────────────────────────────────────
     if sheet_name.strip() == HVAC_SHEET_NAME:
