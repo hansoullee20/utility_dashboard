@@ -177,17 +177,7 @@ def _render_all_outliers(cur_df: pd.DataFrame, present: list, tail: int, t) -> N
         k2.metric("이상치 브랜드", len(outliers_only))
         k3.metric("정상 브랜드", len(out) - len(outliers_only))
 
-        _show_all = st.checkbox("전체 브랜드 표시 (이상치 + 정상)", value=False, key="all_outlier_show_all")
-        display_df = out if _show_all else outliers_only
-        if display_df.empty:
-            st.info("이상치로 분류된 브랜드가 없습니다.")
-        else:
-            display_df = display_df.reset_index(drop=True)
-            display_df.insert(0, "No", range(1, len(display_df) + 1))
-            st.dataframe(display_df, hide_index=True, use_container_width=True,
-                         height=_full_height(len(display_df)))
-
-        # ── Histogram with category dropdown ──────────────────────────────────
+        # ── Histogram with category dropdown (top) ────────────────────────────
         if present and _cat_thresholds:
             st.divider()
             _hlang = st.session_state.get("lang", "ko")
@@ -263,6 +253,17 @@ def _render_all_outliers(cur_df: pd.DataFrame, present: list, tail: int, t) -> N
                                      source_df=cur_df, val_col=_sel_pc,
                                      key="all_tab_hist_pct",
                                      display_cols=_sel_detail_cols)
+
+        st.divider()
+        _show_all = st.checkbox("전체 브랜드 표시 (이상치 + 정상)", value=False, key="all_outlier_show_all")
+        display_df = out if _show_all else outliers_only
+        if display_df.empty:
+            st.info("이상치로 분류된 브랜드가 없습니다.")
+        else:
+            display_df = display_df.reset_index(drop=True)
+            display_df.insert(0, "No", range(1, len(display_df) + 1))
+            st.dataframe(display_df, hide_index=True, use_container_width=True,
+                         height=_full_height(len(display_df)))
 
     # ── Per-category tabs ──────────────────────────────────────────────────────
     for _tab, p in zip(_tabs[1:], present):
