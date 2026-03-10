@@ -244,7 +244,7 @@ def generate_anomaly_pdf(anomaly_df: pd.DataFrame, context: dict = None) -> byte
 
     story.append(_std_table(full_rows, col_w, full_styles))
 
-    doc.build(story, canvasmaker=_make_numbered_canvas)
+    doc.build(story, canvasmaker=_make_numbered_canvas(T))
     return buf.getvalue()
 
 
@@ -388,7 +388,7 @@ def generate_cross_pdf(
     if not has_content:
         story.append(Paragraph("분析 데이터를 불러올 수 없습니다.", T["body"]))
 
-    doc.build(story, canvasmaker=_make_numbered_canvas)
+    doc.build(story, canvasmaker=_make_numbered_canvas(T))
     return buf.getvalue()
 
 
@@ -417,7 +417,7 @@ def generate_efficiency_pdf(
 
     if not avail:
         story.append(Paragraph("전용면적 데이터가 없어 효율 분析을 생성할 수 없습니다.", T["body"]))
-        doc.build(story, canvasmaker=_make_numbered_canvas)
+        doc.build(story, canvasmaker=_make_numbered_canvas(T))
         return buf.getvalue()
 
     for prefix, per_m2_col in avail.items():
@@ -513,5 +513,5 @@ def generate_efficiency_pdf(
 
         story.append(_std_table(rows, col_w, comb_styles))
 
-    doc.build(story, canvasmaker=_make_numbered_canvas)
+    doc.build(story, canvasmaker=_make_numbered_canvas(T))
     return buf.getvalue()
