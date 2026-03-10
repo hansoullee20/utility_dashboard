@@ -254,7 +254,8 @@ def main():
                 return None
             try:
                 return reader(file_name, file_map[file_name], key)
-            except Exception:
+            except Exception as e:
+                st.warning(f"{sheet_const} 로드 실패: {e}")
                 return None
 
         render_brand_profile_tab(

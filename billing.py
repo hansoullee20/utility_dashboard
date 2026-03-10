@@ -61,11 +61,11 @@ _VIEW_SEGMENTS = {
 }
 
 _VIEW_OPTIONS = {
+    "총 합계":  ["합계", "전용", "공용"],
     "상하수도": ["합계", "전용", "공용"],
     "전기요금": ["합계", "전용", "공용"],
     "열요금":   ["합계", "냉난방 합계", "냉난방 전용", "냉난방 공용",
                  "급탕 합계", "급탕 전용", "급탕 공용"],
-    "총 합계":  ["합계", "전용", "공용"],
 }
 
 
@@ -1732,8 +1732,8 @@ def render_billing_view(df: pd.DataFrame) -> None:
 
     # ── Tabs ──
     brand_search_bar("billing")
-    tab_rank, tab_hist, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
-        "업체별 순위", "분포", "건물별 요약",
+    tab_hist, tab_rank, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
+        "분포", "업체별 순위", "건물별 요약",
         "구성 비율", "공용/전용 비율", "단위면적당",
     ])
 

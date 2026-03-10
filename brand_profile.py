@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 from data import to_numeric_series, st_safe
@@ -49,6 +50,79 @@ def _fmt(v, decimals=2, sign=False):
     if pd.isna(v): return "—"
     fmt = f"{{:+,.{decimals}f}}" if sign else f"{{:,.{decimals}f}}"
     return fmt.format(v)
+
+
+def _filter_brand(df: pd.DataFrame, brand: str) -> pd.DataFrame:
+    """Filter df to rows matching brand, stripping whitespace on both sides."""
+    if "brand" not in df.columns:
+        return pd.DataFrame()
+    return df[df["brand"].astype(str).str.strip() == brand.strip()].copy()
+
+
+def _peer_chart(
+    df: pd.DataFrame,
+    selected: str,
+    cols: list[tuple[str, str]],
+    title: str,
+    unit: str = "",
+) -> None:
+    """One subplot per metric, each with its own y-axis, brand vs peer average.
+
+    cols: list of (col_name, display_label).
+    """
+    num_cols = [c for c, _ in cols if c in df.columns]
+    if not num_cols or "brand" not in df.columns:
+        return
+
+    agg = df.copy()
+    for c in num_cols:
+        agg[c] = to_numeric_series(agg[c])
+    brand_agg = agg.groupby(agg["brand"].astype(str).str.strip())[num_cols].sum(min_count=1)
+
+    sel = selected.strip()
+    if sel not in brand_agg.index:
+        return
+    peers = brand_agg.drop(index=sel, errors="ignore")
+
+    # Build per-metric data
+    metrics = []
+    for col, lbl in cols:
+        if col not in brand_agg.columns:
+            continue
+        bv = brand_agg.loc[sel, col]
+        pv = peers[col].mean() if not peers.empty else np.nan
+        metrics.append((lbl, float(bv) if not pd.isna(bv) else 0.0,
+                              float(pv) if not pd.isna(pv) else 0.0))
+    if not metrics:
+        return
+
+    n = len(metrics)
+    fig = make_subplots(rows=1, cols=n, subplot_titles=[m[0] for m in metrics])
+
+    for i, (lbl, bv, pv) in enumerate(metrics, start=1):
+        show_legend = i == 1
+        fig.add_trace(go.Bar(
+            name="이번 브랜드", x=["이번 브랜드"], y=[bv],
+            marker_color=_C_CURR,
+            text=[f"{bv:,.2f}"], textposition="outside", cliponaxis=False,
+            legendgroup="brand", showlegend=show_legend,
+        ), row=1, col=i)
+        fig.add_trace(go.Bar(
+            name="동종 평균", x=["동종 평균"], y=[pv],
+            marker_color=_C_AVG, opacity=0.75,
+            text=[f"{pv:,.2f}"], textposition="outside", cliponaxis=False,
+            legendgroup="peer", showlegend=show_legend,
+        ), row=1, col=i)
+
+    fig.update_layout(
+        title=dict(text=title, font_size=13),
+        barmode="group",
+        legend=dict(orientation="h", y=1.15, x=0),
+        margin=dict(t=70, b=20, l=30, r=10),
+        height=300,
+    )
+    fig.update_yaxes(zeroline=True, rangemode="tozero")
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _bar(labels, values, colors, title, unit):
@@ -190,6 +264,27 @@ def render_brand_profile_tab(
     )
 
     st.markdown(f"## {selected}")
+
+    # ── Debug: brand name matching across sheets ──────────────────────────────
+    _sheet_dfs = {
+        "수도광열비": billing_df,
+        "수도": water_df,
+        "온수": hotwater_df,
+        "전기": electricity_df,
+    }
+    _missing = [
+        name for name, df in _sheet_dfs.items()
+        if df is not None and not df.empty and _filter_brand(df, selected).empty
+    ]
+    if _missing:
+        with st.expander("⚠️ 일부 시트에서 브랜드를 찾을 수 없음 (클릭하여 확인)"):
+            st.caption(f"선택된 브랜드: **{selected}**")
+            for name, df in _sheet_dfs.items():
+                if df is not None and not df.empty and name in _missing:
+                    similar = [b for b in df["brand"].astype(str).str.strip().unique()
+                               if selected.strip().lower()[:3] in b.lower()]
+                    st.caption(f"**{name}** 시트 유사 브랜드: {similar[:10] or '없음'}")
+
     hc = st.columns(4)
     hc[0].metric("건물", bldg)
     hc[1].metric("층", floor)
@@ -257,64 +352,97 @@ def render_brand_profile_tab(
     st.divider()
 
     # ── 수도광열비: billing summary ───────────────────────────────────────────
-    if billing_df is not None and not billing_df.empty and "brand" in billing_df.columns:
-        bdf = billing_df[billing_df["brand"].astype(str) == selected]
-        if not bdf.empty:
-            st.subheader("💰 수도광열비 부과 내역")
-            _bill_cols = [c for c in [
-                "building", "floor", "unit", "size_m2",
-                "water_total", "elect_total", "heat_total",
-                "total_excl", "total_comm", "total",
-            ] if c in bdf.columns]
+    if billing_df is not None and not billing_df.empty:
+        st.subheader("💰 수도광열비 부과 내역")
+        bdf = _filter_brand(billing_df, selected)
+        if bdf.empty:
+            st.caption("해당 브랜드의 수도광열비 내역을 찾을 수 없습니다.")
+        else:
+            _id_cols     = ["building", "floor", "unit", "size_m2"]
+            _bill_detail = [
+                "total", "total_excl", "total_comm",
+                "water_excl", "water_comm", "water_total",
+                "elect_excl", "elect_comm", "elect_total",
+                "hotwater_excl", "hotwater_comm",
+                "hvac_excl", "hvac_comm",
+                "heat_total",
+            ]
+            _bill_cols = [c for c in _id_cols + _bill_detail if c in bdf.columns]
+            _peer_chart(billing_df, selected, [
+                ("total",       "총합계"),
+                ("water_total", "상하수도"),
+                ("elect_total", "전기"),
+                ("heat_total",  "열"),
+            ], "수도광열비 — 동종 평균 대비 (만원)", "만원")
             st.dataframe(st_safe(bdf[_bill_cols].reset_index(drop=True)),
                          hide_index=True, use_container_width=True)
-            st.divider()
+        st.divider()
 
     # ── 수도: detailed water ──────────────────────────────────────────────────
-    if water_df is not None and not water_df.empty and "brand" in water_df.columns:
-        wdf = water_df[water_df["brand"].astype(str) == selected]
-        if not wdf.empty:
-            st.subheader("💧 수도 사용 내역")
-            _w_cols = [c for c in [
-                "building", "floor", "unit", "usage_m3",
-                "water_excl", "water_comm", "sewage_excl", "sewage_comm",
-                "total_excl", "total_comm", "total", "avg_unit_price",
-            ] if c in wdf.columns]
+    if water_df is not None and not water_df.empty:
+        st.subheader("💧 수도 사용 내역")
+        wdf = _filter_brand(water_df, selected)
+        if wdf.empty:
+            st.caption("해당 브랜드의 수도 내역을 찾을 수 없습니다.")
+        else:
+            _w_id   = ["building", "floor", "unit", "size_m2", "size_py"]
+            _w_data = [
+                "usage_m3", "pipe_fee_comm",
+                "water_excl", "water_comm",
+                "sewage_excl", "sewage_comm",
+                "levy_excl", "levy_comm",
+                "total_excl", "total_comm", "total",
+                "avg_unit_price",
+            ]
+            _w_cols = [c for c in _w_id + _w_data if c in wdf.columns]
+            _peer_chart(water_df, selected, [
+                ("usage_m3", "사용량 (m³)"),
+                ("total",    "총액"),
+            ], "수도 — 동종 평균 대비")
             st.dataframe(st_safe(wdf[_w_cols].reset_index(drop=True)),
                          hide_index=True, use_container_width=True)
-            st.divider()
+        st.divider()
 
     # ── 온수: detailed hot water ──────────────────────────────────────────────
-    if hotwater_df is not None and not hotwater_df.empty and "brand" in hotwater_df.columns:
-        hwdf = hotwater_df[hotwater_df["brand"].astype(str) == selected]
-        if not hwdf.empty:
-            st.subheader("🌡️ 온수 사용 내역")
-            _hw_cols = [c for c in [
-                "building", "floor", "unit", "usage_m3",
-                "fee_excl", "fee_comm", "total",
-            ] if c in hwdf.columns]
+    if hotwater_df is not None and not hotwater_df.empty:
+        st.subheader("🌡️ 온수 사용 내역")
+        hwdf = _filter_brand(hotwater_df, selected)
+        if hwdf.empty:
+            st.caption("해당 브랜드의 온수 내역을 찾을 수 없습니다.")
+        else:
+            _hw_id   = ["building", "floor", "unit", "size_m2", "size_py"]
+            _hw_data = ["usage_m3", "fee_excl", "fee_comm", "total"]
+            _hw_cols = [c for c in _hw_id + _hw_data if c in hwdf.columns]
+            _peer_chart(hotwater_df, selected, [
+                ("usage_m3", "사용량 (m³)"),
+                ("total",    "총액"),
+            ], "온수 — 동종 평균 대비")
             st.dataframe(st_safe(hwdf[_hw_cols].reset_index(drop=True)),
                          hide_index=True, use_container_width=True)
-            st.divider()
+        st.divider()
 
     # ── 전기: detailed electricity ────────────────────────────────────────────
-    if electricity_df is not None and not electricity_df.empty and "brand" in electricity_df.columns:
-        edf = electricity_df[electricity_df["brand"].astype(str) == selected]
-        if not edf.empty:
-            st.subheader("⚡ 전기 사용 내역")
-            _e_cols = [c for c in [
-                "building", "floor", "unit",
-                "kwh_elec01", "kwh_elec02", "kwh_fcu", "kwh_ehp",
-                "kwh_pump", "kwh_total",
-                "excl_total", "ehp_total", "comm_total", "grand_total",
-            ] if c in edf.columns]
+    if electricity_df is not None and not electricity_df.empty:
+        st.subheader("⚡ 전기 사용 내역")
+        edf = _filter_brand(electricity_df, selected)
+        if edf.empty:
+            st.caption("해당 브랜드의 전기 내역을 찾을 수 없습니다.")
+        else:
+            _e_id   = ["building", "floor", "unit", "size_m2", "size_py"]
+            _e_kwh  = ["kwh_elec01", "kwh_elec02", "kwh_fcu", "kwh_ehp", "kwh_pump", "kwh_total"]
+            _e_fee  = ["excl_total", "ehp_total", "comm_total", "grand_total"]
+            _e_cols = [c for c in _e_id + _e_kwh + _e_fee if c in edf.columns]
+            _peer_chart(electricity_df, selected, [
+                ("kwh_total",   "총 사용량 (kWh)"),
+                ("grand_total", "총 요금"),
+            ], "전기 — 동종 평균 대비")
             st.dataframe(st_safe(edf[_e_cols].reset_index(drop=True)),
                          hide_index=True, use_container_width=True)
-            st.divider()
+        st.divider()
 
     # ── Raw meter readings (pre-aggregation) ─────────────────────────────────
     st.subheader("📋 원본 검침 데이터 (층/호별)")
-    raw_brand = ref_df[ref_df["brand"].astype(str) == selected].copy() if ref_df is not None else pd.DataFrame()
+    raw_brand = _filter_brand(ref_df, selected) if ref_df is not None else pd.DataFrame()
     if raw_brand.empty:
         st.info("원본 데이터를 찾을 수 없습니다.")
     else:
