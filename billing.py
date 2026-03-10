@@ -10,6 +10,7 @@ import streamlit as st
 from data import st_safe
 from features import add_display_index, download_df_as_excel, get_simple_floors, parse_floor_value
 from filters import brand_search_bar
+from utils import fmt_won as _fmt_won
 from viz import plot_hist_with_tails
 
 # Color palette — mirrors viz.py
@@ -1655,7 +1656,155 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
         st.dataframe(st_safe(df), use_container_width=True)
 
 
-def render_billing_view(df: pd.DataFrame) -> None:
+def _mom_tab(curr: pd.DataFrame, prev: pd.DataFrame | None,
+             billing_period: str | None = None,
+             prev_billing_period: str | None = None) -> None:
+    """Month-over-month change tab for 수도광열비 부과 내역."""
+    period_str = (
+        f"{prev_billing_period} → {billing_period}"
+        if billing_period and prev_billing_period
+        else billing_period or "이번 달"
+    )
+    st.subheader(f"📈 월별 변화  ({period_str})")
+
+    if prev is None or prev.empty:
+        st.info("이전 달 파일에 수도광열비 부과 내역 시트가 없습니다.")
+        return
+
+    # Cost columns to compare
+    _COST_COLS = [c for c in [
+        "water_total", "elect_total", "hotwater_comm", "heat_total",
+        "total_excl", "total_comm", "total",
+    ] if c in curr.columns and c in prev.columns]
+
+    _COST_LABELS = {
+        "water_total":   "💧 수도 합계",
+        "elect_total":   "⚡ 전기 합계",
+        "hotwater_comm": "🌡 온수",
+        "heat_total":    "🔥 난방 합계",
+        "total_excl":    "전용 합계",
+        "total_comm":    "공용 합계",
+        "total":         "총 합계",
+    }
+
+    # Aggregate by brand + building
+    id_cols = ["brand", "building"]
+    curr_agg = curr.groupby(id_cols)[_COST_COLS].sum().reset_index()
+    prev_agg = prev.groupby(id_cols)[_COST_COLS].sum().reset_index()
+
+    # Merge on brand+building; suffix _c = current, _p = previous
+    merged = curr_agg.merge(prev_agg, on=id_cols, how="outer", suffixes=("_c", "_p"))
+    for c in _COST_COLS:
+        merged[f"{c}_c"] = merged[f"{c}_c"].fillna(0)
+        merged[f"{c}_p"] = merged[f"{c}_p"].fillna(0)
+        merged[f"{c}_chg"] = merged[f"{c}_c"] - merged[f"{c}_p"]
+        merged[f"{c}_pct"] = (merged[f"{c}_chg"] / merged[f"{c}_p"].replace(0, float("nan"))) * 100
+
+    # ── KPI row ───────────────────────────────────────────────────────────────
+    _kpi_cols = [c for c in ["total", "water_total", "elect_total", "hotwater_comm", "heat_total"]
+                 if c in _COST_COLS]
+    kc = st.columns(len(_kpi_cols))
+    for ci, c in enumerate(_kpi_cols):
+        _curr_sum = merged[f"{c}_c"].sum()
+        _prev_sum = merged[f"{c}_p"].sum()
+        _delta    = _curr_sum - _prev_sum
+        _pct      = _delta / _prev_sum * 100 if _prev_sum else 0
+        kc[ci].metric(
+            _COST_LABELS.get(c, c),
+            _fmt_won(_curr_sum * 10000),
+            delta=f"{_fmt_won(_delta * 10000, signed=True)} ({_pct:+.1f}%)",
+            delta_color="inverse",
+        )
+
+    st.divider()
+
+    # ── Column selector + bar chart ───────────────────────────────────────────
+    sel_col = st.selectbox(
+        "항목",
+        _COST_COLS,
+        format_func=lambda c: _COST_LABELS.get(c, c),
+        key="billing_mom_col",
+    )
+    _chg_col = f"{sel_col}_chg"
+    plot_df = merged[["brand", "building", f"{sel_col}_c", f"{sel_col}_p", _chg_col]].copy()
+    plot_df = plot_df.sort_values(_chg_col, ascending=True).reset_index(drop=True)
+
+    import plotly.graph_objects as go
+    _colors = plot_df[_chg_col].apply(lambda v: "#C44E52" if v > 0 else "#2ca02c").tolist()
+    fig = go.Figure(go.Bar(
+        x=plot_df[_chg_col],
+        y=plot_df["brand"],
+        orientation="h",
+        marker_color=_colors,
+        text=plot_df[_chg_col].apply(lambda v: _fmt_won(v * 10000, signed=True)),
+        textposition="outside",
+        textfont=dict(size=9, color="#222222"),
+        hovertemplate="<b>%{y}</b><br>변화: %{x:+,.1f} 만원<extra></extra>",
+    ))
+    fig.add_vline(x=0, line_color="#888888", line_width=1)
+    fig.update_layout(
+        title=f"{_COST_LABELS.get(sel_col, sel_col)} 전월 대비 변화 (만원)",
+        height=max(430, len(plot_df) * 22 + 80),
+        xaxis_title="변화 (만원)",
+        margin=dict(t=55, b=40, l=10, r=130),
+        showlegend=False,
+        yaxis=dict(tickfont=dict(size=10)),
+    )
+    _ev = st.plotly_chart(fig, use_container_width=True, key=f"billing_mom_bar_{sel_col}", on_select="rerun")
+    _pts = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
+    if _pts:
+        _brand = _pts[0].get("y", "")
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = plot_df[plot_df["brand"] == _brand]
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ── Top / bottom tables ───────────────────────────────────────────────────
+    def _fmt_billing_table(df):
+        d = df[["brand", "building"]].copy()
+        d["전월"] = df[f"{sel_col}_p"].apply(lambda v: _fmt_won(v * 10000) if pd.notna(v) else "—")
+        d["이번달"] = df[f"{sel_col}_c"].apply(lambda v: _fmt_won(v * 10000) if pd.notna(v) else "—")
+        d["변화"] = df[_chg_col].apply(lambda v: _fmt_won(v * 10000, signed=True) if pd.notna(v) else "—")
+        return d
+
+    _n = min(10, len(plot_df))
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**🔴 증가 상위 {_n}개**")
+        st.dataframe(_fmt_billing_table(plot_df.nlargest(_n, _chg_col)).reset_index(drop=True), hide_index=True, use_container_width=True)
+    with c2:
+        st.markdown(f"**🟢 감소 상위 {_n}개**")
+        st.dataframe(_fmt_billing_table(plot_df.nsmallest(_n, _chg_col)).reset_index(drop=True), hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ── Full change table ─────────────────────────────────────────────────────
+    with st.expander("📋 전체 변화 목록", expanded=False):
+        _all_cols = ["brand", "building"] + [f"{c}_p" for c in _COST_COLS] + \
+                    [f"{c}_c" for c in _COST_COLS] + [f"{c}_chg" for c in _COST_COLS]
+        _all_cols = [c for c in _all_cols if c in merged.columns]
+        _full_raw = merged[_all_cols].sort_values(f"{_COST_COLS[-1]}_chg", ascending=False).reset_index(drop=True)
+        _full_disp = _full_raw[["brand", "building"]].copy()
+        for _c in _all_cols:
+            if _c in ("brand", "building"):
+                continue
+            _is_chg = _c.endswith("_chg")
+            _full_disp[_c] = _full_raw[_c].apply(
+                lambda v, signed=_is_chg: _fmt_won(v * 10000, signed=signed) if pd.notna(v) else "—"
+            )
+        st.dataframe(_full_disp, hide_index=True, use_container_width=True)
+
+
+def render_billing_view(
+    df: pd.DataFrame,
+    prev_df: pd.DataFrame | None = None,
+    billing_period: str | None = None,
+    prev_billing_period: str | None = None,
+) -> None:
     st.subheader("수도광열비 부과 내역")
     st.caption("단위: 만원 (VAT 별도)")
 
@@ -1732,11 +1881,13 @@ def render_billing_view(df: pd.DataFrame) -> None:
 
     # ── Tabs ──
     brand_search_bar("billing")
-    tab_hist, tab_rank, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
-        "분포", "업체별 순위", "건물별 요약",
+    tab_mom, tab_hist, tab_rank, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
+        "📈 월별 변화", "분포", "업체별 순위", "건물별 요약",
         "구성 비율", "공용/전용 비율", "단위면적당",
     ])
 
+    with tab_mom:
+        _mom_tab(fdf, prev_df, billing_period, prev_billing_period)
     with tab_rank:
         _ranking_tab(fdf)
     with tab_hist:

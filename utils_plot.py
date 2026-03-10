@@ -1,7 +1,193 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
+
+_BLDG_COLOR = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
+
+
+def bar_chart(
+    df: pd.DataFrame,
+    x: str,
+    y: str,
+    title: str,
+    y_label: str,
+    color_col: str | None = "building",
+    key: str | None = None,
+    height: int = 420,
+) -> None:
+    """Plotly bar chart with building-colour support and click-to-show row."""
+    fig = px.bar(
+        df, x=x, y=y,
+        color=color_col if color_col and color_col in df.columns else None,
+        title=title,
+        labels={y: y_label, x: "Brand"},
+        color_discrete_map=_BLDG_COLOR,
+    )
+    fig.update_layout(
+        height=height, xaxis_tickangle=-45, showlegend=True,
+        margin=dict(t=50, b=80),
+    )
+    fig.update_traces(marker_line_width=0.5, marker_line_color="white")
+    _key = key or f"bar_{title[:30].replace(' ', '_')}"
+    _ev = st.plotly_chart(fig, use_container_width=True, key=_key, on_select="rerun")
+    _pts = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
+    if _pts:
+        _pt = _pts[0]
+        _brand = _pt.get("x") or _pt.get("customdata") or ""
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = df[df[x] == _brand] if _brand and x in df.columns else pd.DataFrame()
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
+
+def render_sheet_mom_tab(
+    curr: pd.DataFrame,
+    prev: pd.DataFrame | None,
+    compare_cols: list[str],
+    col_labels: dict[str, str],
+    col_units: dict[str, str],
+    billing_period: str | None = None,
+    prev_billing_period: str | None = None,
+    key_prefix: str = "mom",
+    no_prev_msg: str = "이전 달 파일이 없습니다.",
+) -> None:
+    """Generic month-over-month tab for sheet views (water, hotwater, electricity)."""
+    import plotly.graph_objects as go
+    from utils import fmt_won
+
+    period_str = (
+        f"{prev_billing_period} → {billing_period}"
+        if billing_period and prev_billing_period
+        else billing_period or "이번 달"
+    )
+    st.subheader(f"📈 월별 변화  ({period_str})")
+
+    if prev is None or prev.empty:
+        st.info(no_prev_msg)
+        return
+
+    id_cols = [c for c in ["brand", "building"] if c in curr.columns and c in prev.columns]
+    valid_cols = [c for c in compare_cols if c in curr.columns and c in prev.columns]
+    if not valid_cols:
+        st.info("비교할 열이 없습니다.")
+        return
+
+    curr_agg = curr.groupby(id_cols)[valid_cols].sum().reset_index()
+    prev_agg = prev.groupby(id_cols)[valid_cols].sum().reset_index()
+    merged = curr_agg.merge(prev_agg, on=id_cols, how="outer", suffixes=("_c", "_p"))
+    for c in valid_cols:
+        merged[f"{c}_c"] = merged[f"{c}_c"].fillna(0)
+        merged[f"{c}_p"] = merged[f"{c}_p"].fillna(0)
+        merged[f"{c}_chg"] = merged[f"{c}_c"] - merged[f"{c}_p"]
+        merged[f"{c}_pct"] = (
+            merged[f"{c}_chg"] / merged[f"{c}_p"].replace(0, float("nan")) * 100
+        )
+
+    # ── KPI row ───────────────────────────────────────────────────────────────
+    kpi_cols = valid_cols[:5]
+    kc = st.columns(len(kpi_cols))
+    for ci, c in enumerate(kpi_cols):
+        _cv = merged[f"{c}_c"].sum()
+        _pv = merged[f"{c}_p"].sum()
+        _dv = _cv - _pv
+        _pct = _dv / _pv * 100 if _pv else 0
+        _unit = col_units.get(c, "")
+        if _unit == "원":
+            _val_str   = fmt_won(_cv)
+            _delta_str = f"{fmt_won(_dv, signed=True)} ({_pct:+.1f}%)"
+        else:
+            _val_str   = f"{_cv:,.1f} {_unit}"
+            _delta_str = f"{_dv:+,.1f} {_unit} ({_pct:+.1f}%)"
+        kc[ci].metric(
+            col_labels.get(c, c),
+            _val_str,
+            delta=_delta_str,
+            delta_color="inverse",
+        )
+
+    st.divider()
+
+    # ── Column selector + bar chart ───────────────────────────────────────────
+    sel_col = st.selectbox(
+        "항목",
+        valid_cols,
+        format_func=lambda c: col_labels.get(c, c),
+        key=f"{key_prefix}_sel",
+    )
+    _unit = col_units.get(sel_col, "")
+    _chg_col = f"{sel_col}_chg"
+    plot_df = merged[["brand", "building", f"{sel_col}_c", f"{sel_col}_p", _chg_col]].copy()
+    plot_df = plot_df.sort_values(_chg_col, ascending=True).reset_index(drop=True)
+
+    _colors = plot_df[_chg_col].apply(lambda v: "#C44E52" if v > 0 else "#2ca02c").tolist()
+    fig = go.Figure(go.Bar(
+        x=plot_df[_chg_col],
+        y=plot_df["brand"],
+        orientation="h",
+        marker_color=_colors,
+        text=plot_df[_chg_col].apply(
+            lambda v: fmt_won(v, signed=True) if _unit == "원" else f"{v:+,.1f}"
+        ),
+        textposition="outside",
+        textfont=dict(size=9, color="#222222"),
+        hovertemplate=f"<b>%{{y}}</b><br>변화: %{{x:+,.1f}} {_unit}<extra></extra>",
+    ))
+    fig.add_vline(x=0, line_color="#888888", line_width=1)
+    fig.update_layout(
+        title=f"{col_labels.get(sel_col, sel_col)} 전월 대비 변화 ({_unit})",
+        height=max(430, len(plot_df) * 22 + 80),
+        xaxis_title=f"변화 ({_unit})",
+        margin=dict(t=55, b=40, l=10, r=130),
+        showlegend=False,
+        yaxis=dict(tickfont=dict(size=10)),
+    )
+    _ev = st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_bar_{sel_col}", on_select="rerun")
+    _pts = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
+    if _pts:
+        _brand = _pts[0].get("y", "")
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = plot_df[plot_df["brand"] == _brand]
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ── Top / bottom tables ───────────────────────────────────────────────────
+    _val_fmt = (lambda v: fmt_won(v) if pd.notna(v) else "—") if _unit == "원" else (lambda v: f"{v:,.1f}" if pd.notna(v) else "—")
+    _chg_fmt = (lambda v: fmt_won(v, signed=True) if pd.notna(v) else "—") if _unit == "원" else (lambda v: f"{v:+,.1f}" if pd.notna(v) else "—")
+
+    def _fmt_table(df):
+        d = df[["brand", "building"]].copy()
+        d["전월"] = df[f"{sel_col}_p"].apply(_val_fmt)
+        d["이번달"] = df[f"{sel_col}_c"].apply(_val_fmt)
+        d["변화"] = df[_chg_col].apply(_chg_fmt)
+        return d
+
+    _n = min(10, len(plot_df))
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**🔴 증가 상위 {_n}개**")
+        st.dataframe(_fmt_table(plot_df.nlargest(_n, _chg_col)).reset_index(drop=True), hide_index=True, use_container_width=True)
+    with c2:
+        st.markdown(f"**🟢 감소 상위 {_n}개**")
+        st.dataframe(_fmt_table(plot_df.nsmallest(_n, _chg_col)).reset_index(drop=True), hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ── Full change table ─────────────────────────────────────────────────────
+    with st.expander("📋 전체 변화 목록", expanded=False):
+        _all_cols = id_cols + [f"{c}_p" for c in valid_cols] + [f"{c}_c" for c in valid_cols] + [f"{c}_chg" for c in valid_cols]
+        _all_cols = [c for c in _all_cols if c in merged.columns]
+        st.dataframe(
+            merged[_all_cols].sort_values(f"{valid_cols[-1]}_chg", ascending=False).reset_index(drop=True),
+            hide_index=True, use_container_width=True,
+        )
+
 
 def plot_hist_full_or_tails(s: pd.Series, bins: int, lo: float, hi: float, title: str, mode: str = "tails", show_median: bool = True):
     vals = s.dropna().astype(float)

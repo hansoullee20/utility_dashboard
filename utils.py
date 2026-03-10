@@ -9,6 +9,18 @@ BLD_COLOR: dict[str, str] = {
 }
 
 
+def fmt_won(v: float, signed: bool = False) -> str:
+    """Auto-scale Korean Won: 억원 / 만원 / 원."""
+    abs_v = abs(v)
+    sign = ("+" if v >= 0 else "") if signed else ""
+    if abs_v >= 1e8:
+        return f"{sign}{v/1e8:,.1f}억원"
+    elif abs_v >= 1e4:
+        return f"{sign}{v/1e4:,.1f}만원"
+    else:
+        return f"{sign}{v:,.0f}원"
+
+
 def iqr_upper(s: pd.Series) -> float:
     s = s.dropna()
     s = s[s > 0]

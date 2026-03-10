@@ -4,8 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
+from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix, fmt_won as _fmt_won
 from filters import render_sheet_filters, brand_search_bar
+from utils_plot import render_sheet_mom_tab
 
 _COMP_COLS = [
     ("상수도 전용",  "water_excl",  "#4C72B0"),
@@ -58,7 +59,17 @@ def _scatter_with_trendline(df_sub, x_col, y_col, color_col, title, xlab, ylab, 
         st.caption(f"R² = {r2:.3f}  |  면적으로 {y_col}의 {r2*100:.1f}%를 설명")
 
 
-def render_water_view(df: pd.DataFrame) -> None:
+_WATER_CMP_COLS   = ["total", "total_excl", "total_comm", "usage_m3"]
+_WATER_CMP_LABELS = {"total": "💧 총부과", "total_excl": "전용부과", "total_comm": "공용부과", "usage_m3": "사용량 (m³)"}
+_WATER_CMP_UNITS  = {"total": "원", "total_excl": "원", "total_comm": "원", "usage_m3": "m³"}
+
+
+def render_water_view(
+    df: pd.DataFrame,
+    prev_df: pd.DataFrame | None = None,
+    billing_period: str | None = None,
+    prev_billing_period: str | None = None,
+) -> None:
     st.header("💧 수도 사용 내역 분석")
 
     df = render_sheet_filters(df, key_prefix="water")
@@ -71,9 +82,9 @@ def render_water_view(df: pd.DataFrame) -> None:
 
     mc = st.columns(5)
     mc[0].metric("총 브랜드",   f"{n_total}개")
-    mc[1].metric("총 부과금액", f"{df['total'].sum()/1e6:.2f}M 원")
+    mc[1].metric("총 부과금액", _fmt_won(df['total'].sum()))
     _ep = df["total_excl"].sum() / df["total"].sum() * 100 if df["total"].sum() else 0
-    mc[2].metric("전용 부과",   f"{df['total_excl'].sum()/1e6:.2f}M ({_ep:.0f}%)")
+    mc[2].metric("전용 부과",   f"{_fmt_won(df['total_excl'].sum())} ({_ep:.0f}%)")
     mc[3].metric("총 사용량",   f"{int(df['usage_m3'].sum()):,} m³")
     mc[4].metric("계량 브랜드", f"{n_metered} / {n_total}")
 
@@ -93,9 +104,17 @@ def render_water_view(df: pd.DataFrame) -> None:
         lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상"))
 
     brand_search_bar("water")
-    tab_rank, tab_comp, tab_fair, tab_usage, tab_excl, tab_anom = st.tabs(
-        ["순위", "비중", "면적당 비용", "사용량", "전용/공용 분석", "이상 탐지"]
+    tab_mom, tab_rank, tab_comp, tab_fair, tab_usage, tab_excl, tab_anom = st.tabs(
+        ["📈 월별 변화", "순위", "비중", "면적당 비용", "사용량", "전용/공용 분석", "이상 탐지"]
     )
+
+    with tab_mom:
+        render_sheet_mom_tab(
+            df, prev_df, _WATER_CMP_COLS, _WATER_CMP_LABELS, _WATER_CMP_UNITS,
+            billing_period=billing_period, prev_billing_period=prev_billing_period,
+            key_prefix="water_mom",
+            no_prev_msg="이전 달 파일에 수도 사용 내역 시트가 없습니다.",
+        )
 
     # ═══════════════════════════ 순위 ═════════════════════════════════════════
     with tab_rank:
@@ -124,12 +143,12 @@ def render_water_view(df: pd.DataFrame) -> None:
                     + "면적: %{customdata[1]:.0f} m²"
                     + "<extra>%{fullData.name}</extra>"
                 ),
-                text=[f"{v:,.0f}" for v in sub[_col].values],
+                text=[_fmt_won(v) if _unit == "원" else f"{v:,.0f}" for v in sub[_col].values],
                 textposition="outside" if len(_df_r) <= 25 else "none", textfont=dict(size=10),
             ))
         if _r_up < float("inf"):
             fig_r.add_vline(x=_r_up, line_dash="dot", line_color="#DD8A00",
-                            annotation_text=f"IQR 상한 {_r_up:,.0f}",
+                            annotation_text=f"IQR 상한 {_fmt_won(_r_up) if _unit == '원' else f'{_r_up:,.0f}'}",
                             annotation_position="top left", annotation_font_size=10)
         fig_r.update_layout(
             height=max(420, len(_df_r) * 22 + 80), margin=dict(l=10, r=130, t=40, b=40),
@@ -153,11 +172,12 @@ def render_water_view(df: pd.DataFrame) -> None:
                 st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _s = df[_col]
+        _vfmt = _fmt_won if _unit == "원" else lambda v: f"{v:,.1f} {_unit}"
         sc = st.columns(5)
-        sc[0].metric("합계",   f"{_s.sum():,.0f} {_unit}")
-        sc[1].metric("평균",   f"{_s.mean():,.0f} {_unit}")
-        sc[2].metric("중앙값", f"{_s.median():,.0f} {_unit}")
-        sc[3].metric("최대",   f"{_s.max():,.0f} {_unit}")
+        sc[0].metric("합계",   _vfmt(_s.sum()))
+        sc[1].metric("평균",   _vfmt(_s.mean()))
+        sc[2].metric("중앙값", _vfmt(_s.median()))
+        sc[3].metric("최대",   _vfmt(_s.max()))
         sc[4].metric("1위",    df.loc[df[_col].idxmax(), "brand"])
 
     # ═══════════════════════════ 비중 ═════════════════════════════════════════
@@ -210,7 +230,7 @@ def render_water_view(df: pd.DataFrame) -> None:
             _tot_all = df["total"].sum()
             st.dataframe(pd.DataFrame({
                 "항목": list(_dvals.keys()),
-                "금액 (원)": [f"{v:,.0f}" for v in _dvals.values()],
+                "금액": [_fmt_won(v) for v in _dvals.values()],
                 "비중": [f"{v/_tot_all*100:.1f}%" for v in _dvals.values()],
             }), use_container_width=True, hide_index=True)
 
@@ -313,7 +333,7 @@ def render_water_view(df: pd.DataFrame) -> None:
                 fig_bt.add_trace(go.Bar(
                     x=[row["building"]+"동"], y=[row["총부과"]],
                     marker_color=_BLD_COLOR.get(row["building"],"#888"),
-                    text=[f"{row['총부과']/1e6:.2f}M"], textposition="outside",
+                    text=[_fmt_won(row['총부과'])], textposition="outside",
                     textfont=dict(size=11), showlegend=False,
                 ))
             fig_bt.update_layout(title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="white",
@@ -335,7 +355,7 @@ def render_water_view(df: pd.DataFrame) -> None:
                 x=[r["building"]+"동" for _,r in _bld_grp.iterrows()],
                 y=[df[df["building"]==r["building"]][col].sum() for _,r in _bld_grp.iterrows()],
                 name=label, marker_color=clr,
-                text=[f"{df[df['building']==r['building']][col].sum()/1e6:.2f}M" for _,r in _bld_grp.iterrows()],
+                text=[_fmt_won(df[df["building"]==r["building"]][col].sum()) for _,r in _bld_grp.iterrows()],
                 textposition="inside", textfont=dict(size=10, color="white"),
             ))
         fig_bcomp.update_layout(barmode="stack", title="건물별 요금 구성", height=320,
@@ -353,7 +373,7 @@ def render_water_view(df: pd.DataFrame) -> None:
 
         _bld_disp = _bld_grp.copy()
         _bld_disp["총사용량"]      = _bld_disp["총사용량"].apply(lambda v: f"{int(v):,} m³")
-        _bld_disp["총부과"]        = _bld_disp["총부과"].apply(lambda v: f"{v:,.0f} 원")
+        _bld_disp["총부과"]        = _bld_disp["총부과"].apply(_fmt_won)
         _bld_disp["면적당비용"]    = _bld_disp["면적당비용"].apply(lambda v: f"{v:,.0f} 원/m²")
         _bld_disp["브랜드당사용량"] = _bld_disp["브랜드당사용량"].apply(lambda v: f"{v:.1f} m³" if pd.notna(v) else "-")
         _bld_disp["building"]     = _bld_disp["building"] + "동"

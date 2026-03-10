@@ -1,4 +1,4 @@
-"""anomaly_features.py — Cross-sheet anomaly feature engineering for 이상감지 분析.
+"""anomaly_features.py — Cross-sheet anomaly feature engineering for 이상감지 분석.
 
 Aggregates anomaly signals from every available sheet into a single per-brand
 DataFrame with component scores [0, 1] and a weighted composite_score.
@@ -142,12 +142,34 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
         out["spike_worst_util"] = worst_idx.map(
             lambda c: _UTIL_LABELS.get(c.replace("_spike_pct", ""), c) if isinstance(c, str) else ""
         )
+
+        # Peer context: compare each brand's spike to its building average
+        if "building" in out.columns:
+            _peer_context = _compute_peer_context(out, raw_pct_cols)
+            for col in _peer_context.columns:
+                out[col] = _peer_context[col]
     else:
         out["spike_score"]     = 0.0
         out["spike_max_pct"]   = 0.0
         out["spike_worst_util"] = ""
 
     return out
+
+
+def _compute_peer_context(df: pd.DataFrame, raw_pct_cols: list[str]) -> pd.DataFrame:
+    """Compute per-brand spike vs building-average spike ratio (vectorized).
+
+    Uses leave-one-out mean: (building_sum - brand_val) / (building_count - 1).
+    """
+    max_spike = df[raw_pct_cols].clip(lower=0).fillna(0).max(axis=1)
+    bldg = df["building"]
+    bldg_sum = bldg.map(max_spike.groupby(bldg).sum())
+    bldg_cnt = bldg.map(bldg.groupby(bldg).transform("count"))
+    # Leave-one-out average: exclude this brand from its building mean
+    loo_avg = ((bldg_sum - max_spike) / (bldg_cnt - 1)).where(bldg_cnt >= 2).round(1)
+    ratio = (max_spike / loo_avg.replace(0, np.nan)).round(1)
+    return pd.DataFrame({"spike_bldg_avg_pct": loo_avg, "spike_peer_ratio": ratio},
+                        index=df.index)
 
 
 # ── 1. Consumption signals (always available from meter) ──────────────────────
@@ -305,6 +327,48 @@ def _add_consistency_signals(
     return out
 
 
+# ── Reason flags ─────────────────────────────────────────────────────────
+
+def _build_reason_flags(df: pd.DataFrame) -> pd.Series:
+    """Build a concise human-readable '이유' string per brand (vectorized).
+
+    Example output: "급등 +84%(수도) vs건물 7.2x · 수도단가 Z+2.8 · HH(수도,전기)"
+    """
+    def _row_reason(r):
+        parts: list[str] = []
+        # 1. Spike + peer context
+        pct = r.get("spike_max_pct", 0) or 0
+        if pct >= _SPIKE_MEDIUM:
+            s = f"급등 +{pct:.0f}%({r.get('spike_worst_util', '') or ''})"
+            pr = r.get("spike_peer_ratio")
+            if pr is not None and not pd.isna(pr) and pr >= 2.0:
+                s += f" vs건물 {pr:.1f}x"
+            parts.append(s)
+        # 2. Worst unit cost Z ≥ 1.5
+        _Z = [("수도단가", r.get("water_unit_z")),
+              ("전기단가", r.get("elect_unit_z")),
+              ("총비용/m²", r.get("total_cost_per_m2_z"))]
+        _Z = [(l, float(v)) for l, v in _Z if v is not None and not pd.isna(v) and abs(v) >= 1.5]
+        if _Z:
+            l, v = max(_Z, key=lambda x: abs(x[1]))
+            parts.append(f"{l} Z{v:+.1f}")
+        # 3. HH quadrants
+        hh = [lbl for pfx, lbl in _UTIL_LABELS.items() if r.get(f"{pfx}_quadrant") == "HH"]
+        if hh:
+            parts.append(f"HH({','.join(hh)})")
+        # 4. HVAC Z ≥ 2
+        hz = r.get("hvac_intensity_z")
+        if hz is not None and not pd.isna(hz) and abs(hz) >= 2.0:
+            parts.append(f"HVAC Z{hz:+.1f}")
+        # 5. Zero-usage ≥ 2
+        nz = r.get("n_zero_utilities", 0) or 0
+        if nz >= 2:
+            parts.append(f"미계량 {nz}건")
+        return " · ".join(parts) if parts else "—"
+
+    return df.apply(_row_reason, axis=1)
+
+
 # ── Master function ───────────────────────────────────────────────────────────
 
 def build_anomaly_df(
@@ -366,7 +430,10 @@ def build_anomaly_df(
         df[k].fillna(0) * (v / total_w) for k, v in active.items()
     ).round(4)
 
-    # 6. Risk classification
+    # 6. Reason flags — human-readable summary of WHY a brand is flagged
+    df["reason"] = _build_reason_flags(df)
+
+    # 7. Risk classification
     def _risk(s: float) -> str:
         if s >= 0.65: return "🔴 위험"
         if s >= 0.40: return "🟠 주의"

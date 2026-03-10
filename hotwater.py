@@ -4,11 +4,23 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
+from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix, fmt_won as _fmt_won
 from filters import render_sheet_filters, brand_search_bar
+from utils_plot import render_sheet_mom_tab
 
 
-def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
+_HW_CMP_COLS   = ["total", "fee_excl", "usage_m3"]
+_HW_CMP_LABELS = {"total": "🌡 총부과", "fee_excl": "전용요금", "usage_m3": "사용량 (m³)"}
+_HW_CMP_UNITS  = {"total": "원", "fee_excl": "원", "usage_m3": "m³"}
+
+
+def render_hotwater_view(
+    df: pd.DataFrame,
+    season: str | None = None,
+    prev_df: pd.DataFrame | None = None,
+    billing_period: str | None = None,
+    prev_billing_period: str | None = None,
+) -> None:
     st.header("🌡️ 온수 사용 내역 분석")
     if season:
         st.caption(f"적용 시즌: **{season}**")
@@ -23,7 +35,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
 
     mc = st.columns(5)
     mc[0].metric("총 브랜드",   f"{n_total}개")
-    mc[1].metric("총 부과금액", f"{df['total'].sum()/1e6:.2f}M 원")
+    mc[1].metric("총 부과금액", _fmt_won(df['total'].sum()))
     mc[2].metric("계량 브랜드", f"{n_metered} / {n_total}")
     mc[3].metric("총 사용량",   f"{int(df['usage_m3'].sum()):,} m³")
     _avg = df["fee_excl"].sum() / df["usage_m3"].replace(0, np.nan).sum()
@@ -44,9 +56,17 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
         lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상"))
 
     brand_search_bar("hotwater")
-    tab_rank, tab_comp, tab_fair, tab_usage, tab_anom = st.tabs(
-        ["순위", "비중", "면적당 비용", "사용량", "이상 탐지"]
+    tab_mom, tab_rank, tab_comp, tab_fair, tab_usage, tab_anom = st.tabs(
+        ["📈 월별 변화", "순위", "비중", "면적당 비용", "사용량", "이상 탐지"]
     )
+
+    with tab_mom:
+        render_sheet_mom_tab(
+            df, prev_df, _HW_CMP_COLS, _HW_CMP_LABELS, _HW_CMP_UNITS,
+            billing_period=billing_period, prev_billing_period=prev_billing_period,
+            key_prefix="hw_mom",
+            no_prev_msg="이전 달 파일에 온수 사용 내역 시트가 없습니다.",
+        )
 
     # ═══════════════════════════ 순위 ═════════════════════════════════════════
     with tab_rank:
@@ -72,12 +92,12 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                     + "면적: %{customdata[1]:.0f} m²"
                     + "<extra>%{fullData.name}</extra>"
                 ),
-                text=[f"{v:,.0f}" for v in sub[_col].values],
+                text=[_fmt_won(v) if _unit == "원" else f"{v:,.0f}" for v in sub[_col].values],
                 textposition="outside" if len(_df_r) <= 25 else "none", textfont=dict(size=10),
             ))
         if _r_up < float("inf"):
             fig_r.add_vline(x=_r_up, line_dash="dot", line_color="#DD8A00",
-                            annotation_text=f"IQR 상한 {_r_up:,.0f}",
+                            annotation_text=f"IQR 상한 {_fmt_won(_r_up) if _unit == '원' else f'{_r_up:,.0f}'}",
                             annotation_position="top left", annotation_font_size=10)
         fig_r.update_layout(
             height=max(420, len(_df_r)*22+80), margin=dict(l=10,r=130,t=40,b=40),
@@ -100,10 +120,11 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 st.caption(f"선택됨: **{_brand}**")
                 st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
         _s = df[_col]
+        _vfmt = _fmt_won if _unit == "원" else lambda v: f"{v:,.1f} {_unit}"
         sc = st.columns(4)
-        sc[0].metric("합계",   f"{_s.sum():,.0f} {_unit}")
-        sc[1].metric("평균",   f"{_s.mean():,.0f} {_unit}")
-        sc[2].metric("중앙값", f"{_s.median():,.0f} {_unit}")
+        sc[0].metric("합계",   _vfmt(_s.sum()))
+        sc[1].metric("평균",   _vfmt(_s.mean()))
+        sc[2].metric("중앙값", _vfmt(_s.median()))
         sc[3].metric("1위",    df.loc[df[_col].idxmax(), "brand"])
 
     # ═══════════════════════════ 비중 ═════════════════════════════════════════
@@ -294,7 +315,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
                 fig_bt.add_trace(go.Bar(
                     x=[row["building"]+"동"], y=[row["총부과"]],
                     marker_color=_BLD_COLOR.get(row["building"],"#888"),
-                    text=[f"{row['총부과']/1e6:.2f}M"], textposition="outside",
+                    text=[_fmt_won(row['총부과'])], textposition="outside",
                     textfont=dict(size=11), showlegend=False,
                 ))
             fig_bt.update_layout(title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="white",
@@ -312,7 +333,7 @@ def render_hotwater_view(df: pd.DataFrame, season: str | None = None) -> None:
 
         _bgrp_disp = _bgrp.copy()
         _bgrp_disp["총사용량"] = _bgrp_disp["총사용량"].apply(lambda v: f"{int(v):,} m³")
-        _bgrp_disp["총부과"]   = _bgrp_disp["총부과"].apply(lambda v: f"{v:,.0f} 원")
+        _bgrp_disp["총부과"]   = _bgrp_disp["총부과"].apply(_fmt_won)
         _bgrp_disp["원/m²"]   = (_bgrp["총부과"] / _bgrp["총면적"]).apply(lambda v: f"{v:,.0f}")
         _bgrp_disp["building"] = _bgrp_disp["building"] + "동"
         _bgrp_disp = _bgrp_disp.rename(columns={"building":"건물","브랜드수":"브랜드","계량브랜드":"계량",

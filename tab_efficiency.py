@@ -1,10 +1,11 @@
 """tab_efficiency.py — Energy efficiency ranking tab."""
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 from data import to_numeric_series, build_ehp_analysis
 from features import add_display_index, download_df_as_excel
+from biz_report import render_pdf_buttons, generate_efficiency_pdf
+from utils_plot import bar_chart
 from lang import t
 
 _UTIL_LABELS = {
@@ -19,32 +20,6 @@ _UNIT_LABELS = {
     "elect":  "kWh/m²",
     "heat":   "m³(MWh)/m²",
 }
-_BLDG_COLOR_MAP = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
-
-
-def _bar(df: pd.DataFrame, x: str, y: str, title: str, y_label: str,
-         split_by_building: bool = True, key: str | None = None) -> None:
-    fig = px.bar(
-        df, x=x, y=y,
-        color="building" if split_by_building and "building" in df.columns else None,
-        title=title,
-        labels={y: y_label, x: "Brand"},
-        color_discrete_map=_BLDG_COLOR_MAP,
-    )
-    fig.update_layout(height=420, xaxis_tickangle=-45, showlegend=True, margin=dict(t=50, b=80))
-    fig.update_traces(marker_line_width=0.5, marker_line_color="white")
-    _chart_key = key or f"eff_bar_{title[:30].replace(' ', '_')}"
-    _ev = st.plotly_chart(fig, use_container_width=True, key=_chart_key, on_select="rerun")
-    _sel = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
-    if _sel:
-        _pt = _sel[0]
-        _brand = _pt.get("x") or _pt.get("customdata") or ""
-        if isinstance(_brand, (list, tuple)):
-            _brand = _brand[0]
-        _fdf = df[df[x] == _brand] if _brand and x in df.columns else pd.DataFrame()
-        if not _fdf.empty:
-            st.caption(f"선택됨: **{_brand}**")
-            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
 
 def _render_single_utility(cur_df: pd.DataFrame, avail: dict[str, str],
@@ -63,7 +38,6 @@ def _render_single_utility(cur_df: pd.DataFrame, avail: dict[str, str],
     detail_cols = [c for c in ["brand", "building", "floor", "size_m2", "size_py",
                                 curr_col, per_m2_col, per_py_col]
                    if c in cur_df.columns]
-
     eff_df = (
         cur_df[detail_cols].copy()
         .dropna(subset=[per_m2_col])
@@ -75,10 +49,13 @@ def _render_single_utility(cur_df: pd.DataFrame, avail: dict[str, str],
             eff_df[c] = eff_df[c].round(4)
 
     unit = _UNIT_LABELS.get(sel, "unit/m²")
-    _bar(eff_df, x="brand", y=per_m2_col,
-         title=f"{_UTIL_LABELS.get(sel, sel)} — Usage per m² ({unit})",
-         y_label=unit, split_by_building=split_by_building,
-         key=f"eff_single_{sel}_per_m2")
+    bar_chart(
+        eff_df, x="brand", y=per_m2_col,
+        title=f"{_UTIL_LABELS.get(sel, sel)} — Usage per m² ({unit})",
+        y_label=unit,
+        color_col="building" if split_by_building else None,
+        key=f"eff_single_{sel}_per_m2",
+    )
 
     eff_view = add_display_index(eff_df)
     st.dataframe(eff_view, hide_index=True, use_container_width=True)
@@ -86,78 +63,109 @@ def _render_single_utility(cur_df: pd.DataFrame, avail: dict[str, str],
 
 
 def _render_ehp(cur_df: pd.DataFrame, ehp_annual: pd.DataFrame,
-                split_by_building: bool = True) -> None:
-    """Show EHP (HVAC) electricity consumption per m² by brand."""
+                split_by_building: bool = True) -> pd.DataFrame | None:
     st.subheader(t("eff_ehp_title"))
 
-    # Find the most recent year column with data
     year_cols = sorted([c for c in ehp_annual.columns if str(c).isdigit()], reverse=True)
     latest = next((y for y in year_cols if ehp_annual[y].notna().any()), None)
     if latest is None:
         st.info(t("eff_no_ehp"))
-        return
+        return None
 
-    # Aggregate meters by brand for the latest year
     ehp_by_brand = (
-        ehp_annual.groupby("brand")[latest]
-        .sum()
-        .reset_index()
-        .rename(columns={latest: "ehp_kwh"})
+        ehp_annual.groupby("brand")[latest].sum().reset_index().rename(columns={latest: "ehp_kwh"})
     )
-
-    # Join with size data from cur_df
     size_df = (
         cur_df[["brand", "building", "size_m2"]]
-        .groupby(["brand", "building"], as_index=False)["size_m2"]
-        .first()
+        .groupby(["brand", "building"], as_index=False)["size_m2"].first()
     )
     ehp_merged = ehp_by_brand.merge(size_df, on="brand", how="inner")
     ehp_merged = ehp_merged[to_numeric_series(ehp_merged["size_m2"]) > 0].copy()
     ehp_merged["ehp_per_m2"] = (
-        to_numeric_series(ehp_merged["ehp_kwh"]) /
-        to_numeric_series(ehp_merged["size_m2"])
+        to_numeric_series(ehp_merged["ehp_kwh"]) / to_numeric_series(ehp_merged["size_m2"])
     ).round(4)
-    ehp_merged = ehp_merged.dropna(subset=["ehp_per_m2"]).sort_values("ehp_per_m2", ascending=False).reset_index(drop=True)
+    ehp_merged = (ehp_merged.dropna(subset=["ehp_per_m2"])
+                             .sort_values("ehp_per_m2", ascending=False)
+                             .reset_index(drop=True))
 
     if ehp_merged.empty:
         st.info(t("eff_no_ehp_match"))
-        return
+        return None
 
     st.caption(f"Based on {latest} annual EHP usage (kWh) across all meters per brand.")
-    _bar(ehp_merged, x="brand", y="ehp_per_m2",
-         title=f"EHP Usage per m² — {latest} (kWh/m²)",
-         y_label="kWh/m²", split_by_building=split_by_building,
-         key=f"eff_ehp_per_m2_{latest}")
+    bar_chart(
+        ehp_merged, x="brand", y="ehp_per_m2",
+        title=f"EHP Usage per m² — {latest} (kWh/m²)", y_label="kWh/m²",
+        color_col="building" if split_by_building else None,
+        key=f"eff_ehp_per_m2_{latest}",
+    )
 
     ehp_view = add_display_index(ehp_merged[["brand", "building", "size_m2", "ehp_kwh", "ehp_per_m2"]])
     st.dataframe(ehp_view, hide_index=True, use_container_width=True)
     download_df_as_excel(ehp_view, filename=f"efficiency_ehp_{latest}.xlsx", sheet_name="ehp_efficiency")
 
-    return ehp_merged  # returned so combined score can use it
+    # ── EHP multi-year trend chart ─────────────────────────────────────────
+    avail_years = sorted([y for y in year_cols if ehp_annual[y].notna().any()])
+    if len(avail_years) >= 2:
+        st.divider()
+        st.subheader("📈 EHP 연간 추세")
+        st.caption(f"{avail_years[0]}–{avail_years[-1]} 연간 EHP 사용량 추이 (kWh)")
+
+        # Build brand-level annual totals across all years — top 10 by total
+        brand_year = ehp_annual.groupby("brand")[avail_years].sum()
+        top_brands = brand_year.loc[brand_year.sum(axis=1).nlargest(10).index]
+
+        import plotly.graph_objects as _go
+        fig_trend = _go.Figure()
+        for brand in top_brands.index:
+            vals = top_brands.loc[brand]
+            fig_trend.add_trace(_go.Scatter(
+                x=[str(y) for y in avail_years],
+                y=vals.values,
+                mode="lines+markers",
+                name=str(brand)[:20],
+                hovertemplate=f"<b>{brand}</b><br>%{{x}}: %{{y:,.0f}} kWh<extra></extra>",
+            ))
+        fig_trend.update_layout(
+            title=f"EHP 연간 사용량 추이 — 상위 10개 브랜드 (kWh)",
+            height=420,
+            xaxis_title="연도",
+            yaxis_title="사용량 (kWh)",
+            margin=dict(t=55, b=60, l=60, r=20),
+            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5,
+                        font=dict(size=9)),
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_trend, use_container_width=True, key="eff_ehp_trend")
+
+        with st.expander("📋 연간 추세 데이터", expanded=False):
+            trend_view = top_brands.reset_index()
+            trend_view.columns = ["brand"] + [str(y) for y in avail_years]
+            st.dataframe(trend_view, hide_index=True, use_container_width=True)
+
+    return ehp_merged
 
 
-def _render_combined(cur_df: pd.DataFrame, avail: dict[str, str], ehp_merged: pd.DataFrame | None,
-                     split_by_building: bool = True) -> None:
+def _render_combined(cur_df: pd.DataFrame, avail: dict[str, str],
+                     ehp_merged: pd.DataFrame | None, split_by_building: bool = True) -> None:
     st.subheader(t("eff_combined_title"))
     st.caption(t("eff_combined_cap"))
 
-    id_cols = [c for c in ["brand", "building", "floor", "size_m2"] if c in cur_df.columns]
+    id_cols  = [c for c in ["brand", "building", "floor", "size_m2"] if c in cur_df.columns]
     combined = cur_df[id_cols + list(avail.values())].copy().dropna(subset=list(avail.values()), how="all")
 
     norm_cols = []
     for p, col in avail.items():
-        s = to_numeric_series(combined[col])
+        s   = to_numeric_series(combined[col])
         rng = s.max() - s.min()
         norm_col = f"{p}_norm"
         combined[norm_col] = ((s - s.min()) / rng).round(4) if rng > 0 else 0.0
         norm_cols.append(norm_col)
         combined[col] = combined[col].round(4)
 
-    # Optionally include EHP
     if ehp_merged is not None and not ehp_merged.empty:
-        ehp_norm_src = ehp_merged[["brand", "ehp_per_m2"]].copy()
-        combined = combined.merge(ehp_norm_src, on="brand", how="left")
-        s = to_numeric_series(combined["ehp_per_m2"])
+        combined = combined.merge(ehp_merged[["brand", "ehp_per_m2"]], on="brand", how="left")
+        s   = to_numeric_series(combined["ehp_per_m2"])
         rng = s.max() - s.min()
         combined["ehp_norm"] = ((s - s.min()) / rng).round(4) if rng > 0 else 0.0
         norm_cols.append("ehp_norm")
@@ -167,22 +175,24 @@ def _render_combined(cur_df: pd.DataFrame, avail: dict[str, str], ehp_merged: pd
         return
 
     combined["efficiency_score"] = combined[norm_cols].mean(axis=1, skipna=True).round(4)
-    combined = (
-        combined.drop(columns=norm_cols + (["ehp_per_m2"] if "ehp_per_m2" in combined.columns else []))
-        .sort_values("efficiency_score", ascending=False)
-        .reset_index(drop=True)
-    )
+    drop_cols = norm_cols + (["ehp_per_m2"] if "ehp_per_m2" in combined.columns else [])
+    combined  = combined.drop(columns=drop_cols).sort_values("efficiency_score", ascending=False).reset_index(drop=True)
     combined.insert(0, "Rank", range(1, len(combined) + 1))
 
-    _bar(combined, x="brand", y="efficiency_score",
-         title="Combined Efficiency Score (higher = more consumption per m²)",
-         y_label="Score [0–1]", split_by_building=split_by_building,
-         key="eff_combined_score")
+    bar_chart(
+        combined, x="brand", y="efficiency_score",
+        title="Combined Efficiency Score (higher = more consumption per m²)",
+        y_label="Score [0–1]",
+        color_col="building" if split_by_building else None,
+        key="eff_combined_score",
+    )
 
     combined_view = add_display_index(combined.drop(columns=["Rank"]))
     st.dataframe(combined_view, hide_index=True, use_container_width=True)
     download_df_as_excel(combined_view, filename="efficiency_combined.xlsx", sheet_name="efficiency_combined")
 
+
+# ── Public render ─────────────────────────────────────────────────────────────
 
 def render_efficiency_tab(
     cur_df: pd.DataFrame,
@@ -199,11 +209,11 @@ def render_efficiency_tab(
         st.info(t("eff_no_size"))
         return
 
+    # ── Sections ──────────────────────────────────────────────────────────────
     if avail:
         _render_single_utility(cur_df, avail, split_by_building=split_by_building)
         st.divider()
 
-    # ── EHP section: lazy-load on user request ────────────────────────────────
     ehp_merged = None
     if ehp_sheet and file_name and file_data:
         _ehp_key = f"ehp_loaded_{file_name}"
@@ -224,22 +234,20 @@ def render_efficiency_tab(
     if avail:
         _render_combined(cur_df, avail, ehp_merged, split_by_building=split_by_building)
 
-    # ── PDF download ──────────────────────────────────────────────────────────
+    # ── Reference — PDF + raw data ───────────────────────────────────────────
+    st.divider()
     if avail and file_name:
-        st.divider()
         _pdf_key = f"eff_pdf_{file_name}"
-        _col_gen, _col_dl = st.columns([1, 2])
-        with _col_gen:
-            if st.button("📄 PDF 리포트 생성", key=f"gen_eff_pdf_{file_name}"):
-                with st.spinner("PDF 생성 중…"):
-                    from biz_report import generate_efficiency_pdf
-                    st.session_state[_pdf_key] = generate_efficiency_pdf(cur_df, present)
-        if _pdf_key in st.session_state:
-            with _col_dl:
-                st.download_button(
-                    "⬇️ 효율분析 리포트 다운로드",
-                    st.session_state[_pdf_key],
-                    file_name="효율분析_리포트.pdf",
-                    mime="application/pdf",
-                    key=f"dl_eff_pdf_{file_name}",
-                )
+        render_pdf_buttons(
+            _pdf_key,
+            lambda: generate_efficiency_pdf(cur_df, present),
+            "📥 효율분석 리포트",
+            "효율분석_리포트.pdf",
+        )
+
+    with st.expander("📊 원시 데이터", expanded=False):
+        eff_cols = [c for c in ["brand", "building", "floor", "size_m2", "size_py"]
+                    + list(avail.values())
+                    + [f"{p}_current" for p in present]
+                    if c in cur_df.columns]
+        st.dataframe(cur_df[eff_cols], hide_index=True, use_container_width=True)

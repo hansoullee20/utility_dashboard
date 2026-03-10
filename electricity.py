@@ -4,8 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
+from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix, fmt_won as _fmt_won
 from filters import render_sheet_filters, brand_search_bar
+from utils_plot import render_sheet_mom_tab
 
 _USAGE_COLS = [
     ("전기01 (검침)",  "kwh_elec01",      "#4C72B0"),
@@ -24,7 +25,17 @@ _FEE_GROUPS = [
 ]
 
 
-def render_electricity_view(df: pd.DataFrame) -> None:
+_ELEC_CMP_COLS   = ["grand_total", "grand_excl", "grand_comm", "kwh_total"]
+_ELEC_CMP_LABELS = {"grand_total": "⚡ 총부과", "grand_excl": "전용부과", "grand_comm": "공용부과", "kwh_total": "사용량 (KWH)"}
+_ELEC_CMP_UNITS  = {"grand_total": "원", "grand_excl": "원", "grand_comm": "원", "kwh_total": "KWH"}
+
+
+def render_electricity_view(
+    df: pd.DataFrame,
+    prev_df: pd.DataFrame | None = None,
+    billing_period: str | None = None,
+    prev_billing_period: str | None = None,
+) -> None:
     st.header("⚡ 전체 전기 사용내역 분석")
 
     df = render_sheet_filters(df, key_prefix="elec")
@@ -36,11 +47,11 @@ def render_electricity_view(df: pd.DataFrame) -> None:
 
     mc = st.columns(5)
     mc[0].metric("총 브랜드",   f"{n_total}개")
-    mc[1].metric("총 부과금액", f"{df['grand_total'].sum()/1e6:.2f}M 원")
+    mc[1].metric("총 부과금액", _fmt_won(df['grand_total'].sum()))
     _ep = df["grand_excl"].sum() / df["grand_total"].sum() * 100 if df["grand_total"].sum() else 0
-    mc[2].metric("전용 부과",   f"{df['grand_excl'].sum()/1e6:.2f}M ({_ep:.0f}%)")
+    mc[2].metric("전용 부과",   f"{_fmt_won(df['grand_excl'].sum())} ({_ep:.0f}%)")
     mc[3].metric("총 사용량",   f"{int(df['kwh_total'].sum()):,} KWH")
-    mc[4].metric("공용 부과",   f"{df['grand_comm'].sum()/1e6:.2f}M 원")
+    mc[4].metric("공용 부과",   _fmt_won(df['grand_comm'].sum()))
 
 
     # ── Anomaly flags ─────────────────────────────────────────────────────────
@@ -61,9 +72,17 @@ def render_electricity_view(df: pd.DataFrame) -> None:
     )
 
     brand_search_bar("elec")
-    tab_rank, tab_usage, tab_fee, tab_fair, tab_anom = st.tabs(
-        ["순위", "사용량 구성", "요금 구성", "면적당 비용", "이상 탐지"]
+    tab_mom, tab_rank, tab_usage, tab_fee, tab_fair, tab_anom = st.tabs(
+        ["📈 월별 변화", "순위", "사용량 구성", "요금 구성", "면적당 비용", "이상 탐지"]
     )
+
+    with tab_mom:
+        render_sheet_mom_tab(
+            df, prev_df, _ELEC_CMP_COLS, _ELEC_CMP_LABELS, _ELEC_CMP_UNITS,
+            billing_period=billing_period, prev_billing_period=prev_billing_period,
+            key_prefix="elec_mom",
+            no_prev_msg="이전 달 파일에 전기 사용 내역 시트가 없습니다.",
+        )
 
     # ═══════════════════════════ 순위 ═════════════════════════════════════════
     with tab_rank:
@@ -103,13 +122,13 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                     + "면적: %{customdata[1]:.0f} m²"
                     + "<extra>%{fullData.name}</extra>"
                 ),
-                text=[f"{v:,.0f}" for v in sub[_col].values],
+                text=[_fmt_won(v) if _unit == "원" else f"{v:,.0f}" for v in sub[_col].values],
                 textposition="outside" if len(_df_r) <= 25 else "none", textfont=dict(size=10),
             ))
 
         if _r_up < float("inf"):
             fig_r.add_vline(x=_r_up, line_dash="dot", line_color="#DD8A00",
-                            annotation_text=f"IQR 상한 {_r_up:,.0f}",
+                            annotation_text=f"IQR 상한 {_fmt_won(_r_up) if _unit == '원' else f'{_r_up:,.0f}'}",
                             annotation_position="top left", annotation_font_size=10)
 
         fig_r.update_layout(
@@ -137,10 +156,11 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
         _s = _df_r[_col]
+        _vfmt = _fmt_won if _unit == "원" else lambda v: f"{v:,.0f} {_unit}"
         sc = st.columns(4)
-        sc[0].metric("합계",   f"{_s.sum():,.0f} {_unit}" if _metric != "실효 단가 (원/KWH)" else f"{_s.mean():,.0f} {_unit}")
-        sc[1].metric("평균",   f"{_s.mean():,.0f} {_unit}")
-        sc[2].metric("중앙값", f"{_s.median():,.0f} {_unit}")
+        sc[0].metric("합계",   _vfmt(_s.sum()) if _metric != "실효 단가 (원/KWH)" else _vfmt(_s.mean()))
+        sc[1].metric("평균",   _vfmt(_s.mean()))
+        sc[2].metric("중앙값", _vfmt(_s.median()))
         sc[3].metric("1위",    _df_r.loc[_df_r[_col].idxmax(), "brand"])
 
     # ═══════════════════════════ 사용량 구성 ══════════════════════════════════
@@ -186,7 +206,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 fig_bkt.add_trace(go.Bar(
                     x=[row["building"] + "동"], y=[row["총부과"]],
                     marker_color=_BLD_COLOR.get(row["building"], "#888"),
-                    text=[f"{row['총부과']/1e6:.2f}M"],
+                    text=[_fmt_won(row['총부과'])],
                     textposition="outside", textfont=dict(size=11),
                     showlegend=False,
                 ))
@@ -238,7 +258,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
 
         _bgrp_disp = _bgrp.copy()
         _bgrp_disp["총KWH"]  = _bgrp_disp["총KWH"].apply(lambda v: f"{int(v):,} KWH")
-        _bgrp_disp["총부과"] = _bgrp_disp["총부과"].apply(lambda v: f"{v/1e6:.2f}M 원")
+        _bgrp_disp["총부과"] = _bgrp_disp["총부과"].apply(_fmt_won)
         _bgrp_disp["KWH/m²"] = (_bgrp["총KWH"] / _bgrp["총면적"]).apply(lambda v: f"{v:.1f}")
         _bgrp_disp["원/m²"]  = (_bgrp["총부과"] / _bgrp["총면적"]).apply(lambda v: f"{v:,.0f}")
         _bgrp_disp["building"] = _bgrp_disp["building"] + "동"
@@ -311,11 +331,13 @@ def render_electricity_view(df: pd.DataFrame) -> None:
         _cmp_rows = []
         for label, (col, _) in _cmp_metrics.items():
             if col not in df.columns: continue
+            _is_won = "(원)" in label
+            _f = _fmt_won if _is_won else lambda v: f"{v:,.0f}"
             _cmp_rows.append({
                 "항목":        label,
-                "EHP 있음 평균":  f"{df_ehp[col].mean():,.0f}",
-                "EHP 없음 평균":  f"{df_noehp[col].mean():,.0f}" if len(df_noehp) > 0 else "-",
-                "EHP 있음 합계":  f"{df_ehp[col].sum():,.0f}",
+                "EHP 있음 평균":  _f(df_ehp[col].mean()),
+                "EHP 없음 평균":  _f(df_noehp[col].mean()) if len(df_noehp) > 0 else "-",
+                "EHP 있음 합계":  _f(df_ehp[col].sum()),
             })
         st.dataframe(pd.DataFrame(_cmp_rows), use_container_width=True, hide_index=True)
 
@@ -332,7 +354,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 fig_cmp = go.Figure()
                 fig_cmp.add_trace(go.Bar(x=_grp["그룹"], y=_grp["평균"], name="평균",
                                          marker_color=[clr,"#AAAAAA"],
-                                         text=[f"{v:,.0f}" for v in _grp["평균"]],
+                                         text=[_fmt_won(v) if col == "grand_total" else f"{v:,.0f}" for v in _grp["평균"]],
                                          textposition="outside"))
                 fig_cmp.update_layout(title=f"{label} 평균 비교", height=280, plot_bgcolor="white",
                                       yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
@@ -390,7 +412,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             _tot_fee = df["grand_total"].sum()
             _tbl = pd.DataFrame({
                 "항목": ["전용 합계", "EHP 합계", "공용 합계"],
-                "금액 (원)": [f"{df[c].sum():,.0f}" for c in ["excl_total","ehp_total","comm_total"]],
+                "금액": [_fmt_won(df[c].sum()) for c in ["excl_total","ehp_total","comm_total"]],
                 "비중": [f"{df[c].sum()/_tot_fee*100:.1f}%" for c in ["excl_total","ehp_total","comm_total"]],
             })
             st.dataframe(_tbl, use_container_width=True, hide_index=True)
@@ -399,7 +421,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
             st.divider()
             _climate_total = df["excl_climate"].sum() + df["ehp_climate"].sum() + df["comm_climate"].sum()
             _climate_pct   = _climate_total / _tot_fee * 100 if _tot_fee else 0
-            st.info(f"**기후변화요금** 총 {_climate_total/1e6:.2f}M 원 — 전체 전기요금의 **{_climate_pct:.1f}%**")
+            st.info(f"**기후변화요금** 총 {_fmt_won(_climate_total)} — 전체 전기요금의 **{_climate_pct:.1f}%**")
 
             # 역률요금 분석
             st.subheader("역률요금 (역률 조정 할인/할증)")
@@ -415,7 +437,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                         x=df_pf["역률요금_합계"].values,
                         y=[str(b)[:26] for b in df_pf["brand"]],
                         orientation="h", marker_color=_pf_colors,
-                        text=[f"{v:,.0f}" for v in df_pf["역률요금_합계"].values],
+                        text=[_fmt_won(v, signed=True) for v in df_pf["역률요금_합계"].values],
                         textposition="outside", textfont=dict(size=10),
                     ))
                     fig_pf.add_vline(x=0, line_color="#888", line_width=1)
@@ -438,9 +460,9 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                     _disc = df_pf[df_pf["역률요금_합계"] < 0]
                     _surch = df_pf[df_pf["역률요금_합계"] > 0]
                     pc = st.columns(3)
-                    pc[0].metric("할인 브랜드", f"{len(_disc)}개", delta=f"{_disc['역률요금_합계'].sum():,.0f} 원")
-                    pc[1].metric("할증 브랜드", f"{len(_surch)}개", delta=f"{_surch['역률요금_합계'].sum():,.0f} 원", delta_color="inverse")
-                    pc[2].metric("순 역률요금", f"{df_pf['역률요금_합계'].sum():,.0f} 원")
+                    pc[0].metric("할인 브랜드", f"{len(_disc)}개", delta=_fmt_won(_disc['역률요금_합계'].sum(), signed=True))
+                    pc[1].metric("할증 브랜드", f"{len(_surch)}개", delta=_fmt_won(_surch['역률요금_합계'].sum(), signed=True), delta_color="inverse")
+                    pc[2].metric("순 역률요금", _fmt_won(df_pf['역률요금_합계'].sum()))
 
         else:
             _n_show2 = st.slider("상위 N개 브랜드", 10, min(60, n_total), min(30, n_total),
@@ -455,7 +477,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
                 fig_fs.add_trace(go.Bar(
                     x=_top2[col].fillna(0).values, y=_fy, name=label,
                     orientation="h", marker_color=clr,
-                    text=[f"{v/1e6:.2f}M" if v >= 1e5 else "" for v in _top2[col].fillna(0).values],
+                    text=[_fmt_won(v) if v >= 1e4 else "" for v in _top2[col].fillna(0).values],
                     textposition="inside", textfont=dict(size=9, color="white"),
                 ))
             fig_fs.update_layout(

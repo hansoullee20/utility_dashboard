@@ -23,11 +23,15 @@ def plot_hist_with_tails(
     display_cols: list = None,
     tail_pct: float = None,
     val_scale: float = 1.0,
+    show_bins_slider: bool = True,
 ):
     vals = to_numeric_series(s).dropna()
     if vals.empty:
         st.info(f"No numeric values for {title}")
         return None
+
+    if show_bins_slider:
+        bins = st.slider("Bins", min_value=5, max_value=200, value=bins, step=5, key=f"{key}_bins")
 
     x = vals.values.astype(float)
     xmin, xmax = float(np.min(x)), float(np.max(x))
@@ -48,7 +52,7 @@ def plot_hist_with_tails(
         unselected=dict(marker=dict(opacity=0.9)),
         selected=dict(marker=dict(opacity=1.0)),
         textposition="outside",
-        textfont=dict(size=9, color="#666666"),
+        textfont=dict(size=9, color="#222222"),
         hovertemplate="<b>%{customdata[0]:.4g} – %{customdata[1]:.4g}</b><br>Count: %{y}<extra></extra>",
     )
 
@@ -135,7 +139,7 @@ def plot_hist_with_tails(
             tickfont=dict(size=11, color="#222222"),
         ),
         yaxis=dict(
-            title=dict(text="Count", font=dict(size=11, color="#222222")),
+            title=dict(text="Count (건)", font=dict(size=11, color="#222222")),
             showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
             zeroline=True, zerolinecolor="#AAAAAA", zerolinewidth=1,
             showline=True, linecolor="#AAAAAA", linewidth=1,
@@ -187,9 +191,18 @@ def plot_hist_with_tails(
                 x0, x1 = float(cd[0]), float(cd[1])
                 mask = (_scaled >= x0) & (_scaled <= x1)
                 bin_df = source_df[mask].copy()
-                cols = [c for c in (display_cols or []) if c in bin_df.columns]
-                if not cols:
-                    cols = [c for c in ["brand", "building"] if c in bin_df.columns] + [val_col]
+                _bin_id_back  = [c for c in ["building", "floor"] if c in bin_df.columns]
+                _bin_id_front = [c for c in (display_cols or []) if c in bin_df.columns
+                                 and c not in _bin_id_back and c != val_col]
+                if not _bin_id_front:
+                    _bin_id_front = [c for c in ["brand"] if c in bin_df.columns]
+                _bin_usage = [val_col] if val_col in bin_df.columns else []
+                _bin_monthly = []
+                if val_col and (val_col.endswith("_change") or val_col.endswith("_pct")):
+                    _bpfx = val_col.rsplit("_", 1)[0]
+                    _bin_monthly = [c for c in [f"{_bpfx}_current", f"{_bpfx}_previous"]
+                                    if c in bin_df.columns and c not in _bin_id_front]
+                cols = _bin_id_front + _bin_usage + _bin_monthly + _bin_id_back
                 st.markdown(f"**Bin {x0:.4g} – {x1:.4g}** — {len(bin_df)} business(es)")
                 st.dataframe(bin_df[cols].reset_index(drop=True),
                              hide_index=True, use_container_width=True)
@@ -207,7 +220,13 @@ def plot_hist_with_tails(
         if not _id_front:
             _id_front = [c for c in ["brand"] if c in source_df.columns]
         _usage_cols = [val_col] if val_col in source_df.columns else []
-        _out_cols = _id_front + _usage_cols + _id_back
+        _monthly_cols = []
+        if val_col and (val_col.endswith("_change") or val_col.endswith("_pct")):
+            _pfx = val_col.rsplit("_", 1)[0]
+            for _mc in [f"{_pfx}_current", f"{_pfx}_previous"]:
+                if _mc in source_df.columns and _mc not in _id_front and _mc not in _usage_cols:
+                    _monthly_cols.append(_mc)
+        _out_cols = _id_front + _usage_cols + _monthly_cols + _id_back
 
         with st.expander(f"🔶 이상치 목록 — {_n_out}건  (상위 {_n_top} · 하위 {_n_bot})",
                          expanded=_n_out > 0):

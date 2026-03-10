@@ -220,6 +220,19 @@ def _render_all_outliers(cur_df: pd.DataFrame, present: list, tail: int, t) -> N
                     format_func=lambda x: _all_hist_labels[x][_hlang],
                     horizontal=True, key=f"all_hist_layout_{p}",
                 )
+                _all_bk, _all_bik = f"all_bins_{p}", f"all_bins_i_{p}"
+                if _all_bk  not in st.session_state: st.session_state[_all_bk]  = 50
+                if _all_bik not in st.session_state: st.session_state[_all_bik] = 50
+                def _sync_abs(): st.session_state[_all_bik] = st.session_state[_all_bk]
+                def _sync_abi(): st.session_state[_all_bk]  = st.session_state[_all_bik]
+                _ab1, _ab2 = st.columns([3, 1])
+                with _ab1:
+                    st.slider("Bins", 5, 200, value=st.session_state[_all_bk], step=5,
+                              key=_all_bk, on_change=_sync_abs)
+                with _ab2:
+                    st.number_input("Bins", 5, 200, value=st.session_state[_all_bik], step=5,
+                                    key=_all_bik, label_visibility="hidden", on_change=_sync_abi)
+                _abins = int(st.session_state[_all_bk])
                 _ak = st.slider("IQR 배수 (k)", 0.5, 3.0, 1.5, 0.25,
                                 key=f"all_iqr_k_{p}",
                                 help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
@@ -243,24 +256,24 @@ def _render_all_outliers(cur_df: pd.DataFrame, present: list, tail: int, t) -> N
                     _hc1, _hc2 = st.columns(2)
                     with _hc1:
                         _show_eq_c()
-                        plot_hist_with_tails(_sc, 50, _clo, _chi, f"Change: {cc}",
+                        plot_hist_with_tails(_sc, _abins, _clo, _chi, f"Change: {cc}",
                                              source_df=cur_df, val_col=cc, key=f"all_hist_chg_{p}",
-                                             display_cols=detail_cols)
+                                             display_cols=detail_cols, show_bins_slider=False)
                     with _hc2:
                         _show_eq_p()
-                        plot_hist_with_tails(_sp, 50, _plo, _phi, f"Pct: {pc}",
+                        plot_hist_with_tails(_sp, _abins, _plo, _phi, f"Pct: {pc}",
                                              source_df=cur_df, val_col=pc, key=f"all_hist_pct_{p}",
-                                             display_cols=detail_cols)
+                                             display_cols=detail_cols, show_bins_slider=False)
                 elif _all_hist_sel == "Change only":
                     _show_eq_c()
-                    plot_hist_with_tails(_sc, 50, _clo, _chi, f"Change: {cc}",
+                    plot_hist_with_tails(_sc, _abins, _clo, _chi, f"Change: {cc}",
                                          source_df=cur_df, val_col=cc, key=f"all_hist_chg_{p}",
-                                         display_cols=detail_cols)
+                                         display_cols=detail_cols, show_bins_slider=False)
                 else:  # % Change only
                     _show_eq_p()
-                    plot_hist_with_tails(_sp, 50, _plo, _phi, f"Pct: {pc}",
+                    plot_hist_with_tails(_sp, _abins, _plo, _phi, f"Pct: {pc}",
                                          source_df=cur_df, val_col=pc, key=f"all_hist_pct_{p}",
-                                         display_cols=detail_cols)
+                                         display_cols=detail_cols, show_bins_slider=False)
                 st.divider()
 
             for quad, label in [
@@ -694,6 +707,7 @@ def render_meter_view(
                 s_change, _b_c, _lo_c2, _hi_c2, f"Change: {change_col}",
                 source_df=cur_df, val_col=change_col, key="hist_change",
                 display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
+                show_bins_slider=False,
             )
         with hc2:
             _b_p, _lo_p2, _hi_p2 = _hist_controls("pct")
@@ -701,6 +715,7 @@ def render_meter_view(
                 s_pct, _b_p, _lo_p2, _hi_p2, f"Pct: {pct_col}",
                 source_df=cur_df, val_col=pct_col, key="hist_pct",
                 display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
+                show_bins_slider=False,
             )
     elif hist_layout == "Change only":
         _b_c, _lo_c2, _hi_c2 = _hist_controls("chg")
@@ -708,6 +723,7 @@ def render_meter_view(
             s_change, _b_c, _lo_c2, _hi_c2, f"Change: {change_col}",
             source_df=cur_df, val_col=change_col, key="hist_change",
             display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
+            show_bins_slider=False,
         )
     else:
         _b_p, _lo_p2, _hi_p2 = _hist_controls("pct")
@@ -715,6 +731,7 @@ def render_meter_view(
             s_pct, _b_p, _lo_p2, _hi_p2, f"Pct: {pct_col}",
             source_df=cur_df, val_col=pct_col, key="hist_pct",
             display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
+            show_bins_slider=False,
         )
 
     _sheet_names = get_sheet_names(file_name, file_map[file_name])
