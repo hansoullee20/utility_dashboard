@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from filters import brand_search_bar
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper
 from viz import plot_hist_with_tails as _plot_hist
 
@@ -142,6 +143,7 @@ def render_summary_view(
     mc[3].metric("온수",           f"{_fmt_won(merged['hw_total'].sum())} ({merged['hw_total'].sum()/_util_sum*100:.0f}%)")
     mc[4].metric("전기",           f"{_fmt_won(merged['elec_total'].sum())} ({merged['elec_total'].sum()/_util_sum*100:.0f}%)")
 
+    brand_search_bar("summary")
     tab_rank, tab_mix, tab_area, tab_bld, tab_cat, tab_mgmt = st.tabs(
         ["총 유틸리티 순위", "유틸리티 구성", "면적당 총비용", "건물별 비교", "🔍 항목별 분석", "📋 경영 보고"]
     )

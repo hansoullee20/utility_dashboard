@@ -1,6 +1,18 @@
-"""sidebar.py — Sidebar UI: language, file upload, presets, bins, tail %, debug."""
+"""sidebar.py — Sidebar UI: language, directory input, presets, bins, tail %, debug."""
+import os
+import glob as _glob
 import streamlit as st
 from lang import t
+
+
+class _FileEntry:
+    """Mimics Streamlit UploadedFile interface for locally loaded files."""
+    def __init__(self, name: str, data: bytes):
+        self.name = name
+        self._data = data
+
+    def getvalue(self) -> bytes:
+        return self._data
 
 
 def setup_sidebar():
@@ -11,19 +23,32 @@ def setup_sidebar():
 
         st.divider()
         st.header(t("upload"))
-        uploads = st.file_uploader(
-            t("upload_label"),
-            type=["csv", "xlsx", "xls", "xlsm", "parquet"],
-            accept_multiple_files=True,
-            key="file_uploader",
+        dir_path = st.text_input(
+            "데이터 폴더 경로",
+            value="./data",
+            key="dir_path_input",
         )
 
-        # Persist uploaded files across reruns (e.g. language switches).
-        # file_uploader returns [] when no new interaction — fall back to cache.
-        if uploads:
-            st.session_state["_cached_uploads"] = uploads
-        else:
-            uploads = st.session_state.get("_cached_uploads", [])
+        uploads = []
+        if dir_path:
+            dir_path = os.path.abspath(dir_path)
+            if os.path.isdir(dir_path):
+                found = sorted(
+                    f for pat in ("*.xlsx", "*.xlsm", "*.xls")
+                    for f in _glob.glob(os.path.join(dir_path, pat))
+                )
+                if found:
+                    for fpath in found:
+                        try:
+                            with open(fpath, "rb") as fh:
+                                uploads.append(_FileEntry(os.path.basename(fpath), fh.read()))
+                        except Exception as e:
+                            st.warning(f"{os.path.basename(fpath)} 읽기 실패: {e}")
+                    st.caption(f"{len(uploads)}개 파일 로드됨")
+                else:
+                    st.warning("폴더에 Excel 파일이 없습니다.")
+            else:
+                st.warning("폴더를 찾을 수 없습니다.")
 
         st.divider()
         st.header(t("settings"))

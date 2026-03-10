@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
-from filters import render_sheet_filters
+from filters import render_sheet_filters, brand_search_bar
 
 _USAGE_COLS = [
     ("전기01 (검침)",  "kwh_elec01",      "#4C72B0"),
@@ -60,6 +60,7 @@ def render_electricity_view(df: pd.DataFrame) -> None:
         lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상")
     )
 
+    brand_search_bar("elec")
     tab_rank, tab_usage, tab_fee, tab_fair, tab_anom = st.tabs(
         ["순위", "사용량 구성", "요금 구성", "면적당 비용", "이상 탐지"]
     )

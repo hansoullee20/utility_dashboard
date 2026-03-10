@@ -9,6 +9,7 @@ import streamlit as st
 
 from data import st_safe
 from features import add_display_index, download_df_as_excel, get_simple_floors, parse_floor_value
+from filters import brand_search_bar
 from viz import plot_hist_with_tails
 
 # Color palette — mirrors viz.py
@@ -1698,6 +1699,11 @@ def render_billing_view(df: pd.DataFrame) -> None:
     else:
         fdf = bldg_df.copy()
 
+    # Brand search (widget rendered above tabs via brand_search_bar)
+    _billing_brand_search = st.session_state.get("billing_brand_search", "").strip().lower()
+    if _billing_brand_search:
+        fdf = fdf[fdf["brand"].astype(str).str.lower().str.contains(_billing_brand_search, na=False)].copy()
+
     if fdf.empty:
         st.warning("No data for the selected filters.")
         return
@@ -1725,6 +1731,7 @@ def render_billing_view(df: pd.DataFrame) -> None:
             )
 
     # ── Tabs ──
+    brand_search_bar("billing")
     tab_rank, tab_hist, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
         "업체별 순위", "분포", "건물별 요약",
         "구성 비율", "공용/전용 비율", "단위면적당",

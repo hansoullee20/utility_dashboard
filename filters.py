@@ -60,19 +60,12 @@ def _apply_gongshil(df, mode: str):
 # ── Primitive: show widgets only ─────────────────────────────────────────────
 
 def show_filter_widgets(ref_df, key_prefix: str = ""):
-    """Render building / floor / 공실 widgets and return the raw selections.
-
-    Parameters
-    ----------
-    ref_df      : DataFrame used to build the available option lists.
-    key_prefix  : unique prefix for Streamlit widget keys.
+    """Render brand search + building / floor / 공실 widgets and return selections.
 
     Returns
     -------
-    (sel_bldg, sel_floor, gong_mode)
-        sel_bldg  : list of selected buildings (may include "All")
-        sel_floor : list of selected floors    (may include "All")
-        gong_mode : one of "All" | "Exclude Vacancy" | "Vacancy Only"
+    (sel_bldg, sel_floor, gong_mode, brand_search)
+        brand_search : lowercase search string (empty = no filter)
     """
     all_buildings = (
         sorted(ref_df["building"].dropna().astype(str).str.strip().unique())
@@ -88,6 +81,10 @@ def show_filter_widgets(ref_df, key_prefix: str = ""):
     bkey = f"{key_prefix}_building"
     fkey = f"{key_prefix}_floor"
     gkey = f"{key_prefix}_gongshil"
+    skey = f"{key_prefix}_brand_search"
+
+    # Read from session state — the widget is rendered above tabs via brand_search_bar()
+    brand_search = st.session_state.get(skey, "").strip().lower()
 
     fc1, fc2, fc3 = st.columns(3)
     with fc1:
@@ -108,17 +105,16 @@ def show_filter_widgets(ref_df, key_prefix: str = ""):
             key=gkey,
         )
 
-    return sel_bldg, sel_floor, gong_mode
+    return sel_bldg, sel_floor, gong_mode, brand_search
 
 
 # ── Primitive: apply selections ───────────────────────────────────────────────
 
-def apply_sheet_filter(df, sel_bldg, sel_floor, gong_mode: str):
-    """Apply building / floor / 공실 selections to a row-level DataFrame.
+def apply_sheet_filter(df, sel_bldg, sel_floor, gong_mode: str, brand_search: str = ""):
+    """Apply brand search + building / floor / 공실 selections to a row-level DataFrame."""
+    if brand_search and "brand" in df.columns:
+        df = df[df["brand"].astype(str).str.lower().str.contains(brand_search, na=False)].copy()
 
-    Floor matching handles compound values ('1F/2F', '2F~5F').
-    Returns a filtered copy.
-    """
     if "building" in df.columns and "All" not in sel_bldg and sel_bldg:
         df = df[df["building"].astype(str).str.strip().isin(sel_bldg)].copy()
 
@@ -136,13 +132,9 @@ def apply_sheet_filter(df, sel_bldg, sel_floor, gong_mode: str):
 # ── Convenience wrapper for single-df sheet views ────────────────────────────
 
 def render_sheet_filters(df, key_prefix: str = ""):
-    """Show filter widgets and apply them to a single row-level DataFrame.
-
-    For water, hotwater, electricity views where one call covers everything.
-    Returns the filtered DataFrame.
-    """
-    sel_bldg, sel_floor, gong_mode = show_filter_widgets(df, key_prefix)
-    return apply_sheet_filter(df, sel_bldg, sel_floor, gong_mode)
+    """Show filter widgets and apply them to a single row-level DataFrame."""
+    sel_bldg, sel_floor, gong_mode, brand_search = show_filter_widgets(df, key_prefix)
+    return apply_sheet_filter(df, sel_bldg, sel_floor, gong_mode, brand_search)
 
 
 # ── Meter-based analysis views ────────────────────────────────────────────────
@@ -162,7 +154,7 @@ def render_meter_filters(raw_df, key_prefix: str = ""):
     )
     all_floors = get_simple_floors(raw_df) if "floor" in raw_df.columns else []
 
-    sel_bldg, sel_floor, gong_mode = show_filter_widgets(raw_df, key_prefix)
+    sel_bldg, sel_floor, gong_mode, brand_search = show_filter_widgets(raw_df, key_prefix)
 
     active_buildings = all_buildings if "All" in sel_bldg else sel_bldg
     active_floors    = all_floors    if "All" in sel_floor else sel_floor
@@ -189,5 +181,21 @@ def render_meter_filters(raw_df, key_prefix: str = ""):
         st.warning(t("vacancy_only") if gong_mode == "Vacancy Only" else t("vacancy_exclude"))
         st.stop()
 
+    if brand_search and "brand" in cur_df.columns:
+        cur_df = cur_df[cur_df["brand"].astype(str).str.lower().str.contains(brand_search, na=False)].copy()
+        if cur_df.empty:
+            st.warning(f"'{brand_search}' 검색 결과가 없습니다.")
+            st.stop()
+
     split_by_building = not ("All" in sel_bldg and "All" in sel_floor)
-    return cur_df, active_buildings, active_floors, gong_mode, split_by_building
+    return cur_df, active_buildings, active_floors, gong_mode, split_by_building, ref_df
+
+
+def brand_search_bar(key_prefix: str = "") -> None:
+    """Render the brand search text input. Call this just above st.tabs().
+
+    The filter itself is applied earlier via session state in show_filter_widgets()
+    or apply_sheet_filter(). This function only renders the visible widget.
+    """
+    skey = f"{key_prefix}_brand_search"
+    st.text_input("🔍 브랜드 검색", placeholder="브랜드명 입력...", key=skey)

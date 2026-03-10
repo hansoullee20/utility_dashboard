@@ -22,22 +22,73 @@ def create_change_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
     for prev, curr, usage, diff, pct in specs:
-        if all(c in df.columns for c in (prev, curr, usage)):
-            v_prev = to_numeric_series(df[prev])
-            v_curr = to_numeric_series(df[curr])
+        if prev not in df.columns or curr not in df.columns:
+            continue
+        v_prev = to_numeric_series(df[prev])
+        v_curr = to_numeric_series(df[curr])
+        d = v_curr - v_prev
+        p = (d / v_prev.replace(0, np.nan)) * 100
 
-            # If current exists but previous is NaN, treat previous as 0 for change only
-            v_prev_for_change = v_prev.fillna(0).where(v_curr.notna(), other=np.nan)
-            d = v_curr - v_prev_for_change
-
-            # Pct stays NaN when previous is NaN or 0
-            p = (d / v_prev.replace(0, np.nan)) * 100
-
+        if usage in df.columns:
             idx = df.columns.get_loc(usage)
             df.insert(idx + 1, diff, d)
             df.insert(idx + 2, pct, p.round(2))
-    
+        else:
+            df[diff] = d
+            df[pct] = p.round(2)
+
     return df
+
+
+_USAGE_MAP = [
+    # (usage_col_in_file,   prev_name,          curr_name,          meter_prev,           meter_curr)
+    ("water_usage_m3",    "water_previous",   "water_current",   "water_meter_prev",   "water_meter_curr"),
+    ("hwater_usage_m3",   "hwater_previous",  "hwater_current",  "hwater_meter_prev",  "hwater_meter_curr"),
+    ("elect_usage_kw",    "elect_previous",   "elect_current",   "elect_meter_prev",   "elect_meter_curr"),
+    ("heat_usage_m3_mwh", "heat_previous",    "heat_current",    "heat_meter_prev",    "heat_meter_curr"),
+]
+
+
+def build_from_two_files(df_cur: pd.DataFrame, df_prev: pd.DataFrame | None) -> pd.DataFrame:
+    """Convert apply_header_rows() outputs into a DataFrame ready for create_change_columns().
+
+    After this call:
+      *_previous  = last month's actual usage  (from df_prev)
+      *_current   = this month's actual usage  (from df_cur)
+      *_meter_prev / *_meter_curr = original cumulative meter readings (for backward detection)
+
+    create_change_columns() then computes correct MoM *_change and *_pct.
+    If df_prev is None, *_previous columns are omitted and change/pct will be skipped.
+    """
+    cur = df_cur.copy()
+
+    # Rename cumulative readings out of the way, rename usage → *_current
+    cum_renames = {}
+    usage_renames = {}
+    for usage_col, prev_name, curr_name, meter_prev, meter_curr in _USAGE_MAP:
+        if prev_name in cur.columns:
+            cum_renames[prev_name] = meter_prev
+        if curr_name in cur.columns:
+            cum_renames[curr_name] = meter_curr
+        if usage_col in cur.columns:
+            usage_renames[usage_col] = curr_name
+    cur = cur.rename(columns={**cum_renames, **usage_renames})
+
+    if df_prev is None:
+        return cur
+
+    merge_keys = [k for k in ["brand", "building", "floor", "unit"]
+                  if k in cur.columns and k in df_prev.columns]
+
+    prev_cols = merge_keys.copy()
+    prev_renames = {}
+    for usage_col, prev_name, curr_name, _, _ in _USAGE_MAP:
+        if usage_col in df_prev.columns:
+            prev_cols.append(usage_col)
+            prev_renames[usage_col] = prev_name
+
+    prev = df_prev[prev_cols].copy().rename(columns=prev_renames)
+    return cur.merge(prev, on=merge_keys, how="left")
 
 
 def aggregate_by_brand(df: pd.DataFrame) -> pd.DataFrame:

@@ -13,10 +13,12 @@ from data import (
     BILLING_SHEET_NAME, EHP_OAC_SHEET_NAME,
 )
 from features import (
-    apply_header_rows, create_change_columns, aggregate_by_brand, split_brand_by_floor,
+    apply_header_rows, create_change_columns, build_from_two_files,
+    aggregate_by_brand, split_brand_by_floor,
     get_simple_floors, sanitize,
     cols_brand_then_category, add_display_index, download_df_as_excel,
 )
+from filters import brand_search_bar
 from viz import plot_hist_with_tails
 from report import generate_report_pdf
 from tab_corr import render_corr_tab
@@ -32,29 +34,40 @@ def _full_height(n_rows: int) -> int:
     return _ROW_PX * n_rows + _HDR_PX
 
 
-def load_raw_meter_df(file_name: str, file_map: Dict[str, bytes], sheet_name: str) -> pd.DataFrame:
-    """Load meter sheet and return pre-aggregation row-level DataFrame."""
+def _load_and_clean(file_name: str, file_map: Dict[str, bytes], sheet_name: str) -> pd.DataFrame:
+    """Load meter sheet, apply headers, filter to valid buildings."""
     raw_df = read_sheet(file_name, file_map[file_name], sheet_name)
     df = apply_header_rows(raw_df)
-    df = create_change_columns(df)
     df["building"] = df["building"].astype(str).str.strip()
     return df[df["building"].isin({"A", "B", "C", "D"})].copy()
 
 
-def load_meter_df(file_name: str, file_map: Dict[str, bytes], sheet_name: str) -> pd.DataFrame:
-    """Load and aggregate meter data without rendering any UI.
+def load_raw_meter_df(
+    file_name: str, file_map: Dict[str, bytes], sheet_name: str,
+    prev_file_name: str | None = None, prev_sheet_name: str | None = None,
+) -> pd.DataFrame:
+    """Load meter sheet and return pre-aggregation row-level DataFrame.
 
-    Returns an all-buildings, all-floors aggregated DataFrame with per-area
-    columns (*_usage_per_m2, *_usage_per_py) derived from size_m2/size_py.
+    If prev_file_name is provided, merges the previous month's data so that
+    *_previous = last month's usage and *_current = this month's usage, enabling
+    true month-over-month change computation.
     """
-    raw_df = read_sheet(file_name, file_map[file_name], sheet_name)
-    df = apply_header_rows(raw_df)
-    df = create_change_columns(df)
-    df["building"] = df["building"].astype(str).str.strip()
-    df = df[df["building"].isin({"A", "B", "C", "D"})].copy()
+    df_cur = _load_and_clean(file_name, file_map, sheet_name)
+    df_prev = None
+    if prev_file_name and prev_sheet_name:
+        df_prev = _load_and_clean(prev_file_name, file_map, prev_sheet_name)
+    df = build_from_two_files(df_cur, df_prev)
+    return create_change_columns(df)
+
+
+def load_meter_df(
+    file_name: str, file_map: Dict[str, bytes], sheet_name: str,
+    prev_file_name: str | None = None, prev_sheet_name: str | None = None,
+) -> pd.DataFrame:
+    """Load and aggregate meter data without rendering any UI."""
+    df = load_raw_meter_df(file_name, file_map, sheet_name, prev_file_name, prev_sheet_name)
     df = aggregate_by_brand(df)
 
-    # Derive per-area columns (same logic as render_meter_view)
     _usage_cols = {
         "water_current":  ("water_usage_per_m2",  "water_usage_per_py"),
         "hwater_current": ("hwater_usage_per_m2", "hwater_usage_per_py"),
@@ -74,6 +87,138 @@ def load_meter_df(file_name: str, file_map: Dict[str, bytes], sheet_name: str) -
     return df
 
 
+_CAT_LABELS = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "열"}
+_QUAD_EMOJI = {"HH": "🔴 HH", "HL": "🟠 HL", "LH": "🟡 LH", "LL": "🟢 LL", "—": "—"}
+
+
+def _render_all_outliers(cur_df: pd.DataFrame, present: list, tail: int, t) -> None:
+    """Cross-category outlier summary: brands flagged as tail in any category."""
+    q = tail / 100.0
+    rows = []
+    for _, row in cur_df.iterrows():
+        brand = row.get("brand", "")
+        entry = {"brand": brand}
+        if "building" in cur_df.columns:
+            entry["building"] = row.get("building", "")
+        if "floor" in cur_df.columns:
+            entry["floor"] = row.get("floor", "")
+        outlier_count = 0
+        for p in present:
+            cc, pc = f"{p}_change", f"{p}_pct"
+            c_all = to_numeric_series(cur_df[cc]).dropna()
+            p_all = to_numeric_series(cur_df[pc]).dropna()
+            if c_all.empty or p_all.empty:
+                entry[_CAT_LABELS.get(p, p)] = "—"
+                continue
+            lo_c, hi_c = c_all.quantile(q), c_all.quantile(1 - q)
+            lo_p, hi_p = p_all.quantile(q), p_all.quantile(1 - q)
+            cv = to_numeric_series(pd.Series([row.get(cc)]))[0]
+            pv = to_numeric_series(pd.Series([row.get(pc)]))[0]
+            if pd.isna(cv) or pd.isna(pv):
+                quad = "—"
+            elif cv >= hi_c and pv >= hi_p:
+                quad = "HH"; outlier_count += 1
+            elif cv >= hi_c and pv <= lo_p:
+                quad = "HL"; outlier_count += 1
+            elif cv <= lo_c and pv >= hi_p:
+                quad = "LH"; outlier_count += 1
+            elif cv <= lo_c and pv <= lo_p:
+                quad = "LL"
+            else:
+                quad = "—"
+            entry[_CAT_LABELS.get(p, p)] = _QUAD_EMOJI.get(quad, quad)
+        entry["이상치 수"] = outlier_count
+        rows.append(entry)
+
+    # Pre-compute per-category quadrant membership for reuse across tabs
+    _cat_thresholds = {}
+    for p in present:
+        cc, pc = f"{p}_change", f"{p}_pct"
+        c_all = to_numeric_series(cur_df[cc]).dropna()
+        p_all = to_numeric_series(cur_df[pc]).dropna()
+        if not c_all.empty and not p_all.empty:
+            _cat_thresholds[p] = (
+                c_all.quantile(q), c_all.quantile(1 - q),
+                p_all.quantile(q), p_all.quantile(1 - q),
+            )
+
+    def _quadrant(p, row):
+        if p not in _cat_thresholds:
+            return "—"
+        lo_c, hi_c, lo_p, hi_p = _cat_thresholds[p]
+        cc, pc = f"{p}_change", f"{p}_pct"
+        cv = to_numeric_series(pd.Series([row.get(cc)]))[0]
+        pv = to_numeric_series(pd.Series([row.get(pc)]))[0]
+        if pd.isna(cv) or pd.isna(pv):
+            return "—"
+        if cv >= hi_c and pv >= hi_p:   return "HH"
+        if cv >= hi_c and pv <= lo_p:   return "HL"
+        if cv <= lo_c and pv >= hi_p:   return "LH"
+        if cv <= lo_c and pv <= lo_p:   return "LL"
+        return "—"
+
+    out = pd.DataFrame(rows).sort_values("이상치 수", ascending=False).reset_index(drop=True)
+    outliers_only = out[out["이상치 수"] > 0]
+
+    brand_search_bar("meter")
+
+    st.caption(
+        f"Tail {tail}% 기준 — 🔴 HH: 변화·비율 모두 상위 | 🟠 HL: 변화 상위·비율 하위 | "
+        f"🟡 LH: 변화 하위·비율 상위 | 🟢 LL: 변화·비율 모두 하위"
+    )
+
+    _tab_labels = ["전체"] + [_CAT_LABELS.get(p, p) for p in present]
+    _tabs = st.tabs(_tab_labels)
+
+    # ── 전체 tab ──────────────────────────────────────────────────────────────
+    with _tabs[0]:
+        k1, k2, k3 = st.columns(3)
+        k1.metric("전체 브랜드", len(out))
+        k2.metric("이상치 브랜드", len(outliers_only))
+        k3.metric("정상 브랜드", len(out) - len(outliers_only))
+
+        _show_all = st.checkbox("전체 브랜드 표시 (이상치 + 정상)", value=False, key="all_outlier_show_all")
+        display_df = out if _show_all else outliers_only
+        if display_df.empty:
+            st.info("이상치로 분류된 브랜드가 없습니다.")
+        else:
+            display_df = display_df.reset_index(drop=True)
+            display_df.insert(0, "No", range(1, len(display_df) + 1))
+            st.dataframe(display_df, hide_index=True, use_container_width=True,
+                         height=_full_height(len(display_df)))
+
+    # ── Per-category tabs ──────────────────────────────────────────────────────
+    for _tab, p in zip(_tabs[1:], present):
+        with _tab:
+            cc, pc = f"{p}_change", f"{p}_pct"
+            detail_cols = ["brand"] + (["building"] if "building" in cur_df.columns else []) + \
+                          (["floor"] if "floor" in cur_df.columns else []) + \
+                          ([cc] if cc in cur_df.columns else []) + \
+                          ([pc] if pc in cur_df.columns else [])
+
+            def _quad_df(quad_key):
+                mask = cur_df.apply(lambda r: _quadrant(p, r) == quad_key, axis=1)
+                sub = cur_df[mask][detail_cols].copy()
+                sub = sub.sort_values(cc, ascending=False) if cc in sub.columns else sub
+                sub.insert(0, "No", range(1, len(sub) + 1))
+                return sub
+
+            for quad, label in [
+                ("HH", "🔴 HH — 변화·비율 모두 상위"),
+                ("HL", "🟠 HL — 변화 상위, 비율 하위"),
+                ("LH", "🟡 LH — 변화 하위, 비율 상위"),
+                ("LL", "🟢 LL — 변화·비율 모두 하위"),
+            ]:
+                qdf = _quad_df(quad)
+                st.markdown(f"**{label}** ({len(qdf)})")
+                if qdf.empty:
+                    st.caption("해당 없음")
+                else:
+                    st.dataframe(qdf, hide_index=True, use_container_width=True,
+                                 height=_full_height(len(qdf)))
+                st.divider()
+
+
 def render_meter_view(
     file_name: str,
     file_map: Dict[str, bytes],
@@ -82,26 +227,25 @@ def render_meter_view(
     tail: int,
     q: tuple,
     debug: bool,
+    prev_file_name: str | None = None,
+    prev_sheet_name: str | None = None,
+    billing_period: str | None = None,
+    prev_billing_period: str | None = None,
 ) -> None:
     """Full 검침 내역 analysis: pipeline, filters, histograms, 5 tabs, reconciliation."""
-    try:
-        raw_df = read_sheet(file_name, file_map[file_name], sheet_name)
-    except Exception as e:
-        st.error(f"Failed to read {file_name}: {e}")
-        st.stop()
+    billing_period = billing_period or get_billing_period(file_name, file_map[file_name])
 
-    billing_period = get_billing_period(file_name, file_map[file_name])  # e.g. "2026년 1월"
+    if prev_billing_period and billing_period:
+        st.caption(f"비교: {prev_billing_period} → {billing_period}")
 
     # ---------------- Preprocess ----------------
     try:
-        df = apply_header_rows(raw_df)
+        df_cur = _load_and_clean(file_name, file_map, sheet_name)
+        df_prev = None
+        if prev_file_name and prev_sheet_name:
+            df_prev = _load_and_clean(prev_file_name, file_map, prev_sheet_name)
+        df = build_from_two_files(df_cur, df_prev)
         df = create_change_columns(df)
-
-        # replicate notebook row trimming / footer removal
-        valid_buildings = {"A", "B", "C", "D"}
-        df["building"] = df["building"].astype(str).str.strip()
-        df = df[df["building"].isin(valid_buildings)].copy()
-
     except Exception as e:
         st.error(f"Pipeline failed: {e}")
         st.stop()
@@ -112,11 +256,12 @@ def render_meter_view(
             st.stop()
 
     # ---------------- Backward meter reading detection ----------------
+    # Uses the original cumulative readings (renamed by build_from_two_files)
     _meter_pairs = [
-        ("water",  "water_previous",  "water_current",  "m³"),
-        ("hwater", "hwater_previous", "hwater_current", "m³"),
-        ("elect",  "elect_previous",  "elect_current",  "kWh"),
-        ("heat",   "heat_previous",   "heat_current",   "m³/MWh"),
+        ("water",  "water_meter_prev",  "water_meter_curr",  "m³"),
+        ("hwater", "hwater_meter_prev", "hwater_meter_curr", "m³"),
+        ("elect",  "elect_meter_prev",  "elect_meter_curr",  "kWh"),
+        ("heat",   "heat_meter_prev",   "heat_meter_curr",   "m³/MWh"),
     ]
     backward_rows = []
     for prefix, prev_col, curr_col, unit in _meter_pairs:
@@ -149,7 +294,12 @@ def render_meter_view(
 
     allowed = ["water", "hwater", "elect", "heat"]
     present_all = [p for p in allowed if f"{p}_change" in df.columns]
-    _CATEGORY_LABELS = {"water": t("cat_water"), "hwater": t("cat_hwater"), "elect": t("cat_elect"), "heat": t("cat_heat")}
+    _CATEGORY_LABELS = {
+        "water": t("cat_water"), "hwater": t("cat_hwater"),
+        "elect": t("cat_elect"), "heat": t("cat_heat"),
+        "__all__": "전체 이상치",
+    }
+    category_options = present_all + (["__all__"] if len(present_all) > 1 else [])
     has_gongshil_any = df["brand"].astype(str).str.contains("공실", na=False).any()
 
     def on_building_change():
@@ -176,6 +326,9 @@ def render_meter_view(
         "Exclude Vacancy": {"ko": "공실 제외", "en": "Exclude Vacancy"},
         "Vacancy Only":    {"ko": "공실만",    "en": "Vacancy Only"},
     }
+    # Read from session state — widget is rendered above tabs via brand_search_bar()
+    brand_search = st.session_state.get("meter_brand_search", "").strip().lower()
+
     fc1, fc2, fc3, fc4 = st.columns([2, 2, 1, 2])
     with fc1:
         selected_buildings = st.multiselect(
@@ -188,7 +341,7 @@ def render_meter_view(
             key="floor_select", on_change=on_floor_change,
         )
     with fc3:
-        prefix = st.selectbox(t("category"), present_all, format_func=lambda x: _CATEGORY_LABELS.get(x, x))
+        prefix = st.selectbox(t("category"), category_options, format_func=lambda x: _CATEGORY_LABELS.get(x, x))
     with fc4:
         import streamlit as _st
         _lang = _st.session_state.get("lang", "ko")
@@ -221,6 +374,12 @@ def render_meter_view(
     if cur_df.empty:
         st.warning(t("no_data_floor"))
         st.stop()
+
+    if brand_search:
+        cur_df = cur_df[cur_df["brand"].astype(str).str.lower().str.contains(brand_search, na=False)].copy()
+        if cur_df.empty:
+            st.warning(f"'{brand_search}' 검색 결과가 없습니다.")
+            st.stop()
 
     # ---------------- Per-size derived columns ----------------
     usage_cols = {
@@ -260,13 +419,19 @@ def render_meter_view(
             st.warning("No entries remaining after excluding 공실.")
             st.stop()
 
-    # ---------------- Category column setup ----------------
-    change_col, pct_col = f"{prefix}_change", f"{prefix}_pct"
-
+    # ---------------- Overall outliers view ----------------------------------------
     present = [p for p in allowed if f"{p}_change" in cur_df.columns]
     if not present:
         st.error("No utility categories found.")
         st.stop()
+
+    if prefix == "__all__":
+        _render_all_outliers(cur_df, present, tail, t)
+        return
+
+    # ---------------- Category column setup ----------------
+    change_col, pct_col = f"{prefix}_change", f"{prefix}_pct"
+
     if change_col not in cur_df.columns or pct_col not in cur_df.columns:
         st.error(f"Category '{prefix}' not available for the current filter.")
         st.stop()
@@ -482,6 +647,7 @@ def render_meter_view(
     _sheet_names = get_sheet_names(file_name, file_map[file_name])
     _ehp_sheet = EHP_OAC_SHEET_NAME if EHP_OAC_SHEET_NAME in _sheet_names else None
 
+    brand_search_bar("meter")
     tab_change, tab_pct, tab_overlap, tab_ranking, tab_corr = st.tabs([
         t("tab_change"), t("tab_pct"),
         t("tab_quadrant"), t("tab_ranking"), t("tab_corr"),

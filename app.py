@@ -1,10 +1,11 @@
 """app.py — Utility Analysis Dashboard: page config, routing, orchestration."""
+import re
 from typing import Dict
 
 import streamlit as st
 
 from data import (
-    get_sheet_names,
+    get_sheet_names, get_billing_period,
     read_billing_sheet, BILLING_SHEET_NAME,
     EHP_OAC_SHEET_NAME, HVAC_SHEET_NAME,
     read_hvac_sheet,
@@ -52,7 +53,34 @@ def main():
     if not file_map:
         st.stop()
 
-    file_name = st.selectbox(t("select_file"), list(file_map.keys()))
+    # ── Detect billing periods and sort files ──────────────────────────────────
+    def _parse_period(p: str | None) -> tuple:
+        if not p:
+            return (0, 0)
+        m = re.match(r"(\d+)년\s*(\d+)월", p)
+        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+    _file_periods: Dict[str, str | None] = {
+        fname: get_billing_period(fname, fdata)
+        for fname, fdata in file_map.items()
+    }
+    # Sort all files: most recent first
+    _sorted_files = sorted(file_map.keys(), key=lambda f: _parse_period(_file_periods[f]), reverse=True)
+
+    # Current = most recent file with a detected period; previous = second most recent
+    _meter_files = [f for f in _sorted_files if _parse_period(_file_periods[f]) > (0, 0)]
+    _current_file  = _meter_files[0] if _meter_files else _sorted_files[0]
+    _prev_file     = _meter_files[1] if len(_meter_files) > 1 else None
+
+    def _file_label(fname: str) -> str:
+        period = _file_periods.get(fname)
+        return f"{period} — {fname}" if period else fname
+
+    file_name = st.selectbox(t("select_file"), _sorted_files, index=0, format_func=_file_label)
+
+    if _prev_file is None:
+        st.warning("이전 달 파일이 없습니다 — 월별 변화량을 계산할 수 없습니다.")
+
     all_sheet_keys = sheet_map[file_name]
 
     SUPPORTED_SHEETS = {
@@ -80,9 +108,12 @@ def main():
 
     _NAV_SHEET    = t("nav_sheet_view")
     _NAV_ANALYSIS = t("nav_analysis")
+    _NAV_PROFILE  = "브랜드 프로필"
     _nav_options  = [_NAV_SHEET]
     if _analysis_options:
         _nav_options.append(_NAV_ANALYSIS)
+    if _has_meter:
+        _nav_options.append(_NAV_PROFILE)
 
     _nc1, _nc2 = st.columns([2, 5])
     with _nc1:
@@ -124,12 +155,12 @@ def main():
                  if d is not None and all(c in d.columns for c in ["building", "floor", "brand"])],
                 ignore_index=True,
             ).drop_duplicates()
-            _sel_bldg, _sel_floor, _gong_mode = show_filter_widgets(_ref, key_prefix="summary")
+            _sel_bldg, _sel_floor, _gong_mode, _brand_search = show_filter_widgets(_ref, key_prefix="summary")
             _split_bldg = not ("All" in _sel_bldg and "All" in _sel_floor)
             render_summary_view(
-                apply_sheet_filter(_w_df,  _sel_bldg, _sel_floor, _gong_mode) if _w_df  is not None else None,
-                apply_sheet_filter(_hw_df, _sel_bldg, _sel_floor, _gong_mode) if _hw_df is not None else None,
-                apply_sheet_filter(_el_df, _sel_bldg, _sel_floor, _gong_mode) if _el_df is not None else None,
+                apply_sheet_filter(_w_df,  _sel_bldg, _sel_floor, _gong_mode, _brand_search) if _w_df  is not None else None,
+                apply_sheet_filter(_hw_df, _sel_bldg, _sel_floor, _gong_mode, _brand_search) if _hw_df is not None else None,
+                apply_sheet_filter(_el_df, _sel_bldg, _sel_floor, _gong_mode, _brand_search) if _el_df is not None else None,
                 split_by_building=_split_bldg,
             )
             return
@@ -137,13 +168,21 @@ def main():
         if analysis_name == _OPT_BIZ:
             st.header(t("biz_header"))
             _meter_sheet = next((k for k in all_sheet_keys if k.strip() == "검침 내역"), None)
+            _prev_meter_sheet = None
+            if _prev_file:
+                _prev_meter_sheet = next(
+                    (k for k in sheet_map.get(_prev_file, []) if k.strip() == "검침 내역"), None
+                )
             try:
-                _raw_df = load_raw_meter_df(file_name, file_map, _meter_sheet)
+                _raw_df = load_raw_meter_df(
+                    file_name, file_map, _meter_sheet,
+                    prev_file_name=_prev_file, prev_sheet_name=_prev_meter_sheet,
+                )
             except Exception as e:
                 st.error(f"{t('meter_load_fail')}: {e}")
                 st.stop()
 
-            _cur_df, _, _, _, _split_bldg = render_meter_filters(_raw_df, key_prefix="biz")
+            _cur_df, _, _, _, _split_bldg, _ = render_meter_filters(_raw_df, key_prefix="biz")
 
             # ── Per-area columns (needed by efficiency tab) ─────────────────────
             _size_m2 = _to_num(_cur_df["size_m2"]).replace(0, float("nan")) if "size_m2" in _cur_df.columns else None
@@ -165,6 +204,8 @@ def main():
             _ehp_sheet = EHP_OAC_SHEET_NAME if EHP_OAC_SHEET_NAME in all_sheet_keys else None
 
             # ── Tabs ────────────────────────────────────────────────────────────
+            from filters import brand_search_bar as _bsb
+            _bsb("biz")
             _tab_cost, _tab_eff, _tab_anom = st.tabs([
                 t("biz_tab_cost"), t("biz_tab_eff"), t("biz_tab_anom"),
             ])
@@ -185,6 +226,48 @@ def main():
                     split_by_building=_split_bldg,
                 )
             return
+
+    # ── 브랜드 프로필 branch ───────────────────────────────────────────────────
+    if nav_mode == _NAV_PROFILE:
+        from brand_profile import render_brand_profile_tab
+        from features import aggregate_by_brand as _agg
+        st.header("브랜드 프로필")
+        _meter_sheet = next((k for k in all_sheet_keys if k.strip() == "검침 내역"), None)
+        _prev_meter_sheet = next(
+            (k for k in sheet_map.get(_prev_file, []) if k.strip() == "검침 내역"), None
+        ) if _prev_file else None
+        try:
+            _raw_df = load_raw_meter_df(
+                file_name, file_map, _meter_sheet,
+                prev_file_name=_prev_file, prev_sheet_name=_prev_meter_sheet,
+            )
+        except Exception as e:
+            st.error(f"데이터 로드 실패: {e}")
+            st.stop()
+        _cur_df, _, _, _, _, _ref_df = render_meter_filters(_raw_df, key_prefix="profile")
+        _allowed  = ["water", "hwater", "elect", "heat"]
+        _present  = [p for p in _allowed if f"{p}_change" in _cur_df.columns]
+
+        def _try_load_profile(reader, sheet_const):
+            key = next((k for k in all_sheet_keys if k.strip() == sheet_const), None)
+            if key is None:
+                return None
+            try:
+                return reader(file_name, file_map[file_name], key)
+            except Exception:
+                return None
+
+        render_brand_profile_tab(
+            _cur_df, _ref_df, _present,
+            tail=st.session_state.get("tail", 20),
+            billing_period=_file_periods.get(file_name),
+            prev_billing_period=_file_periods.get(_prev_file) if _prev_file else None,
+            billing_df=_try_load_profile(read_billing_sheet,     BILLING_SHEET_NAME),
+            water_df=_try_load_profile(read_water_sheet,         WATER_SHEET_NAME),
+            hotwater_df=_try_load_profile(read_hotwater_sheet,   HOTWATER_SHEET_NAME),
+            electricity_df=_try_load_profile(read_electricity_sheet, ELECTRICITY_SHEET_NAME),
+        )
+        return
 
     # ── 시트 보기 branch ────────────────────────────────────────────────────────
     with _nc2:
@@ -252,7 +335,17 @@ def main():
         return
 
     # ── Route: 검침 내역 ────────────────────────────────────────────────────────
-    render_meter_view(file_name, file_map, sheet_name, bins, tail, q, debug)
+    _prev_meter_sheet = None
+    if _prev_file:
+        _prev_meter_sheet = next(
+            (k for k in sheet_map.get(_prev_file, []) if k.strip() == "검침 내역"), None
+        )
+    render_meter_view(
+        file_name, file_map, sheet_name, bins, tail, q, debug,
+        prev_file_name=_prev_file, prev_sheet_name=_prev_meter_sheet,
+        billing_period=_file_periods.get(file_name),
+        prev_billing_period=_file_periods.get(_prev_file) if _prev_file else None,
+    )
 
 
 if __name__ == "__main__":

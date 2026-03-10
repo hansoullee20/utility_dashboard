@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix
-from filters import render_sheet_filters
+from filters import render_sheet_filters, brand_search_bar
 
 _COMP_COLS = [
     ("상수도 전용",  "water_excl",  "#4C72B0"),
@@ -92,6 +92,7 @@ def render_water_view(df: pd.DataFrame) -> None:
     _flags["등급"] = _flags["플래그 수"].map(
         lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상"))
 
+    brand_search_bar("water")
     tab_rank, tab_comp, tab_fair, tab_usage, tab_excl, tab_anom = st.tabs(
         ["순위", "비중", "면적당 비용", "사용량", "전용/공용 분석", "이상 탐지"]
     )
