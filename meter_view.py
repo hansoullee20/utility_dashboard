@@ -187,6 +187,83 @@ def _render_all_outliers(cur_df: pd.DataFrame, present: list, tail: int, t) -> N
             st.dataframe(display_df, hide_index=True, use_container_width=True,
                          height=_full_height(len(display_df)))
 
+        # ── Histogram with category dropdown ──────────────────────────────────
+        if present and _cat_thresholds:
+            st.divider()
+            _hlang = st.session_state.get("lang", "ko")
+            _all_hist_labels = {
+                "% Change only": {"ko": "% 변화만", "en": "% Change only"},
+                "Change only":   {"ko": "변화량만",  "en": "Change only"},
+                "Side by Side":  {"ko": "나란히",    "en": "Side by Side"},
+            }
+            _hdr_col, _layout_col = st.columns([1, 2])
+            with _hdr_col:
+                _sel_p = st.selectbox(
+                    "카테고리",
+                    present,
+                    format_func=lambda x: _CAT_LABELS.get(x, x),
+                    key="all_tab_hist_cat",
+                )
+            with _layout_col:
+                _sel_layout = st.radio(
+                    t("hist_view"),
+                    ["% Change only", "Change only", "Side by Side"],
+                    format_func=lambda x: _all_hist_labels[x][_hlang],
+                    horizontal=True,
+                    key="all_tab_hist_layout",
+                )
+            _sel_cc, _sel_pc = f"{_sel_p}_change", f"{_sel_p}_pct"
+            _sel_detail_cols = (
+                ["brand"]
+                + (["building"] if "building" in cur_df.columns else [])
+                + (["floor"]    if "floor"    in cur_df.columns else [])
+                + ([_sel_cc]    if _sel_cc    in cur_df.columns else [])
+                + ([_sel_pc]    if _sel_pc    in cur_df.columns else [])
+            )
+            _ak0 = st.slider("IQR 배수 (k)", 0.5, 3.0, 1.5, 0.25,
+                             key="all_tab_hist_iqr_k",
+                             help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
+            _sc0 = to_numeric_series(cur_df[_sel_cc]).dropna()
+            _sp0 = to_numeric_series(cur_df[_sel_pc]).dropna()
+            def _iqr0(s, k):
+                q1, q3 = float(s.quantile(.25)), float(s.quantile(.75))
+                iqr = q3 - q1
+                return q1, q3, iqr, q1 - k * iqr, q3 + k * iqr
+            _cq1, _cq3, _ciqr, _clo0, _chi0 = _iqr0(_sc0, _ak0)
+            _pq1, _pq3, _piqr, _plo0, _phi0 = _iqr0(_sp0, _ak0)
+            def _eq_c0():
+                st.markdown(f"$$Q_1={_cq1:,.0f},\\;Q_3={_cq3:,.0f},\\;IQR={_ciqr:,.0f}$$\n\n"
+                            f"$$\\text{{Lower}}={_clo0:,.0f},\\;\\text{{Upper}}={_chi0:,.0f}\\;(k={_ak0})$$")
+            def _eq_p0():
+                st.markdown(f"$$Q_1={_pq1:,.0f},\\;Q_3={_pq3:,.0f},\\;IQR={_piqr:,.0f}$$\n\n"
+                            f"$$\\text{{Lower}}={_plo0:,.0f},\\;\\text{{Upper}}={_phi0:,.0f}\\;(k={_ak0})$$")
+            if _sel_layout == "Side by Side":
+                _hc1, _hc2 = st.columns(2)
+                with _hc1:
+                    _eq_c0()
+                    plot_hist_with_tails(_sc0, 50, _clo0, _chi0, f"Change: {_sel_cc}",
+                                         source_df=cur_df, val_col=_sel_cc,
+                                         key="all_tab_hist_chg",
+                                         display_cols=_sel_detail_cols)
+                with _hc2:
+                    _eq_p0()
+                    plot_hist_with_tails(_sp0, 50, _plo0, _phi0, f"Pct: {_sel_pc}",
+                                         source_df=cur_df, val_col=_sel_pc,
+                                         key="all_tab_hist_pct",
+                                         display_cols=_sel_detail_cols)
+            elif _sel_layout == "Change only":
+                _eq_c0()
+                plot_hist_with_tails(_sc0, 50, _clo0, _chi0, f"Change: {_sel_cc}",
+                                     source_df=cur_df, val_col=_sel_cc,
+                                     key="all_tab_hist_chg",
+                                     display_cols=_sel_detail_cols)
+            else:
+                _eq_p0()
+                plot_hist_with_tails(_sp0, 50, _plo0, _phi0, f"Pct: {_sel_pc}",
+                                     source_df=cur_df, val_col=_sel_pc,
+                                     key="all_tab_hist_pct",
+                                     display_cols=_sel_detail_cols)
+
     # ── Per-category tabs ──────────────────────────────────────────────────────
     for _tab, p in zip(_tabs[1:], present):
         with _tab:
