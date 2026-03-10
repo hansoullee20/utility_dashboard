@@ -14,7 +14,7 @@ from viz import plot_hist_with_tails as _plot_hist
 def _fmt_won(v: float) -> str:
     """Auto-scale currency: 억원 / 만원 / 원."""
     if abs(v) >= 1e8:
-        return f"{v/1e8:.2f} 억원"
+        return f"{v/1e8:.0f} 억원"
     elif abs(v) >= 1e4:
         return f"{v/1e4:,.0f} 만원"
     return f"{v:,.0f} 원"
@@ -373,43 +373,46 @@ def render_summary_view(
         st.divider()
         _init_session_keys([
             ("sum_rank_hist_bins", 50), ("sum_rank_hist_bins_i", 50),
-            ("sum_rank_hist_tail", 20), ("sum_rank_hist_tail_i", 20),
         ])
         _rank_view = st.radio(
-            "그래프 보기", ["순위 차트", "박스플롯", "히스토그램"],
+            "그래프 보기", ["히스토그램", "순위 차트", "박스플롯"],
             horizontal=True, key="sum_rank_view",
         )
 
         if _rank_view == "순위 차트":
             _n = st.slider("상위 N개", 1, len(merged), min(20, len(merged)), key="sum_rank_n")
             _top = merged.nlargest(_n, _sel_col).sort_values(_sel_col, ascending=True)
+            _max_raw = _top[_sel_col].max() if _cat_sel != "전체" else _top["util_total"].max()
+            _div, _unit = (1e8, "억원") if _max_raw >= 1e8 else (1e4, "만원")
             fig_r = go.Figure()
             if _cat_sel == "전체":
                 for label, col, clr in [("수도","water_total","#4C72B0"),
                                           ("온수","hw_total","#C44E52"),
                                           ("전기","elec_total","#DD8A00")]:
+                    _xv = _top[col].values / _div
                     fig_r.add_trace(go.Bar(
-                        x=_top[col].values, y=[str(b)[:26] for b in _top["brand"]],
+                        x=_xv, y=[str(b)[:26] for b in _top["brand"]],
                         name=label, orientation="h", marker_color=clr,
-                        hovertemplate="<b>%{y}</b><br>" + label + ": %{x:,.0f} 원<extra></extra>",
-                        text=[f"{v/1e3:.0f}k" if v >= 1e4 else ("" if v == 0 else f"{v:,.0f}") for v in _top[col].values],
+                        hovertemplate="<b>%{y}</b><br>" + label + f": %{{x:,.0f}} {_unit}<extra></extra>",
+                        text=[f"{v:,.0f}" if v >= 0.5 else ("" if v == 0 else f"{v:,.0f}") for v in _xv],
                         textposition="inside", textfont=dict(size=9, color="white"),
                     ))
                 _barmode = "stack"
             else:
+                _xv = _top[_sel_col].values / _div
                 fig_r.add_trace(go.Bar(
-                    x=_top[_sel_col].values, y=[str(b)[:26] for b in _top["brand"]],
+                    x=_xv, y=[str(b)[:26] for b in _top["brand"]],
                     name=_cat_sel, orientation="h", marker_color=_sel_clr,
-                    hovertemplate="<b>%{y}</b><br>" + _cat_sel + ": %{x:,.0f} 원<extra></extra>",
-                    text=[f"{v/1e3:.0f}k" if v >= 1e4 else ("" if v == 0 else f"{v:,.0f}") for v in _top[_sel_col].values],
+                    hovertemplate="<b>%{y}</b><br>" + _cat_sel + f": %{{x:,.0f}} {_unit}<extra></extra>",
+                    text=[f"{v:,.0f}" if v >= 0.5 else ("" if v == 0 else f"{v:,.0f}") for v in _xv],
                     textposition="inside", textfont=dict(size=9, color="white"),
                 ))
                 _barmode = "relative"
             _r_up = _r_up_sel
             if _r_up < float("inf"):
-                fig_r.add_vline(x=_r_up, line_dash="dash", line_color="#8B2BE2", line_width=2)
+                fig_r.add_vline(x=_r_up / _div, line_dash="dash", line_color="#8B2BE2", line_width=2)
                 fig_r.add_annotation(
-                    x=_r_up, y=1, yref="paper",
+                    x=_r_up / _div, y=1, yref="paper",
                     text=f"⚠ IQR 상한 {_fmt_won(_r_up)}",
                     showarrow=False, xanchor="left", xshift=6,
                     font=dict(size=11, color="#8B2BE2"),
@@ -417,7 +420,7 @@ def render_summary_view(
                 )
             fig_r.update_layout(
                 barmode=_barmode, height=max(480, _n * 22 + 80),
-                xaxis_title="원", plot_bgcolor="white",
+                xaxis_title=_unit, plot_bgcolor="white",
                 xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
                 legend=dict(x=1.02, y=0.5, xanchor="left", yanchor="middle"),
                 margin=dict(l=10, r=100, t=30, b=40),
@@ -442,7 +445,7 @@ def render_summary_view(
 
         elif _rank_view == "박스플롯":
             _sel_man = _sel_series / 1e4
-            _boxplot_with_labels(_sel_man, merged["brand"], f"{_cat_sel} 비용 (만 원)", "sum_rank_box",
+            _boxplot_with_labels(_sel_man, merged["brand"], f"{_cat_sel} 비용 (만원)", "sum_rank_box",
                                  source_df=merged,
                                  disp_cols=_RANK_DISP_COLS)
             _top_mask = _sel_series >= _r_hi_w
@@ -451,16 +454,28 @@ def render_summary_view(
 
         else:  # 히스토그램
             _h_bins = _synced_slider_input("sum_rank_hist_bins", "Bins", 5, 200, 50, 5)
-            _h_tail = _synced_slider_input("sum_rank_hist_tail", "Tail %", 1, 50, 20, 1)
-            _lo_u, _hi_u = _sel_series.quantile([_h_tail / 100, 1 - _h_tail / 100])
-            _plot_hist(_sel_series, _h_bins, float(_lo_u), float(_hi_u),
-                       f"{_cat_sel} 비용 분포 (원)", tail_pct=_h_tail, key="sum_rank_hist",
-                       source_df=merged, val_col=_sel_col,
+            _iqr_k = st.slider("IQR 배수 (k)", min_value=0.5, max_value=3.0, value=1.5, step=0.25,
+                               key="sum_rank_iqr_k",
+                               help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
+            _sel_manwon = _sel_series / 1e4
+            _hq1  = float(_sel_manwon.quantile(0.25))
+            _hq3  = float(_sel_manwon.quantile(0.75))
+            _hiqr = _hq3 - _hq1
+            _lo_u = _hq1 - _iqr_k * _hiqr
+            _hi_u = _hq3 + _iqr_k * _hiqr
+            st.markdown(
+                f"$$Q_1 = {_hq1:,.0f},\\quad Q_3 = {_hq3:,.0f},\\quad IQR = {_hiqr:,.0f}$$\n\n"
+                f"$$\\text{{Lower}} = Q_1 - {_iqr_k}\\times IQR = {_lo_u:,.0f}\\text{{ 만원}}"
+                f",\\quad \\text{{Upper}} = Q_3 + {_iqr_k}\\times IQR = {_hi_u:,.0f}\\text{{ 만원}}$$"
+            )
+            _plot_hist(_sel_manwon, _h_bins, float(_lo_u), float(_hi_u),
+                       f"{_cat_sel} 비용 분포 (만원)", key="sum_rank_hist",
+                       source_df=merged, val_col=_sel_col, val_scale=1e4,
                        display_cols=["brand", "building", "floor", "util_total",
                                      "water_total", "hw_total", "elec_total"])
-            _top_tail_m = _sel_series >= _hi_u
-            _bot_tail_m = _sel_series <= _lo_u
-            _rank_tables(merged, _top_tail_m, _bot_tail_m, ~_top_tail_m & ~_bot_tail_m)
+            _top_iqr_m = _sel_series > _hi_u * 1e4
+            _bot_iqr_m = _sel_series < _lo_u * 1e4
+            _rank_tables(merged, _top_iqr_m, _bot_iqr_m, ~_top_iqr_m & ~_bot_iqr_m)
 
     # ═══════════════════════════ 유틸리티 구성 ════════════════════════════════
     with tab_mix:
@@ -718,7 +733,7 @@ def render_summary_view(
             ("sum_area_hist_tail", 20), ("sum_area_hist_tail_i", 20),
         ])
         _area_view = st.radio(
-            "그래프 보기", ["순위 차트", "박스플롯", "히스토그램"],
+            "그래프 보기", ["히스토그램", "순위 차트", "박스플롯"],
             horizontal=True, key="sum_area_view",
         )
 

@@ -1129,7 +1129,7 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     st.dataframe(st_safe(_ot.sort_values(unit, ascending=False)), use_container_width=True)
 
                 _chart_type = st.radio(
-                    "차트 유형", ["업체별 막대", "분포 히스토그램"],
+                    "차트 유형", ["분포 히스토그램", "업체별 막대"],
                     horizontal=True, key=f"hvac_fair_charttype_{key_sfx}",
                 )
 

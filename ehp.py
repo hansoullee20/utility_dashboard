@@ -683,7 +683,7 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
             _chart_opts.append("상호별")
 
         # ── Shared controls (apply to all metric tabs) ────────────────
-        _graph_sel = st.radio("그래프", ["바 차트", "히스토그램"],
+        _graph_sel = st.radio("그래프", ["히스토그램", "바 차트"],
                               horizontal=True, key="ehp_ded_graph")
         _c1, _c2 = st.columns(2)
         with _c1:

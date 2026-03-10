@@ -231,6 +231,8 @@ def render_cross_tab(
         st.warning(f"Could not load {err}")
 
     # ── Unit cost section ─────────────────────────────────────────────────────
+    unit_df = None
+    elec_br = None
     if billing_df is not None and not billing_df.empty:
         try:
             unit_df = build_unit_costs(cur_df, billing_df)
@@ -239,6 +241,7 @@ def render_cross_tab(
                 st.divider()
         except Exception as e:
             st.warning(f"{t('cross_unit_fail')}: {e}")
+            unit_df = None
 
     # ── Electricity breakdown section ─────────────────────────────────────────
     if elec_df is not None and not elec_df.empty:
@@ -248,6 +251,27 @@ def render_cross_tab(
                 _render_elec_breakdown(elec_br, split_by_building=split_by_building)
         except Exception as e:
             st.warning(f"{t('cross_elec_fail')}: {e}")
+            elec_br = None
 
     if billing_df is None and elec_df is None:
         st.error(t("cross_no_data"))
+
+    # ── PDF download ──────────────────────────────────────────────────────────
+    if unit_df is not None or elec_br is not None:
+        st.divider()
+        _pdf_key = f"cross_pdf_{file_name}"
+        _col_gen, _col_dl = st.columns([1, 2])
+        with _col_gen:
+            if st.button("📄 PDF 리포트 생성", key=f"gen_cross_pdf_{file_name}"):
+                with st.spinner("PDF 생성 중…"):
+                    from biz_report import generate_cross_pdf
+                    st.session_state[_pdf_key] = generate_cross_pdf(unit_df, elec_br)
+        if _pdf_key in st.session_state:
+            with _col_dl:
+                st.download_button(
+                    "⬇️ 비용분析 리포트 다운로드",
+                    st.session_state[_pdf_key],
+                    file_name="비용분析_리포트.pdf",
+                    mime="application/pdf",
+                    key=f"dl_cross_pdf_{file_name}",
+                )

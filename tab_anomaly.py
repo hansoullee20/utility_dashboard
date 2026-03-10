@@ -770,3 +770,22 @@ def render_anomaly_tab(
             use_container_width=True,
         )
         download_df_as_excel(view, filename="anomaly_analysis.xlsx", sheet_name="이상감지")
+
+    # ── PDF download ──────────────────────────────────────────────────────────
+    st.divider()
+    _pdf_key = f"anomaly_pdf_{file_name}"
+    _col_gen, _col_dl = st.columns([1, 2])
+    with _col_gen:
+        if st.button("📄 PDF 리포트 생성", key=f"gen_anomaly_pdf_{file_name}"):
+            with st.spinner("PDF 생성 중…"):
+                from biz_report import generate_anomaly_pdf
+                st.session_state[_pdf_key] = generate_anomaly_pdf(anomaly_df)
+    if _pdf_key in st.session_state:
+        with _col_dl:
+            st.download_button(
+                "⬇️ 이상감지 리포트 다운로드",
+                st.session_state[_pdf_key],
+                file_name="이상감지_리포트.pdf",
+                mime="application/pdf",
+                key=f"dl_anomaly_pdf_{file_name}",
+            )

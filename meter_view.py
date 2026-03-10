@@ -196,12 +196,72 @@ def _render_all_outliers(cur_df: pd.DataFrame, present: list, tail: int, t) -> N
                           ([cc] if cc in cur_df.columns else []) + \
                           ([pc] if pc in cur_df.columns else [])
 
-            def _quad_df(quad_key):
-                mask = cur_df.apply(lambda r: _quadrant(p, r) == quad_key, axis=1)
+            def _quad_df(quad_key, _p=p, _cc=cc):
+                mask = cur_df.apply(lambda r: _quadrant(_p, r) == quad_key, axis=1)
                 sub = cur_df[mask][detail_cols].copy()
-                sub = sub.sort_values(cc, ascending=False) if cc in sub.columns else sub
+                sub = sub.sort_values(_cc, ascending=False) if _cc in sub.columns else sub
                 sub.insert(0, "No", range(1, len(sub) + 1))
                 return sub
+
+            # ── Histograms ────────────────────────────────────────────────────
+            if p in _cat_thresholds:
+                _lo_c, _hi_c, _lo_p, _hi_p = _cat_thresholds[p]
+                _sc = to_numeric_series(cur_df[cc]).dropna()
+                _sp = to_numeric_series(cur_df[pc]).dropna()
+                _hlang = st.session_state.get("lang", "ko")
+                _all_hist_labels = {
+                    "% Change only": {"ko": "% 변화만", "en": "% Change only"},
+                    "Change only":   {"ko": "변화량만",  "en": "Change only"},
+                    "Side by Side":  {"ko": "나란히",    "en": "Side by Side"},
+                }
+                _all_hist_sel = st.radio(
+                    t("hist_view"),
+                    ["% Change only", "Change only", "Side by Side"],
+                    format_func=lambda x: _all_hist_labels[x][_hlang],
+                    horizontal=True, key=f"all_hist_layout_{p}",
+                )
+                _ak = st.slider("IQR 배수 (k)", 0.5, 3.0, 1.5, 0.25,
+                                key=f"all_iqr_k_{p}",
+                                help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
+                _cq1, _cq3, _ciqr, _clo, _chi = (
+                    float(_sc.quantile(.25)), float(_sc.quantile(.75)),
+                    float(_sc.quantile(.75) - _sc.quantile(.25)), 0, 0)
+                _ciqr = _cq3 - _cq1; _clo = _cq1 - _ak * _ciqr; _chi = _cq3 + _ak * _ciqr
+                _pq1, _pq3, _piqr, _plo, _phi = (
+                    float(_sp.quantile(.25)), float(_sp.quantile(.75)),
+                    float(_sp.quantile(.75) - _sp.quantile(.25)), 0, 0)
+                _piqr = _pq3 - _pq1; _plo = _pq1 - _ak * _piqr; _phi = _pq3 + _ak * _piqr
+
+                def _show_eq_c():
+                    st.markdown(f"$$Q_1={_cq1:,.0f},\\;Q_3={_cq3:,.0f},\\;IQR={_ciqr:,.0f}$$\n\n"
+                                f"$$\\text{{Lower}}={_clo:,.0f},\\;\\text{{Upper}}={_chi:,.0f}\\;(k={_ak})$$")
+                def _show_eq_p():
+                    st.markdown(f"$$Q_1={_pq1:,.0f},\\;Q_3={_pq3:,.0f},\\;IQR={_piqr:,.0f}$$\n\n"
+                                f"$$\\text{{Lower}}={_plo:,.0f},\\;\\text{{Upper}}={_phi:,.0f}\\;(k={_ak})$$")
+
+                if _all_hist_sel == "Side by Side":
+                    _hc1, _hc2 = st.columns(2)
+                    with _hc1:
+                        _show_eq_c()
+                        plot_hist_with_tails(_sc, 50, _clo, _chi, f"Change: {cc}",
+                                             source_df=cur_df, val_col=cc, key=f"all_hist_chg_{p}",
+                                             display_cols=detail_cols)
+                    with _hc2:
+                        _show_eq_p()
+                        plot_hist_with_tails(_sp, 50, _plo, _phi, f"Pct: {pc}",
+                                             source_df=cur_df, val_col=pc, key=f"all_hist_pct_{p}",
+                                             display_cols=detail_cols)
+                elif _all_hist_sel == "Change only":
+                    _show_eq_c()
+                    plot_hist_with_tails(_sc, 50, _clo, _chi, f"Change: {cc}",
+                                         source_df=cur_df, val_col=cc, key=f"all_hist_chg_{p}",
+                                         display_cols=detail_cols)
+                else:  # % Change only
+                    _show_eq_p()
+                    plot_hist_with_tails(_sp, 50, _plo, _phi, f"Pct: {pc}",
+                                         source_df=cur_df, val_col=pc, key=f"all_hist_pct_{p}",
+                                         display_cols=detail_cols)
+                st.divider()
 
             for quad, label in [
                 ("HH", "🔴 HH — 변화·비율 모두 상위"),
@@ -577,7 +637,7 @@ def render_meter_view(
             )
 
     # ---------------- Histograms ─────────────────────────────────────────────
-    _HIST_OPTS = ["Side by Side", "Change only", "% Change only"]
+    _HIST_OPTS = ["% Change only", "Change only", "Side by Side"]
     _HIST_LABELS = {
         "Side by Side":  {"ko": "나란히",    "en": "Side by Side"},
         "Change only":   {"ko": "변화량만",  "en": "Change only"},
@@ -592,19 +652,25 @@ def render_meter_view(
         key="hist_layout",
     )
 
+    def _iqr_bounds(s: pd.Series, k: float):
+        q1, q3 = float(s.quantile(0.25)), float(s.quantile(0.75))
+        iqr = q3 - q1
+        return q1, q3, iqr, q1 - k * iqr, q3 + k * iqr
+
+    def _iqr_equation(q1, q3, iqr, lo, hi, k, key_suffix):
+        st.markdown(
+            f"$$Q_1={q1:,.0f},\\;Q_3={q3:,.0f},\\;IQR={iqr:,.0f}$$\n\n"
+            f"$$\\text{{Lower}}={lo:,.0f},\\quad\\text{{Upper}}={hi:,.0f}\\;(k={k})$$"
+        )
+
     def _hist_controls(key_prefix: str):
-        """Render slider+input bins & tail controls; return (bins, lo, hi, tail_pct)."""
+        """Render bins slider + IQR k slider; return (bins, lo, hi)."""
         bk, bik = f"{key_prefix}_bins", f"{key_prefix}_bins_i"
-        tk, tik = f"{key_prefix}_tail", f"{key_prefix}_tail_i"
         if bk  not in st.session_state: st.session_state[bk]  = 50
         if bik not in st.session_state: st.session_state[bik] = 50
-        if tk  not in st.session_state: st.session_state[tk]  = 20
-        if tik not in st.session_state: st.session_state[tik] = 20
 
         def _sync_bs(): st.session_state[bik] = st.session_state[bk]
         def _sync_bi(): st.session_state[bk]  = st.session_state[bik]
-        def _sync_ts(): st.session_state[tik] = st.session_state[tk]
-        def _sync_ti(): st.session_state[tk]  = st.session_state[tik]
 
         _b1, _b2 = st.columns([3, 1])
         with _b1:
@@ -613,51 +679,42 @@ def render_meter_view(
             st.number_input("Bins", 5, 200, value=st.session_state[bik], step=5, key=bik,
                             label_visibility="hidden", on_change=_sync_bi)
 
-        _t1, _t2 = st.columns([3, 1])
-        with _t1:
-            st.slider("Tail %", 1, 50, value=st.session_state[tk], step=1, key=tk, on_change=_sync_ts)
-        with _t2:
-            st.number_input("Tail %", 1, 50, value=st.session_state[tik], step=1, key=tik,
-                            label_visibility="hidden", on_change=_sync_ti)
-
+        _k = st.slider("IQR 배수 (k)", 0.5, 3.0, 1.5, 0.25, key=f"{key_prefix}_iqr_k",
+                       help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
         _s = s_change if "chg" in key_prefix else s_pct
-        _t = int(st.session_state[tk])
-        _lo, _hi = _s.quantile([_t / 100, 1 - _t / 100])
-        return int(st.session_state[bk]), float(_lo), float(_hi), _t
+        _q1, _q3, _iqr, _lo, _hi = _iqr_bounds(_s, _k)
+        _iqr_equation(_q1, _q3, _iqr, _lo, _hi, _k, key_prefix)
+        return int(st.session_state[bk]), float(_lo), float(_hi)
 
     if hist_layout == "Side by Side":
         hc1, hc2 = st.columns(2)
         with hc1:
-            _b_c, _lo_c2, _hi_c2, _t_c = _hist_controls("chg")
+            _b_c, _lo_c2, _hi_c2 = _hist_controls("chg")
             plot_hist_with_tails(
                 s_change, _b_c, _lo_c2, _hi_c2, f"Change: {change_col}",
                 source_df=cur_df, val_col=change_col, key="hist_change",
                 display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
-                tail_pct=_t_c,
             )
         with hc2:
-            _b_p, _lo_p2, _hi_p2, _t_p = _hist_controls("pct")
+            _b_p, _lo_p2, _hi_p2 = _hist_controls("pct")
             plot_hist_with_tails(
                 s_pct, _b_p, _lo_p2, _hi_p2, f"Pct: {pct_col}",
                 source_df=cur_df, val_col=pct_col, key="hist_pct",
                 display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
-                tail_pct=_t_p,
             )
     elif hist_layout == "Change only":
-        _b_c, _lo_c2, _hi_c2, _t_c = _hist_controls("chg")
+        _b_c, _lo_c2, _hi_c2 = _hist_controls("chg")
         plot_hist_with_tails(
             s_change, _b_c, _lo_c2, _hi_c2, f"Change: {change_col}",
             source_df=cur_df, val_col=change_col, key="hist_change",
             display_cols=cols_brand_then_category(cur_df, prefix, mode="change"),
-            tail_pct=_t_c,
         )
     else:
-        _b_p, _lo_p2, _hi_p2, _t_p = _hist_controls("pct")
+        _b_p, _lo_p2, _hi_p2 = _hist_controls("pct")
         plot_hist_with_tails(
             s_pct, _b_p, _lo_p2, _hi_p2, f"Pct: {pct_col}",
             source_df=cur_df, val_col=pct_col, key="hist_pct",
             display_cols=cols_brand_then_category(cur_df, prefix, mode="pct"),
-            tail_pct=_t_p,
         )
 
     _sheet_names = get_sheet_names(file_name, file_map[file_name])

@@ -22,6 +22,7 @@ def plot_hist_with_tails(
     key: str = "hist",
     display_cols: list = None,
     tail_pct: float = None,
+    val_scale: float = 1.0,
 ):
     vals = to_numeric_series(s).dropna()
     if vals.empty:
@@ -181,7 +182,7 @@ def plot_hist_with_tails(
                 cd = list(cd.values())
             if len(cd) >= 2:
                 x0, x1 = float(cd[0]), float(cd[1])
-                mask = (source_df[val_col] >= x0) & (source_df[val_col] <= x1)
+                mask = (source_df[val_col] / val_scale >= x0) & (source_df[val_col] / val_scale <= x1)
                 bin_df = source_df[mask].copy()
                 cols = [c for c in (display_cols or []) if c in bin_df.columns]
                 if not cols:

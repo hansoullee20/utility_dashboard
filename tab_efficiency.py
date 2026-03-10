@@ -223,3 +223,23 @@ def render_efficiency_tab(
 
     if avail:
         _render_combined(cur_df, avail, ehp_merged, split_by_building=split_by_building)
+
+    # ── PDF download ──────────────────────────────────────────────────────────
+    if avail and file_name:
+        st.divider()
+        _pdf_key = f"eff_pdf_{file_name}"
+        _col_gen, _col_dl = st.columns([1, 2])
+        with _col_gen:
+            if st.button("📄 PDF 리포트 생성", key=f"gen_eff_pdf_{file_name}"):
+                with st.spinner("PDF 생성 중…"):
+                    from biz_report import generate_efficiency_pdf
+                    st.session_state[_pdf_key] = generate_efficiency_pdf(cur_df, present)
+        if _pdf_key in st.session_state:
+            with _col_dl:
+                st.download_button(
+                    "⬇️ 효율분析 리포트 다운로드",
+                    st.session_state[_pdf_key],
+                    file_name="효율분析_리포트.pdf",
+                    mime="application/pdf",
+                    key=f"dl_eff_pdf_{file_name}",
+                )
