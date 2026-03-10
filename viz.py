@@ -175,6 +175,22 @@ def plot_hist_with_tails(
     }]), hide_index=True, use_container_width=True)
 
     if source_df is not None and val_col is not None:
+        # ── Outlier table (always shown) ──────────────────────────────────────
+        _scaled = source_df[val_col] / val_scale
+        _out_mask = (_scaled < lo) | (_scaled > hi)
+        _out_df = source_df[_out_mask].copy()
+        _out_cols = [c for c in (display_cols or []) if c in _out_df.columns]
+        if not _out_cols:
+            _out_cols = [c for c in ["brand", "building"] if c in _out_df.columns] + [val_col]
+        _n_out = len(_out_df)
+        with st.expander(f"🔶 이상치 목록 — {_n_out}건", expanded=_n_out > 0):
+            if _n_out == 0:
+                st.caption("이상치 없음")
+            else:
+                st.dataframe(_out_df[_out_cols].reset_index(drop=True),
+                             hide_index=True, use_container_width=True)
+
+        # ── Bin-click table ───────────────────────────────────────────────────
         pts = (event.selection.points if event and hasattr(event, "selection") else [])
         if pts:
             cd = pts[0].get("customdata", [])
@@ -182,7 +198,7 @@ def plot_hist_with_tails(
                 cd = list(cd.values())
             if len(cd) >= 2:
                 x0, x1 = float(cd[0]), float(cd[1])
-                mask = (source_df[val_col] / val_scale >= x0) & (source_df[val_col] / val_scale <= x1)
+                mask = (_scaled >= x0) & (_scaled <= x1)
                 bin_df = source_df[mask].copy()
                 cols = [c for c in (display_cols or []) if c in bin_df.columns]
                 if not cols:
