@@ -95,14 +95,19 @@ def _load_sheets(file_name: str, file_data: bytes, all_sheet_keys: list[str]) ->
 
 def _render_kpis(df: pd.DataFrame, has_billing: bool, has_elec: bool) -> None:
     counts = df["risk_level"].value_counts()
-    cols = st.columns(6)
-    cols[0].metric("분석 브랜드", f"{len(df)}개")
-    cols[1].metric("🔴 위험", f"{counts.get('🔴 위험', 0)}개")
-    cols[2].metric("🟠 주의", f"{counts.get('🟠 주의', 0)}개")
-    cols[3].metric("🟡 관찰", f"{counts.get('🟡 관찰', 0)}개")
-    cols[4].metric("🟢 정상", f"{counts.get('🟢 정상', 0)}개")
+    cols = st.columns(5)
+    cols[0].metric("분석 브랜드", f"{len(df)}개",
+                   help="이상감지 분석 대상 전체 브랜드 수")
+    cols[1].metric("🔴 위험", f"{counts.get('🔴 위험', 0)}개",
+                   help="복합 이상 점수 ≥ 0.65 — 즉시 조사 필요")
+    cols[2].metric("🟠 주의", f"{counts.get('🟠 주의', 0)}개",
+                   help="복합 이상 점수 ≥ 0.40 — 모니터링 권장")
+    cols[3].metric("🟡 관찰", f"{counts.get('🟡 관찰', 0)}개",
+                   help="복합 이상 점수 ≥ 0.20 — 경미한 이상 신호")
+    cols[4].metric("🟢 정상", f"{counts.get('🟢 정상', 0)}개",
+                   help="복합 이상 점수 < 0.20 — 정상 범위")
     sources = ["검침"] + (["청구"] if has_billing else []) + (["전기"] if has_elec else [])
-    cols[5].metric("분석 데이터", " · ".join(sources))
+    st.caption(f"📂 분석 데이터: **{' · '.join(sources)}**")
 
 
 # ── Section: Composite ranked bar chart ───────────────────────────────────────
