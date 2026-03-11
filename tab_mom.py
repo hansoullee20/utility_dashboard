@@ -159,11 +159,156 @@ def _render_trend_section(
 
 # ── Pairwise MoM section ────────────────────────────────────────────────────
 
+def _render_vacancy_section(
+    cur_df: pd.DataFrame,
+    prev_file: str,
+    file_map: dict[str, bytes],
+    sheet_map: dict[str, list],
+) -> None:
+    """Render 공실/입퇴점 analysis comparing current vs previous month brands."""
+    import re
+
+    prev_df = _load_brand_usage_for_file(prev_file, file_map, sheet_map)
+    if prev_df is None or prev_df.empty:
+        return
+
+    merge_keys = [k for k in ["brand", "building"] if k in cur_df.columns and k in prev_df.columns]
+    if not merge_keys:
+        return
+
+    cur_side = cur_df[merge_keys + [c for c in ["floor"] if c in cur_df.columns]].drop_duplicates(subset=merge_keys)
+    prev_side = prev_df[merge_keys + [c for c in ["floor"] if c in prev_df.columns]].drop_duplicates(subset=merge_keys)
+    if "floor" in prev_side.columns:
+        prev_side = prev_side.rename(columns={"floor": "floor_prev"})
+
+    merged = cur_side.merge(prev_side, on=merge_keys, how="outer", indicator=True)
+
+    _is_vacant = lambda df: df["brand"].str.strip().str.match(r"^공\s*실", na=False)
+
+    matched = merged[merged["_merge"] == "both"].drop(columns=["_merge"]).copy()
+    left_only = merged[merged["_merge"] == "left_only"].copy()
+    right_only = merged[merged["_merge"] == "right_only"].copy()
+
+    # 공실 splits
+    vacant_both = matched[_is_vacant(matched)]
+    vacant_new = left_only[_is_vacant(left_only)]
+    vacant_filled = right_only[_is_vacant(right_only)]
+
+    # Real tenant turnover (excluding 공실)
+    new_raw = left_only[~_is_vacant(left_only)]
+    closed_raw = right_only[~_is_vacant(right_only)]
+
+    # Relocated brands (same name, different building)
+    relocated_names = set(new_raw["brand"].str.strip()) & set(closed_raw["brand"].str.strip())
+    new_brands = new_raw[~new_raw["brand"].str.strip().isin(relocated_names)]
+    closed_brands = closed_raw[~closed_raw["brand"].str.strip().isin(relocated_names)]
+    relocated_in = new_raw[new_raw["brand"].str.strip().isin(relocated_names)]
+    relocated_out = closed_raw[closed_raw["brand"].str.strip().isin(relocated_names)]
+
+    n_vacant_both = len(vacant_both)
+    n_vacant_new = len(vacant_new)
+    n_vacant_filled = len(vacant_filled)
+    n_in = len(new_brands)
+    n_out = len(closed_brands)
+    n_relocated = len(relocated_names)
+
+    has_vacancy = n_vacant_both + n_vacant_new + n_vacant_filled > 0
+    has_turnover = n_in + n_out + n_relocated > 0
+
+    if not has_vacancy and not has_turnover:
+        return
+
+    st.divider()
+    st.subheader("🔄 입퇴점 · 공실 현황")
+
+    # ── Vacancy KPIs ──────────────────────────────────────────────────────
+    if has_vacancy:
+        vc = st.columns(3)
+        vc[0].metric("🏢 공실 유지", f"{n_vacant_both}개",
+                     help="전월·이번달 모두 공실인 호실")
+        vc[1].metric("📉 신규 공실", f"{n_vacant_new}개",
+                     help="전월에는 입점 상태였으나 이번달 공실로 전환",
+                     delta=f"+{n_vacant_new}" if n_vacant_new else None,
+                     delta_color="inverse")
+        vc[2].metric("📈 공실 해소", f"{n_vacant_filled}개",
+                     help="전월에 공실이었으나 이번달 입점 완료",
+                     delta=f"-{n_vacant_filled}" if n_vacant_filled else None,
+                     delta_color="inverse")
+
+        if n_vacant_new or n_vacant_filled:
+            _vac_ren = {"brand": "브랜드", "building": "건물", "floor": "층"}
+            _vc1, _vc2 = st.columns(2)
+            _vac_cols = [c for c in ["brand", "building", "floor"] if c in left_only.columns]
+            with _vc1:
+                if n_vacant_new:
+                    st.caption("📉 신규 공실 — 전월 입점 → 이번달 공실")
+                    disp = vacant_new[_vac_cols].copy()
+                    disp.columns = [_vac_ren.get(c, c) for c in disp.columns]
+                    st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+            with _vc2:
+                if n_vacant_filled:
+                    st.caption("📈 공실 해소 — 전월 공실 → 이번달 입점")
+                    _rcols = [c for c in ["brand", "building", "floor_prev"] if c in right_only.columns]
+                    disp = vacant_filled[_rcols].copy()
+                    disp.columns = [_vac_ren.get(c, c) if c != "floor_prev" else "층" for c in disp.columns]
+                    st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+
+    # ── Tenant turnover ───────────────────────────────────────────────────
+    if has_turnover:
+        if has_vacancy:
+            st.divider()
+        _parts = []
+        if n_in:
+            _parts.append(f"입점 {n_in}개")
+        if n_out:
+            _parts.append(f"퇴점 {n_out}개")
+        if n_relocated:
+            _parts.append(f"이전 {n_relocated}개")
+        st.markdown(f"**입퇴점**  —  {' · '.join(_parts)}")
+        st.caption("전월 대비 브랜드 매칭 기준 (공실 제외)")
+
+        _col_ren = {"brand": "브랜드", "building": "건물", "floor": "층"}
+
+        if n_relocated:
+            _bcols = [c for c in ["brand", "building", "floor"] if c in relocated_in.columns]
+            reloc_disp = relocated_out[[c for c in ["brand", "building", "floor_prev"] if c in relocated_out.columns]].rename(
+                columns={"floor_prev": "floor"}
+            ).merge(
+                relocated_in[_bcols], on="brand", suffixes=("(전월)", "(이번달)"),
+            )
+            reloc_disp.columns = [
+                c.replace("brand", "브랜드").replace("building", "건물").replace("floor", "층")
+                for c in reloc_disp.columns
+            ]
+            st.markdown(f"**🔀 이전** ({n_relocated}개) — 위치 변경")
+            st.dataframe(reloc_disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            if n_in:
+                st.markdown(f"**🟢 입점** ({n_in}개)")
+                disp = new_brands[[c for c in ["brand", "building", "floor"] if c in new_brands.columns]].copy()
+                disp.columns = [_col_ren.get(c, c) for c in disp.columns]
+                st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+            else:
+                st.info("신규 입점 없음")
+        with _c2:
+            if n_out:
+                st.markdown(f"**🔴 퇴점** ({n_out}개)")
+                _out_cols = [c for c in ["brand", "building", "floor_prev"] if c in closed_brands.columns]
+                disp = closed_brands[_out_cols].copy()
+                disp.columns = [_col_ren.get(c, c) if c != "floor_prev" else "층" for c in disp.columns]
+                st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+            else:
+                st.info("퇴점 없음")
+
+
 def render_mom_tab(
     cur_df: pd.DataFrame,
     present: list[str],
     billing_period: str | None = None,
     prev_billing_period: str | None = None,
+    prev_file: str | None = None,
     all_files: list[str] | None = None,
     file_map: dict[str, bytes] | None = None,
     file_periods: dict[str, str | None] | None = None,
@@ -287,6 +432,10 @@ def render_mom_tab(
     if (all_files and file_map and file_periods and sheet_map
             and len(all_files) >= 3):
         _render_trend_section(present, all_files, file_map, file_periods, sheet_map)
+
+    # ── Vacancy / turnover analysis ──────────────────────────────────────
+    if prev_file and file_map and sheet_map:
+        _render_vacancy_section(cur_df, prev_file, file_map, sheet_map)
 
     # ── Change bar chart (full brand list) ─────────────────────────────────
     st.divider()

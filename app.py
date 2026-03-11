@@ -34,7 +34,6 @@ from tab_cross import render_cross_tab
 from tab_efficiency import render_efficiency_tab
 from tab_anomaly import render_anomaly_tab
 from tab_mom import render_mom_tab
-from tab_yoy import render_yoy_tab
 from lang import t
 
 
@@ -281,6 +280,7 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
             cur_df, present,
             billing_period=file_periods.get(file_name),
             prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+            prev_file=prev_file,
             all_files=meter_files,
             file_map=file_map,
             file_periods=file_periods,
@@ -288,6 +288,7 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
         )
 
     with tab_yoy:
+        from tab_yoy import render_yoy_tab
         render_yoy_tab(
             cur_df, present,
             billing_period=file_periods.get(file_name),
@@ -386,6 +387,7 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
                 w_df  = _load(read_water_sheet,       WATER_SHEET_NAME)
                 hw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME)
                 el_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME)
+                b_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME)
 
                 if all(d is None for d in [w_df, hw_df, el_df]):
                     st.error(t("no_util_sheets"))
@@ -394,10 +396,12 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
                 pw_df  = _load(read_water_sheet,       WATER_SHEET_NAME,       prev_file) if prev_file else None
                 phw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    prev_file) if prev_file else None
                 pel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, prev_file) if prev_file else None
+                pb_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME,     prev_file) if prev_file else None
 
                 yw_df  = _load(read_water_sheet,       WATER_SHEET_NAME,       yoy_file) if yoy_file else None
                 yhw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    yoy_file) if yoy_file else None
                 yel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, yoy_file) if yoy_file else None
+                yb_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME,     yoy_file) if yoy_file else None
 
                 # ── Reuse Tier-2 meter filter selections for summary data ─────
                 _sb = st.session_state.get("t2_building", ["All"])
@@ -410,8 +414,11 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
                         return d
                     return apply_sheet_filter(d, _sb, _sf, _gm, _bs)
                 w_df, hw_df, el_df = _flt(w_df), _flt(hw_df), _flt(el_df)
+                b_df = _flt(b_df)
                 pw_df, phw_df, pel_df = _flt(pw_df), _flt(phw_df), _flt(pel_df)
+                pb_df = _flt(pb_df)
                 yw_df, yhw_df, yel_df = _flt(yw_df), _flt(yhw_df), _flt(yel_df)
+                yb_df = _flt(yb_df)
 
                 render_summary_view(
                     w_df, hw_df, el_df,
@@ -423,6 +430,7 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
                     yoy_water_df=yw_df, yoy_hotwater_df=yhw_df,
                     yoy_elec_df=yel_df,
                     yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
+                    billing_df=b_df, prev_billing_df=pb_df, yoy_billing_df=yb_df,
                 )
 
 
@@ -565,6 +573,16 @@ def main():
 .stTabs [aria-selected="true"] {
     font-size: 15px !important;
     font-weight: 700 !important;
+}
+/* ── st.metric: smaller fonts to prevent overflow ── */
+[data-testid="stMetricValue"] {
+    font-size: 1.15rem !important;
+}
+[data-testid="stMetricDelta"] {
+    font-size: 0.78rem !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: 0.82rem !important;
 }
 </style>
 """, unsafe_allow_html=True)

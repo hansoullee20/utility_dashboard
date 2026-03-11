@@ -10,19 +10,20 @@ BLD_COLOR: dict[str, str] = {
 
 
 def fmt_won(v: float, signed: bool = False) -> str:
-    """Format Korean Won — auto-scale, decimals down to 1원 precision."""
+    """Format Korean Won — auto-scale, up to 2 decimals, round up sub-원."""
     import math
     rounded = int(math.copysign(math.ceil(abs(v)), v)) if v != 0 else 0
     sign = ("+" if rounded >= 0 else "") if signed else ""
     abs_r = abs(rounded)
     if abs_r >= 1e8:
-        # 8 decimals = 1원 precision in 억원
-        s = f"{rounded / 1e8:,.8f}".rstrip("0").rstrip(".")
-        return f"{sign}{s}억원"
+        s = f"{rounded / 1e8:,.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{s}억"
     elif abs_r >= 1e4:
-        # 4 decimals = 1원 precision in 만원
-        s = f"{rounded / 1e4:,.4f}".rstrip("0").rstrip(".")
-        return f"{sign}{s}만원"
+        s = f"{rounded / 1e4:,.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{s}만"
+    elif abs_r >= 1e3:
+        s = f"{rounded / 1e3:,.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{s}천"
     return f"{sign}{rounded:,}원"
 
 

@@ -144,8 +144,27 @@ def render_yoy_tab(
     ]
 
     if _kpi_specs:
-        cols = st.columns(len(_kpi_specs))
-        for col, (p, label, unit) in zip(cols, _kpi_specs):
+        # 종합 KPI — total change count across all utilities
+        _total_curr = sum(
+            to_numeric_series(matched[_UTIL_META[p]["curr"]]).sum()
+            for p, _, _ in _kpi_specs
+        )
+        _total_prev = sum(
+            to_numeric_series(matched[f"{p}_yoy_prev"]).sum()
+            for p, _, _ in _kpi_specs
+        )
+        _total_delta = _total_curr - _total_prev
+        _total_pct = _total_delta / _total_prev * 100 if _total_prev else 0
+
+        cols = st.columns(1 + len(_kpi_specs))
+        cols[0].metric(
+            "📊 종합",
+            f"{len(matched)}개 브랜드",
+            delta=f"{_total_pct:+.1f}%",
+            delta_color="inverse",
+            help="전체 유틸리티 합산 전년 대비 변화율",
+        )
+        for col, (p, label, unit) in zip(cols[1:], _kpi_specs):
             _curr = to_numeric_series(matched[_UTIL_META[p]["curr"]]).sum()
             _prev = to_numeric_series(matched[f"{p}_yoy_prev"]).sum()
             _delta = _curr - _prev
