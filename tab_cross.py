@@ -138,6 +138,90 @@ def _render_elec_breakdown(elec_br: pd.DataFrame, split_by_building: bool = True
         download_df_as_excel(view, filename="elec_breakdown.xlsx", sheet_name="elec_breakdown")
 
 
+# ── YoY comparison helper ─────────────────────────────────────────────────────
+
+def _render_yoy_cross(cur_df, unit_df, yoy_df,
+                      yoy_file, yoy_file_data, yoy_sheet_names,
+                      split_by_building=True,
+                      billing_period=None, yoy_billing_period=None):
+    """Show YoY changes in unit costs."""
+    _period_str = f"{yoy_billing_period} → {billing_period}" if billing_period and yoy_billing_period else "전년 대비"
+    st.subheader(f"📅 전년 대비 단위 비용 변화  ({_period_str})")
+
+    # Build YoY unit costs
+    yoy_billing_df = None
+    if BILLING_SHEET_NAME in yoy_sheet_names:
+        try:
+            yoy_billing_df = read_billing_sheet(yoy_file, yoy_file_data, BILLING_SHEET_NAME)
+        except Exception:
+            pass
+
+    if yoy_billing_df is None or yoy_billing_df.empty:
+        st.info("전년 부과 내역 시트가 없습니다.")
+        return
+
+    try:
+        yoy_unit_df = build_unit_costs(yoy_df, yoy_billing_df)
+        if yoy_unit_df.empty:
+            st.info("전년 단위 비용 데이터를 생성할 수 없습니다.")
+            return
+    except Exception:
+        st.info("전년 단위 비용 계산 중 오류가 발생했습니다.")
+        return
+
+    if unit_df is None:
+        st.info("당월 단위 비용 데이터가 없습니다.")
+        return
+
+    # Merge current and YoY unit costs by brand
+    _cost_cols = [c for c in ["water_unit_cost", "elect_unit_cost", "total_cost_per_m2"]
+                  if c in unit_df.columns and c in yoy_unit_df.columns]
+    if not _cost_cols:
+        st.info("비교 가능한 단위 비용 항목이 없습니다.")
+        return
+
+    _cur = unit_df[["brand"] + _cost_cols].copy()
+    _yoy = yoy_unit_df[["brand"] + _cost_cols].copy()
+    _merged = _cur.merge(_yoy, on="brand", suffixes=("", "_yoy"), how="inner")
+
+    if _merged.empty:
+        st.info("전년 대비 매칭되는 브랜드가 없습니다.")
+        return
+
+    _labels = {"water_unit_cost": "💧 수도 (₩/m³)", "elect_unit_cost": "⚡ 전기 (₩/kWh)",
+               "total_cost_per_m2": "📊 총비용 (만원/m²)"}
+
+    # KPI row
+    _kc = st.columns(len(_cost_cols))
+    for i, col in enumerate(_cost_cols):
+        _c_med = _merged[col].median()
+        _y_med = _merged[f"{col}_yoy"].median()
+        _d = _c_med - _y_med
+        _pct = _d / _y_med * 100 if _y_med else 0
+        _kc[i].metric(
+            _labels.get(col, col),
+            f"{_c_med:,.2f}",
+            delta=f"{_d:+,.2f} ({_pct:+.1f}%)",
+            delta_color="inverse",
+            help="중앙값 기준 전년 대비 변화",
+        )
+
+    # Per-brand change table
+    for col in _cost_cols:
+        chg_col = f"{col}_변화"
+        _merged[chg_col] = _merged[col] - _merged[f"{col}_yoy"]
+    _disp_cols = ["brand"] + [c for col in _cost_cols for c in [col, f"{col}_yoy", f"{col}_변화"]]
+    _disp = _merged[[c for c in _disp_cols if c in _merged.columns]].copy()
+    _rename = {}
+    for col in _cost_cols:
+        lbl = _labels.get(col, col)
+        _rename[col] = f"올해 {lbl}"
+        _rename[f"{col}_yoy"] = f"전년 {lbl}"
+        _rename[f"{col}_변화"] = f"변화 {lbl}"
+    _disp = _disp.rename(columns=_rename)
+    st.dataframe(_disp.round(2), hide_index=True, use_container_width=True)
+
+
 # ── Public render ─────────────────────────────────────────────────────────────
 
 def render_cross_tab(
@@ -146,6 +230,12 @@ def render_cross_tab(
     file_data: bytes,
     sheet_names: list[str],
     split_by_building: bool = True,
+    yoy_df: pd.DataFrame | None = None,
+    yoy_file: str | None = None,
+    yoy_file_data: bytes | None = None,
+    yoy_sheet_names: list[str] | None = None,
+    billing_period: str | None = None,
+    yoy_billing_period: str | None = None,
 ) -> None:
     has_billing = BILLING_SHEET_NAME in sheet_names
     has_elec    = ELECTRICITY_SHEET_NAME in sheet_names
@@ -195,6 +285,17 @@ def render_cross_tab(
 
     if elec_br is not None:
         _render_elec_breakdown(elec_br, split_by_building=split_by_building)
+        st.divider()
+
+    # ── YoY comparison ──────────────────────────────────────────────────────
+    if yoy_df is not None and yoy_file and yoy_file_data:
+        _render_yoy_cross(
+            cur_df, unit_df, yoy_df,
+            yoy_file, yoy_file_data, yoy_sheet_names or [],
+            split_by_building=split_by_building,
+            billing_period=billing_period,
+            yoy_billing_period=yoy_billing_period,
+        )
         st.divider()
 
     # ── Reference — PDF + raw data ───────────────────────────────────────────

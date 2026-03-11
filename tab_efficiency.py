@@ -194,6 +194,66 @@ def _render_combined(cur_df: pd.DataFrame, avail: dict[str, str],
 
 # ── Public render ─────────────────────────────────────────────────────────────
 
+def _render_yoy_efficiency(cur_df, yoy_df, avail,
+                          split_by_building=True,
+                          billing_period=None, yoy_billing_period=None):
+    """Show YoY changes in per-m² usage efficiency."""
+    _period_str = f"{yoy_billing_period} → {billing_period}" if billing_period and yoy_billing_period else "전년 대비"
+    st.subheader(f"📅 전년 대비 효율 변화  ({_period_str})")
+
+    # Find matching per_m2 columns in both current and YoY
+    _yoy_avail = {p: col for p, col in avail.items() if col in yoy_df.columns}
+    if not _yoy_avail:
+        st.info("전년 효율 데이터가 없습니다.")
+        return
+
+    _cur = cur_df[["brand"] + [col for col in _yoy_avail.values()]].copy()
+    _yoy = yoy_df[["brand"] + [col for col in _yoy_avail.values()]].copy()
+    _merged = _cur.merge(_yoy, on="brand", suffixes=("", "_yoy"), how="inner")
+
+    if _merged.empty:
+        st.info("전년 대비 매칭되는 브랜드가 없습니다.")
+        return
+
+    # KPI row — median per-m² usage change
+    _kc = st.columns(len(_yoy_avail))
+    for i, (p, col) in enumerate(_yoy_avail.items()):
+        _c_med = _merged[col].median()
+        _y_med = _merged[f"{col}_yoy"].median()
+        _d = _c_med - _y_med
+        _pct = _d / _y_med * 100 if _y_med else 0
+        _unit = _UNIT_LABELS.get(p, "unit/m²")
+        _kc[i].metric(
+            f"{_UTIL_LABELS.get(p, p)} ({_unit})",
+            f"{_c_med:,.4f}",
+            delta=f"{_d:+,.4f} ({_pct:+.1f}%)",
+            delta_color="inverse",
+            help="중앙값 기준 전년 대비 변화",
+        )
+
+    # Per-brand change table
+    for p, col in _yoy_avail.items():
+        chg_col = f"{col}_변화"
+        pct_col = f"{col}_변화율"
+        _merged[chg_col] = (_merged[col] - _merged[f"{col}_yoy"]).round(4)
+        _merged[pct_col] = (
+            (_merged[chg_col] / _merged[f"{col}_yoy"].replace(0, float("nan"))) * 100
+        ).round(1)
+
+    _disp_cols = ["brand"]
+    _rename = {}
+    for p, col in _yoy_avail.items():
+        lbl = _UTIL_LABELS.get(p, p)
+        _disp_cols += [col, f"{col}_yoy", f"{col}_변화", f"{col}_변화율"]
+        _rename[col] = f"올해 {lbl}"
+        _rename[f"{col}_yoy"] = f"전년 {lbl}"
+        _rename[f"{col}_변화"] = f"변화 {lbl}"
+        _rename[f"{col}_변화율"] = f"변화율(%) {lbl}"
+    _disp = _merged[[c for c in _disp_cols if c in _merged.columns]].copy()
+    _disp = _disp.rename(columns=_rename)
+    st.dataframe(_disp, hide_index=True, use_container_width=True)
+
+
 def render_efficiency_tab(
     cur_df: pd.DataFrame,
     present: list[str],
@@ -201,6 +261,9 @@ def render_efficiency_tab(
     file_data: bytes | None = None,
     ehp_sheet: str | None = None,
     split_by_building: bool = True,
+    yoy_df: pd.DataFrame | None = None,
+    billing_period: str | None = None,
+    yoy_billing_period: str | None = None,
 ) -> None:
     """Rank brands by per-area current usage to evaluate energy efficiency."""
     avail = {p: f"{p}_usage_per_m2" for p in present if f"{p}_usage_per_m2" in cur_df.columns}
@@ -233,6 +296,14 @@ def render_efficiency_tab(
 
     if avail:
         _render_combined(cur_df, avail, ehp_merged, split_by_building=split_by_building)
+
+    # ── YoY efficiency comparison ─────────────────────────────────────────────
+    if yoy_df is not None and avail:
+        st.divider()
+        _render_yoy_efficiency(cur_df, yoy_df, avail,
+                               split_by_building=split_by_building,
+                               billing_period=billing_period,
+                               yoy_billing_period=yoy_billing_period)
 
     # ── Reference — PDF + raw data ───────────────────────────────────────────
     st.divider()

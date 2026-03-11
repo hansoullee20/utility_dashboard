@@ -34,6 +34,7 @@ from tab_cross import render_cross_tab
 from tab_efficiency import render_efficiency_tab
 from tab_anomaly import render_anomaly_tab
 from tab_mom import render_mom_tab
+from tab_yoy import render_yoy_tab
 from lang import t
 
 
@@ -78,7 +79,7 @@ def _load_meter_data(file_name, file_map, sheet_map, all_sheet_keys,
         st.error(f"{t('meter_load_fail')}: {e}")
         st.stop()
 
-    cur_df, _, _, _, split_bldg, ref_df = render_meter_filters(
+    cur_df, active_buildings, active_floors, gong_mode, split_bldg, ref_df = render_meter_filters(
         raw_df, key_prefix=key_prefix,
     )
 
@@ -254,8 +255,8 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
 # ── Tier renderers ───────────────────────────────────────────────────────────
 
 def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
-                          prev_file, file_periods, meter_files):
-    """Tier 1: Anomaly Detection + MoM — 'Who to investigate?'"""
+                          prev_file, file_periods, meter_files, yoy_file=None):
+    """Tier 1: Anomaly Detection + MoM + YoY — 'Who to investigate?'"""
     if "검침 내역" not in all_sheet_keys:
         st.info("이상감지를 위해 **검침 내역** 시트가 필요합니다.")
         return
@@ -267,7 +268,7 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
     from filters import brand_search_bar
     brand_search_bar("t1")
 
-    tab_anom, tab_mom = st.tabs(["🚨 이상감지", "📈 월별 변화"])
+    tab_anom, tab_mom, tab_yoy = st.tabs(["🚨 이상감지", "📈 월별 변화", "📅 전년 대비"])
 
     with tab_anom:
         render_anomaly_tab(
@@ -286,9 +287,19 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
             sheet_map=sheet_map,
         )
 
+    with tab_yoy:
+        render_yoy_tab(
+            cur_df, present,
+            billing_period=file_periods.get(file_name),
+            yoy_file=yoy_file,
+            yoy_period=file_periods.get(yoy_file) if yoy_file else None,
+            file_map=file_map,
+            sheet_map=sheet_map,
+        )
+
 
 def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
-                          prev_file, file_periods):
+                          prev_file, file_periods, yoy_file=None):
     """Tier 2: Business Insight — 'Why is it anomalous?'"""
     has_meter = "검침 내역" in all_sheet_keys
     _UTIL_SHEETS = {WATER_SHEET_NAME, HOTWATER_SHEET_NAME, ELECTRICITY_SHEET_NAME}
@@ -298,19 +309,7 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
         st.info("인사이트 분석을 위해 검침 내역 또는 유틸리티 시트가 필요합니다.")
         return
 
-    # Build tab list dynamically
-    tab_labels = []
-    tab_keys = []
-    if has_meter:
-        tab_labels += ["💰 비용 분석", "⚡ 효율 분석", "🏢 브랜드 프로필"]
-        tab_keys += ["cost", "eff", "profile"]
-    if has_util:
-        tab_labels.append("📋 유틸리티 요약")
-        tab_keys.append("summary")
-
-    tabs = st.tabs(tab_labels)
-
-    # Load meter data once for meter-based tabs
+    # Load meter data (renders filter widgets) BEFORE tabs
     cur_df = ref_df = None
     present = []
     split_bldg = False
@@ -320,6 +319,38 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
             file_name, file_map, sheet_map, all_sheet_keys, prev_file,
             key_prefix="t2",
         )
+    elif has_util:
+        # No meter sheet — render standalone filters for utility summary
+        import pandas as _pd_u
+        _load_u = lambda r, c: _try_load_sheet(r, c, file_name, file_map, sheet_map)
+        _u_parts = [d for d in [
+            _load_u(read_water_sheet, WATER_SHEET_NAME),
+            _load_u(read_hotwater_sheet, HOTWATER_SHEET_NAME),
+            _load_u(read_electricity_sheet, ELECTRICITY_SHEET_NAME),
+        ] if d is not None and not d.empty]
+        if _u_parts:
+            _u_ref = _pd_u.concat(_u_parts, ignore_index=True)
+            show_filter_widgets(_u_ref, "t2")
+
+    # Build tab list dynamically
+    tab_labels = []
+    tab_keys = []
+    if has_util:
+        tab_labels.append("📋 유틸리티 요약")
+        tab_keys.append("summary")
+    if has_meter:
+        tab_labels += ["💰 비용 분석", "⚡ 효율 분석"]
+        tab_keys += ["cost", "eff"]
+
+    tabs = st.tabs(tab_labels)
+
+    # Load YoY meter data if available
+    yoy_cur_df = None
+    if yoy_file and has_meter:
+        _yoy_sheets = sheet_map.get(yoy_file, [])
+        yoy_cur_df, _ = _load_meter_data_silent(
+            yoy_file, file_map, _yoy_sheets, _yoy_sheets, None,
+        )
 
     for tab_ui, key in zip(tabs, tab_keys):
         with tab_ui:
@@ -327,6 +358,12 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
                 render_cross_tab(
                     cur_df, file_name, file_map[file_name], all_sheet_keys,
                     split_by_building=split_bldg,
+                    yoy_df=yoy_cur_df,
+                    yoy_file=yoy_file,
+                    yoy_file_data=file_map.get(yoy_file) if yoy_file else None,
+                    yoy_sheet_names=sheet_map.get(yoy_file, []),
+                    billing_period=file_periods.get(file_name),
+                    yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
                 )
 
             elif key == "eff" and cur_df is not None:
@@ -336,23 +373,9 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
                     file_data=file_map[file_name],
                     ehp_sheet=ehp_sheet,
                     split_by_building=split_bldg,
-                )
-
-            elif key == "profile" and cur_df is not None:
-                from brand_profile import render_brand_profile_tab
-                render_brand_profile_tab(
-                    cur_df, ref_df, present,
-                    tail=st.session_state.get("tail", 20),
+                    yoy_df=yoy_cur_df,
                     billing_period=file_periods.get(file_name),
-                    prev_billing_period=file_periods.get(prev_file) if prev_file else None,
-                    billing_df=_try_load_sheet(read_billing_sheet, BILLING_SHEET_NAME,
-                                              file_name, file_map, sheet_map),
-                    water_df=_try_load_sheet(read_water_sheet, WATER_SHEET_NAME,
-                                            file_name, file_map, sheet_map),
-                    hotwater_df=_try_load_sheet(read_hotwater_sheet, HOTWATER_SHEET_NAME,
-                                               file_name, file_map, sheet_map),
-                    electricity_df=_try_load_sheet(read_electricity_sheet, ELECTRICITY_SHEET_NAME,
-                                                  file_name, file_map, sheet_map),
+                    yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
                 )
 
             elif key == "summary":
@@ -372,31 +395,42 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
                 phw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    prev_file) if prev_file else None
                 pel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, prev_file) if prev_file else None
 
-                ref = _pd.concat(
-                    [d[["building", "floor", "brand"]] for d in [w_df, hw_df, el_df]
-                     if d is not None and all(c in d.columns for c in ["building", "floor", "brand"])],
-                    ignore_index=True,
-                ).drop_duplicates()
-                sel_bldg, sel_floor, gong_mode, brand_search = show_filter_widgets(
-                    ref, key_prefix="summary")
-                split = not ("All" in sel_bldg and "All" in sel_floor)
+                yw_df  = _load(read_water_sheet,       WATER_SHEET_NAME,       yoy_file) if yoy_file else None
+                yhw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    yoy_file) if yoy_file else None
+                yel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, yoy_file) if yoy_file else None
 
-                def _filt(df):
-                    return apply_sheet_filter(df, sel_bldg, sel_floor, gong_mode, brand_search) if df is not None else None
+                # ── Reuse Tier-2 meter filter selections for summary data ─────
+                _sb = st.session_state.get("t2_building", ["All"])
+                _sf = st.session_state.get("t2_floor", ["All"])
+                _gm = st.session_state.get("t2_gongshil", "All")
+                _bs = st.session_state.get("t2_brand_search", "").strip().lower()
+                _split = not ("All" in _sb and "All" in _sf)
+                def _flt(d):
+                    if d is None or d.empty:
+                        return d
+                    return apply_sheet_filter(d, _sb, _sf, _gm, _bs)
+                w_df, hw_df, el_df = _flt(w_df), _flt(hw_df), _flt(el_df)
+                pw_df, phw_df, pel_df = _flt(pw_df), _flt(phw_df), _flt(pel_df)
+                yw_df, yhw_df, yel_df = _flt(yw_df), _flt(yhw_df), _flt(yel_df)
 
                 render_summary_view(
-                    _filt(w_df), _filt(hw_df), _filt(el_df),
-                    split_by_building=split,
-                    prev_water_df=_filt(pw_df), prev_hotwater_df=_filt(phw_df),
-                    prev_elec_df=_filt(pel_df),
+                    w_df, hw_df, el_df,
+                    split_by_building=_split,
+                    prev_water_df=pw_df, prev_hotwater_df=phw_df,
+                    prev_elec_df=pel_df,
                     billing_period=file_periods.get(file_name),
                     prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+                    yoy_water_df=yw_df, yoy_hotwater_df=yhw_df,
+                    yoy_elec_df=yel_df,
+                    yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
                 )
 
 
 def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
-                         sheet_keys, prev_file, file_periods, bins, tail, q, debug):
+                         sheet_keys, prev_file, file_periods, bins, tail, q, debug,
+                         yoy_file=None):
     """Tier 3: Detail Viewing — 'Show me the raw data'"""
+    _PROFILE_LABEL = "🏢 브랜드 프로필"
     default_sheet = "검침 내역" if "검침 내역" in sheet_keys else sheet_keys[0]
     sheet_name = st.selectbox(
         t("select_sheet"), sheet_keys,
@@ -405,6 +439,14 @@ def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
     )
 
     stripped = sheet_name.strip()
+
+    def _load_yoy_sheet(reader, sheet_const):
+        """Load a sheet from the YoY file, returning None on failure."""
+        if not yoy_file:
+            return None
+        return _try_load_sheet(reader, sheet_const, yoy_file, file_map, sheet_map)
+
+    _yoy_period = file_periods.get(yoy_file) if yoy_file else None
 
     # ── Route: HVAC ──────────────────────────────────────────────────────────
     if stripped == HVAC_SHEET_NAME:
@@ -430,6 +472,8 @@ def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
             hw_df, prev_df=prev_hw,
             billing_period=file_periods.get(file_name),
             prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+            yoy_df=_load_yoy_sheet(read_hotwater_sheet, HOTWATER_SHEET_NAME),
+            yoy_billing_period=_yoy_period,
         )
         return
 
@@ -446,6 +490,8 @@ def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
             elec_df, prev_df=prev_elec,
             billing_period=file_periods.get(file_name),
             prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+            yoy_df=_load_yoy_sheet(read_electricity_sheet, ELECTRICITY_SHEET_NAME),
+            yoy_billing_period=_yoy_period,
         )
         return
 
@@ -462,6 +508,8 @@ def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
             water_df, prev_df=prev_water,
             billing_period=file_periods.get(file_name),
             prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+            yoy_df=_load_yoy_sheet(read_water_sheet, WATER_SHEET_NAME),
+            yoy_billing_period=_yoy_period,
         )
         return
 
@@ -478,6 +526,8 @@ def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
             billing_df, prev_df=prev_billing,
             billing_period=file_periods.get(file_name),
             prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+            yoy_df=_load_yoy_sheet(read_billing_sheet, BILLING_SHEET_NAME),
+            yoy_billing_period=_yoy_period,
         )
         return
 
@@ -557,6 +607,17 @@ def main():
     meter_files = [f for f in sorted_files if _parse_period(file_periods[f]) > (0, 0)]
     prev_file = meter_files[1] if len(meter_files) > 1 else None
 
+    # Detect YoY file: same month, previous year
+    def _find_yoy_file(target_file: str) -> str | None:
+        y, m = _parse_period(file_periods.get(target_file))
+        if y == 0:
+            return None
+        for f in meter_files:
+            fy, fm = _parse_period(file_periods.get(f))
+            if fy == y - 1 and fm == m:
+                return f
+        return None
+
     def _file_label(fname: str) -> str:
         period = file_periods.get(fname)
         return f"{period} — {fname}" if period else fname
@@ -581,21 +642,23 @@ def main():
     # ── Three-tier navigation ────────────────────────────────────────────────
     _NAV_ANOMALY = t("nav_anomaly")
     _NAV_INSIGHT = t("nav_insight")
+    _NAV_PROFILE = t("nav_profile")
     _NAV_DETAIL  = t("nav_detail")
 
     import streamlit_antd_components as sac
     _nav_key = f"nav_{file_name}"
-    _valid_labels = {_NAV_ANOMALY, _NAV_INSIGHT, _NAV_DETAIL}
+    _valid_labels = {_NAV_ANOMALY, _NAV_INSIGHT, _NAV_PROFILE, _NAV_DETAIL}
     if st.session_state.get(_nav_key) not in _valid_labels:
         st.session_state[_nav_key] = _NAV_ANOMALY
     with st.sidebar:
         nav_mode = sac.tabs(
             [sac.TabsItem(label=_NAV_ANOMALY),
              sac.TabsItem(label=_NAV_INSIGHT),
-             sac.TabsItem(label=_NAV_DETAIL)],
+             sac.TabsItem(label=_NAV_DETAIL),
+             sac.TabsItem(label=_NAV_PROFILE)],
             index=0,
             position="left",
-            height=180,
+            height=220,
             key=_nav_key,
         )
 
@@ -638,22 +701,49 @@ def main():
         debug = st.checkbox(t("debug"), value=False)
 
     # ── Route to tier ────────────────────────────────────────────────────────
+    yoy_file = _find_yoy_file(file_name)
+
     if nav_mode == _NAV_ANOMALY:
         _render_tier1_anomaly(
             file_name, file_map, sheet_map, all_sheet_keys,
-            prev_file, file_periods, meter_files,
+            prev_file, file_periods, meter_files, yoy_file=yoy_file,
         )
 
     elif nav_mode == _NAV_INSIGHT:
         _render_tier2_insight(
             file_name, file_map, sheet_map, all_sheet_keys,
-            prev_file, file_periods,
+            prev_file, file_periods, yoy_file=yoy_file,
         )
+
+    elif nav_mode == _NAV_PROFILE:
+        if "검침 내역" not in all_sheet_keys:
+            st.info("브랜드 프로필을 위해 검침 내역 시트가 필요합니다.")
+        else:
+            from brand_profile import render_brand_profile_tab
+            cur_df, present, split_bldg, ref_df, _ = _load_meter_data(
+                file_name, file_map, sheet_map, all_sheet_keys, prev_file,
+                key_prefix="t_profile",
+            )
+            render_brand_profile_tab(
+                cur_df, ref_df, present,
+                tail=st.session_state.get("tail", 20),
+                billing_period=file_periods.get(file_name),
+                prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+                billing_df=_try_load_sheet(read_billing_sheet, BILLING_SHEET_NAME,
+                                          file_name, file_map, sheet_map),
+                water_df=_try_load_sheet(read_water_sheet, WATER_SHEET_NAME,
+                                        file_name, file_map, sheet_map),
+                hotwater_df=_try_load_sheet(read_hotwater_sheet, HOTWATER_SHEET_NAME,
+                                           file_name, file_map, sheet_map),
+                electricity_df=_try_load_sheet(read_electricity_sheet, ELECTRICITY_SHEET_NAME,
+                                              file_name, file_map, sheet_map),
+            )
 
     elif nav_mode == _NAV_DETAIL:
         _render_tier3_detail(
             file_name, file_map, sheet_map, all_sheet_keys,
             sheet_keys, prev_file, file_periods, bins, tail, q, debug,
+            yoy_file=yoy_file,
         )
 
 

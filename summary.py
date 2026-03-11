@@ -6,18 +6,23 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from filters import brand_search_bar
+
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper
 from viz import plot_hist_with_tails as _plot_hist
 
 
 def _fmt_won(v: float) -> str:
-    """Auto-scale currency: 억원 / 만원 / 원."""
-    if abs(v) >= 1e8:
-        return f"{v/1e8:.0f} 억원"
-    elif abs(v) >= 1e4:
-        return f"{v/1e4:,.0f} 만원"
-    return f"{v:,.0f} 원"
+    """Format Korean Won — auto-scale, decimals down to 1원 precision."""
+    import math
+    rounded = int(math.copysign(math.ceil(abs(v)), v)) if v != 0 else 0
+    abs_r = abs(rounded)
+    if abs_r >= 1e8:
+        s = f"{rounded / 1e8:,.8f}".rstrip("0").rstrip(".")
+        return f"{s}억원"
+    elif abs_r >= 1e4:
+        s = f"{rounded / 1e4:,.4f}".rstrip("0").rstrip(".")
+        return f"{s}만원"
+    return f"{rounded:,}원"
 
 
 def _sum_cols(df: pd.DataFrame, cols: list) -> pd.Series:
@@ -85,6 +90,10 @@ def render_summary_view(
     prev_elec_df: pd.DataFrame | None = None,
     billing_period: str | None = None,
     prev_billing_period: str | None = None,
+    yoy_water_df: pd.DataFrame | None = None,
+    yoy_hotwater_df: pd.DataFrame | None = None,
+    yoy_elec_df: pd.DataFrame | None = None,
+    yoy_billing_period: str | None = None,
 ) -> None:
     _available      = [n for n, d in [("수도", water_df), ("온수", hotwater_df), ("전기", elec_df)] if d is not None]
     _prev_available = [n for n, d in [("수도", prev_water_df), ("온수", prev_hotwater_df), ("전기", prev_elec_df)] if d is not None]
@@ -185,8 +194,10 @@ def render_summary_view(
     if _has_prev:
         _util_prev_sum = merged["util_prev"].sum()
         _util_delta    = _util_sum - _util_prev_sum
+        _util_pct      = _util_delta / _util_prev_sum * 100 if _util_prev_sum else 0
         mc[1].metric("총 유틸리티 비용", _fmt_won(_util_sum),
-                     delta=_fmt_won(_util_delta), delta_color="inverse")
+                     delta=f"{_fmt_won(_util_delta)} ({_util_pct:+.1f}%)",
+                     delta_color="inverse")
         for i, (col_curr, col_prev, label) in enumerate([
             ("water_total", "water_prev", "수도"),
             ("hw_total",    "hw_prev",    "온수"),
@@ -194,10 +205,13 @@ def render_summary_view(
         ], start=2):
             _curr = merged[col_curr].sum()
             _prev = merged[col_prev].sum()
+            _d = _curr - _prev
+            _p = _d / _prev * 100 if _prev else 0
             mc[i].metric(
                 label,
                 f"{_fmt_won(_curr)} ({_curr/_util_sum*100:.0f}%)",
-                delta=_fmt_won(_curr - _prev), delta_color="inverse",
+                delta=f"{_fmt_won(_d)} ({_p:+.1f}%)",
+                delta_color="inverse",
             )
     else:
         mc[1].metric("총 유틸리티 비용", _fmt_won(_util_sum))
@@ -205,17 +219,23 @@ def render_summary_view(
         mc[3].metric("온수", f"{_fmt_won(merged['hw_total'].sum())} ({merged['hw_total'].sum()/_util_sum*100:.0f}%)")
         mc[4].metric("전기", f"{_fmt_won(merged['elec_total'].sum())} ({merged['elec_total'].sum()/_util_sum*100:.0f}%)")
 
-    brand_search_bar("summary")
+    _has_yoy = any(d is not None for d in [yoy_water_df, yoy_hotwater_df, yoy_elec_df])
+
+    _has_compare = _has_prev or _has_yoy
     _tab_labels = ["총 유틸리티 순위", "유틸리티 구성", "면적당 총비용", "건물별 비교", "🔍 항목별 분석", "📋 경영 보고"]
-    if _has_prev:
-        _tab_labels.insert(1, "📈 월별 변화")
+    if _has_compare:
+        _tab_labels.insert(1, "📈 기간 비교")
     _tabs = st.tabs(_tab_labels)
 
-    if _has_prev:
-        tab_rank, tab_mom, tab_mix, tab_area, tab_bld, tab_cat, tab_mgmt = _tabs
-    else:
-        tab_rank, tab_mix, tab_area, tab_bld, tab_cat, tab_mgmt = _tabs
-        tab_mom = None
+    # Unpack tabs dynamically
+    _ti = iter(_tabs)
+    tab_rank = next(_ti)
+    tab_compare = next(_ti) if _has_compare else None
+    tab_mix = next(_ti)
+    tab_area = next(_ti)
+    tab_bld = next(_ti)
+    tab_cat = next(_ti)
+    tab_mgmt = next(_ti)
 
     def _boxplot_with_labels(s: pd.Series, label_s: pd.Series,
                              x_title: str, key: str,
@@ -295,75 +315,126 @@ def render_summary_view(
                                  hide_index=True, use_container_width=True)
         return ev
 
-    # ═══════════════════════════ 월별 변화 ════════════════════════════════════
-    if tab_mom is not None:
-        with tab_mom:
-            _period_str = f"{_prev_lbl} → {_period_lbl}" if _period_lbl and _prev_lbl else "전월 대비"
-            st.subheader(f"📈 월별 유틸리티 비용 변화  ({_period_str})")
+    # ═══════════════════════════ 기간 비교 (MoM + YoY) ═══════════════════════
+    if tab_compare is not None:
+        with tab_compare:
+            # ── Mode selector ─────────────────────────────────────────────────
+            _cmp_modes = []
+            if _has_prev:
+                _cmp_modes.append("📈 전월 대비")
+            if _has_yoy:
+                _cmp_modes.append("📅 전년 대비")
+            _cmp_mode = st.radio("비교 기준", _cmp_modes, horizontal=True,
+                                 key="summary_cmp_mode") if len(_cmp_modes) > 1 else _cmp_modes[0]
 
-            # ── Which utilities have prev data ────────────────────────────────
-            _mom_specs = [
-                ("전체",    "util_total",  "util_prev",  "util_change",  None),
-                ("💧 수도", "water_total", "water_prev", "water_change", "#4C72B0"),
-                ("🌡 온수", "hw_total",    "hw_prev",    "hw_change",    "#DD8A00"),
-                ("⚡ 전기", "elec_total",  "elec_prev",  "elec_change",  "#F0A500"),
-            ]
-            _mom_specs = [(lbl, cur, prv, chg, clr) for lbl, cur, prv, chg, clr in _mom_specs
-                          if cur in merged.columns and prv in merged.columns
-                          and merged[prv].sum() > 0]
+            if _cmp_mode == "📈 전월 대비":
+                _period_str = f"{_prev_lbl} → {_period_lbl}" if _period_lbl and _prev_lbl else "전월 대비"
+                st.subheader(f"📈 월별 유틸리티 비용 변화  ({_period_str})")
 
-            if not _mom_specs:
-                st.info("이전 달 데이터가 없습니다.")
-            else:
-                # ── Summary KPI row ───────────────────────────────────────────
-                _kc = st.columns(len(_mom_specs))
-                for _ci, (lbl, cur, prv, chg, _) in enumerate(_mom_specs):
-                    _c_sum = merged[cur].sum()
-                    _p_sum = merged[prv].sum()
+                _cmp_specs = [
+                    ("전체",    "util_total",  "util_prev",  "util_change"),
+                    ("💧 수도", "water_total", "water_prev", "water_change"),
+                    ("🌡 온수", "hw_total",    "hw_prev",    "hw_change"),
+                    ("⚡ 전기", "elec_total",  "elec_prev",  "elec_change"),
+                ]
+                _cmp_specs = [(lbl, cur, prv, chg) for lbl, cur, prv, chg in _cmp_specs
+                              if cur in merged.columns and prv in merged.columns
+                              and merged[prv].sum() > 0]
+                _cmp_data = merged
+                _key_pfx = "mom"
+                _prev_col_label = "전월(원)"
+                _cur_col_label = "이번달(원)"
+                _chart_suffix = "전월 대비 변화 (만원)"
+
+            else:  # 📅 전년 대비
+                _yoy_lbl = yoy_billing_period or "전년"
+                _yoy_period_str = f"{_yoy_lbl} → {_period_lbl}" if _period_lbl and _yoy_lbl else "전년 대비"
+                st.subheader(f"📅 전년 동월 유틸리티 비용 변화  ({_yoy_period_str})")
+
+                # Build YoY merged data
+                _yoy_parts = []
+                if water_df is not None and yoy_water_df is not None:
+                    _yc = water_df.groupby("brand")[["total"]].sum().rename(columns={"total": "water_total"})
+                    _yp = yoy_water_df.groupby("brand")[["total"]].sum().rename(columns={"total": "water_yoy"})
+                    _yoy_parts.append((_yc, _yp, "water_total", "water_yoy", "water_yoy_chg", "💧 수도"))
+                if hotwater_df is not None and yoy_hotwater_df is not None:
+                    _yc = hotwater_df.groupby("brand")[["total"]].sum().rename(columns={"total": "hw_total"})
+                    _yp = yoy_hotwater_df.groupby("brand")[["total"]].sum().rename(columns={"total": "hw_yoy"})
+                    _yoy_parts.append((_yc, _yp, "hw_total", "hw_yoy", "hw_yoy_chg", "🌡 온수"))
+                if elec_df is not None and yoy_elec_df is not None:
+                    _yc = elec_df.groupby("brand")[["grand_total"]].sum().rename(columns={"grand_total": "elec_total"})
+                    _yp = yoy_elec_df.groupby("brand")[["grand_total"]].sum().rename(columns={"grand_total": "elec_yoy"})
+                    _yoy_parts.append((_yc, _yp, "elec_total", "elec_yoy", "elec_yoy_chg", "⚡ 전기"))
+
+                if not _yoy_parts:
+                    st.info("전년 동월 데이터가 없습니다.")
+                    _cmp_specs = []
+                    _cmp_data = pd.DataFrame()
+                else:
+                    _yoy_merged = None
+                    for _yc, _yp, _cur_col, _prv_col, _chg_col, _ in _yoy_parts:
+                        _m = _yc.merge(_yp, left_index=True, right_index=True, how="outer").fillna(0)
+                        _m[_chg_col] = _m[_cur_col] - _m[_prv_col]
+                        if _yoy_merged is None:
+                            _yoy_merged = _m
+                        else:
+                            _yoy_merged = _yoy_merged.merge(_m, left_index=True, right_index=True, how="outer").fillna(0)
+                    _cmp_data = _yoy_merged.reset_index()
+                    # Add "전체" total columns
+                    _yoy_cur_cols = [c for _, _, c, _, _, _ in _yoy_parts]
+                    _yoy_prv_cols = [c for _, _, _, c, _, _ in _yoy_parts]
+                    _cmp_data["util_yoy_total"] = _cmp_data[[c for c in _yoy_cur_cols if c in _cmp_data.columns]].sum(axis=1)
+                    _cmp_data["util_yoy_prev"]  = _cmp_data[[c for c in _yoy_prv_cols if c in _cmp_data.columns]].sum(axis=1)
+                    _cmp_data["util_yoy_chg"]   = _cmp_data["util_yoy_total"] - _cmp_data["util_yoy_prev"]
+                    _cmp_specs = [("전체", "util_yoy_total", "util_yoy_prev", "util_yoy_chg")]
+                    _cmp_specs += [(_lbl, _cur, _prv, _chg)
+                                   for _, _, _cur, _prv, _chg, _lbl in _yoy_parts]
+                _key_pfx = "yoy_s"
+                _prev_col_label = "전년(원)"
+                _cur_col_label = "올해(원)"
+                _chart_suffix = "전년 동월 대비 변화 (만원)"
+
+            # ── Shared rendering: KPIs + chart + tables ───────────────────────
+            if _cmp_specs and not _cmp_data.empty:
+                # Total current sum for composition %
+                _cmp_total = sum(_cmp_data[cur].sum() for lbl, cur, _, _ in _cmp_specs if lbl == "전체") or \
+                             sum(_cmp_data[cur].sum() for _, cur, _, _ in _cmp_specs)
+                _kc = st.columns(len(_cmp_specs))
+                for _ci, (lbl, cur, prv, chg) in enumerate(_cmp_specs):
+                    _c_sum = _cmp_data[cur].sum()
+                    _p_sum = _cmp_data[prv].sum()
                     _d_sum = _c_sum - _p_sum
-                    _pct   = _d_sum / _p_sum * 100 if _p_sum else 0
+                    _pct = _d_sum / _p_sum * 100 if _p_sum else 0
+                    if lbl == "전체":
+                        _val = _fmt_won(_c_sum)
+                    else:
+                        _share = _c_sum / _cmp_total * 100 if _cmp_total else 0
+                        _val = f"{_fmt_won(_c_sum)} ({_share:.0f}%)"
                     _kc[_ci].metric(
-                        lbl,
-                        _fmt_won(_c_sum),
+                        lbl, _val,
                         delta=f"{_fmt_won(_d_sum)} ({_pct:+.1f}%)",
                         delta_color="inverse",
                     )
 
                 st.divider()
 
-                # ── Per-utility change table + bar chart ──────────────────────
                 _util_sel = st.selectbox(
-                    "유틸리티", [s[0] for s in _mom_specs],
-                    key="mom_util_sel",
+                    "유틸리티", [s[0] for s in _cmp_specs],
+                    key=f"{_key_pfx}_util_sel",
                 )
-                _spec = next(s for s in _mom_specs if s[0] == _util_sel)
-                _, _cur_col, _prv_col, _chg_col, _bar_clr = _spec
+                _spec = next(s for s in _cmp_specs if s[0] == _util_sel)
+                _, _cur_col, _prv_col, _chg_col = _spec
 
-                _mom_df = merged[
-                    ["brand", "building"] + [c for c in ["floor", "size_m2"] if c in merged.columns]
-                    + [_cur_col, _prv_col, _chg_col]
-                ].copy()
-                _mom_df["변화율(%)"] = np.where(
-                    _mom_df[_prv_col] > 0,
-                    (_mom_df[_chg_col] / _mom_df[_prv_col] * 100).round(1),
-                    np.nan,
-                )
-                _mom_df = _mom_df.rename(columns={
-                    _cur_col: "이번달(원)", _prv_col: "전월(원)", _chg_col: "변화(원)",
-                })
-                _mom_df = _mom_df.sort_values("변화(원)", ascending=False).reset_index(drop=True)
-                _mom_df["이번달(원)"] = _mom_df["이번달(원)"].map(_fmt_won)
-                _mom_df["전월(원)"]   = _mom_df["전월(원)"].map(_fmt_won)
-                _mom_df["변화(원)"]   = _mom_df["변화(원)"].map(_fmt_won)
-
-                # ── Bar chart (raw values for plotting) ───────────────────────
-                _plot_df = merged[["brand", "building", _chg_col]].copy()
+                # Bar chart
+                _plot_df = _cmp_data[["brand", _chg_col]].copy()
+                if "building" in _cmp_data.columns:
+                    _plot_df["building"] = _cmp_data["building"]
                 _plot_df = _plot_df.sort_values(_chg_col, ascending=False).reset_index(drop=True)
                 _plot_df["color"] = _plot_df[_chg_col].apply(
                     lambda v: "#C44E52" if v > 0 else "#2ca02c"
                 )
 
-                _fig_mom = go.Figure(go.Bar(
+                _fig_cmp = go.Figure(go.Bar(
                     x=_plot_df["brand"],
                     y=_plot_df[_chg_col] / 1e4,
                     marker_color=_plot_df["color"],
@@ -372,47 +443,64 @@ def render_summary_view(
                     textfont=dict(size=9, color="#333333"),
                     hovertemplate="<b>%{x}</b><br>변화: %{y:+,.0f} 만원<extra></extra>",
                 ))
-                _fig_mom.add_hline(y=0, line_color="#888888", line_width=1)
-                _fig_mom.update_layout(
-                    title=f"{_util_sel} 전월 대비 변화 (만원)",
+                _fig_cmp.add_hline(y=0, line_color="#888888", line_width=1)
+                _fig_cmp.update_layout(
+                    title=f"{_util_sel} {_chart_suffix}",
                     height=420,
                     xaxis_tickangle=-45,
                     yaxis_title="변화 (만원)",
                     margin=dict(t=55, b=80),
                     showlegend=False,
                 )
-                _ev_mom = st.plotly_chart(_fig_mom, use_container_width=True,
-                                          key="mom_change_bar", on_select="rerun")
-                _sel_mom = _ev_mom.selection.points if _ev_mom and hasattr(_ev_mom, "selection") else []
-                if _sel_mom:
-                    _brand = _sel_mom[0].get("x", "")
+                _ev_cmp = st.plotly_chart(_fig_cmp, use_container_width=True,
+                                          key=f"{_key_pfx}_change_bar", on_select="rerun")
+                _sel_cmp = _ev_cmp.selection.points if _ev_cmp and hasattr(_ev_cmp, "selection") else []
+                if _sel_cmp:
+                    _brand = _sel_cmp[0].get("x", "")
                     if isinstance(_brand, (list, tuple)):
                         _brand = _brand[0]
-                    _fdf = merged[merged["brand"] == _brand] if _brand else pd.DataFrame()
+                    _fdf = _cmp_data[_cmp_data["brand"] == _brand] if _brand else pd.DataFrame()
                     if not _fdf.empty:
                         st.caption(f"선택됨: **{_brand}**")
                         _show_cols = [c for c in ["brand", "building", "floor",
-                                                   _cur_col, _prv_col, _chg_col] if c in merged.columns]
+                                                   _cur_col, _prv_col, _chg_col] if c in _cmp_data.columns]
                         st.dataframe(_fdf[_show_cols].reset_index(drop=True),
                                      hide_index=True, use_container_width=True)
 
                 st.divider()
 
-                # ── Full change table ─────────────────────────────────────────
-                st.dataframe(_mom_df, hide_index=True, use_container_width=True)
+                # Full change table
+                _tbl_df = _cmp_data[
+                    ["brand"] + [c for c in ["building", "floor", "size_m2"] if c in _cmp_data.columns]
+                    + [_cur_col, _prv_col, _chg_col]
+                ].copy()
+                _tbl_df["변화율(%)"] = np.where(
+                    _tbl_df[_prv_col] > 0,
+                    (_tbl_df[_chg_col] / _tbl_df[_prv_col] * 100).round(1),
+                    np.nan,
+                )
+                _tbl_df = _tbl_df.rename(columns={
+                    _cur_col: _cur_col_label, _prv_col: _prev_col_label, _chg_col: "변화(원)",
+                })
+                _tbl_df = _tbl_df.sort_values("변화(원)", ascending=False).reset_index(drop=True)
+                _tbl_df[_cur_col_label] = _tbl_df[_cur_col_label].map(_fmt_won)
+                _tbl_df[_prev_col_label] = _tbl_df[_prev_col_label].map(_fmt_won)
+                _tbl_df["변화(원)"] = _tbl_df["변화(원)"].map(_fmt_won)
+                st.dataframe(_tbl_df, hide_index=True, use_container_width=True)
 
-                # ── Brands with largest increases / decreases ─────────────────
-                _raw_chg = merged[["brand", "building", _chg_col]].copy()
-                _n_show  = min(10, len(_raw_chg))
+                # Top / bottom
+                _chg_cols = ["brand"] + (["building"] if "building" in _plot_df.columns else []) + [_chg_col]
+                _raw_chg = _plot_df[_chg_cols].copy()
+                _n_show = min(10, len(_raw_chg))
                 _c1, _c2 = st.columns(2)
                 with _c1:
                     st.markdown(f"**🔴 상승 상위 {_n_show}개**")
-                    _top = _raw_chg.nlargest(_n_show, _chg_col)[["brand", "building", _chg_col]].copy()
+                    _top = _raw_chg.nlargest(_n_show, _chg_col).copy()
                     _top[_chg_col] = _top[_chg_col].map(_fmt_won)
                     st.dataframe(_top, hide_index=True, use_container_width=True)
                 with _c2:
                     st.markdown(f"**🟢 감소 상위 {_n_show}개**")
-                    _bot = _raw_chg.nsmallest(_n_show, _chg_col)[["brand", "building", _chg_col]].copy()
+                    _bot = _raw_chg.nsmallest(_n_show, _chg_col).copy()
                     _bot[_chg_col] = _bot[_chg_col].map(_fmt_won)
                     st.dataframe(_bot, hide_index=True, use_container_width=True)
 
@@ -476,7 +564,7 @@ def render_summary_view(
             _skew = "⚠️ 평균>중앙값 (고비용 브랜드 견인)" if _avg > _med * 1.1 else "✅ 분포 균등"
             lines = [
                 f"#### {icon} {label}",
-                f"- 합계 **{_fmt_won(s.sum())}** | 평균 {s.mean()/1e4:,.0f}만 원 | 중앙값 {_med/1e4:,.0f}만 원 — {_skew}",
+                f"- 합계 **{_fmt_won(s.sum())}** | 평균 {_fmt_won(_avg)} | 중앙값 {_fmt_won(_med)} — {_skew}",
                 f"- 1위: **{_top['brand']}** {_fmt_won(_top[col])} (중앙값의 {_top[col]/_med:.1f}배)" if _med > 0 else f"- 1위: **{_top['brand']}** {_fmt_won(_top[col])}",
                 f"- 이상치(IQR 상한 초과): **{_n_out}개**" + (" — 계량기 점검 및 누수 여부 확인 권장" if _n_out > 0 else " — 없음"),
             ]
@@ -516,8 +604,8 @@ def render_summary_view(
         # ── Metrics row ──────────────────────────────────────────────────────
         sc = st.columns(4)
         sc[0].metric("합계",   _fmt_won(_total_sel))
-        sc[1].metric("평균",   f"{_avg_sel/1e4:,.1f} 만원")
-        sc[2].metric("중앙값", f"{_med_sel/1e4:,.1f} 만원")
+        sc[1].metric("평균",   _fmt_won(_avg_sel))
+        sc[2].metric("중앙값", _fmt_won(_med_sel))
         sc[3].metric("1위",    _top1_sel["brand"])
 
         # ── Shared table helpers ─────────────────────────────────────────────

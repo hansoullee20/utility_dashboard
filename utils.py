@@ -10,15 +10,20 @@ BLD_COLOR: dict[str, str] = {
 
 
 def fmt_won(v: float, signed: bool = False) -> str:
-    """Auto-scale Korean Won: 억원 / 만원 / 원."""
-    abs_v = abs(v)
-    sign = ("+" if v >= 0 else "") if signed else ""
-    if abs_v >= 1e8:
-        return f"{sign}{v/1e8:,.1f}억원"
-    elif abs_v >= 1e4:
-        return f"{sign}{v/1e4:,.1f}만원"
-    else:
-        return f"{sign}{v:,.0f}원"
+    """Format Korean Won — auto-scale, decimals down to 1원 precision."""
+    import math
+    rounded = int(math.copysign(math.ceil(abs(v)), v)) if v != 0 else 0
+    sign = ("+" if rounded >= 0 else "") if signed else ""
+    abs_r = abs(rounded)
+    if abs_r >= 1e8:
+        # 8 decimals = 1원 precision in 억원
+        s = f"{rounded / 1e8:,.8f}".rstrip("0").rstrip(".")
+        return f"{sign}{s}억원"
+    elif abs_r >= 1e4:
+        # 4 decimals = 1원 precision in 만원
+        s = f"{rounded / 1e4:,.4f}".rstrip("0").rstrip(".")
+        return f"{sign}{s}만원"
+    return f"{sign}{rounded:,}원"
 
 
 def iqr_upper(s: pd.Series) -> float:

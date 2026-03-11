@@ -69,6 +69,8 @@ def render_water_view(
     prev_df: pd.DataFrame | None = None,
     billing_period: str | None = None,
     prev_billing_period: str | None = None,
+    yoy_df: pd.DataFrame | None = None,
+    yoy_billing_period: str | None = None,
 ) -> None:
     st.header("💧 수도 사용 내역 분석")
 
@@ -104,8 +106,8 @@ def render_water_view(
         lambda n: "🔴 위험" if n >= 2 else ("🟠 주의" if n == 1 else "🟢 정상"))
 
     brand_search_bar("water")
-    tab_mom, tab_rank, tab_comp, tab_fair, tab_usage, tab_excl, tab_anom = st.tabs(
-        ["📈 월별 변화", "순위", "비중", "면적당 비용", "사용량", "전용/공용 분석", "이상 탐지"]
+    tab_mom, tab_yoy, tab_rank, tab_comp, tab_fair, tab_usage, tab_excl, tab_anom = st.tabs(
+        ["📈 월별 변화", "📅 전년 대비", "순위", "비중", "면적당 비용", "사용량", "전용/공용 분석", "이상 탐지"]
     )
 
     with tab_mom:
@@ -114,6 +116,14 @@ def render_water_view(
             billing_period=billing_period, prev_billing_period=prev_billing_period,
             key_prefix="water_mom",
             no_prev_msg="이전 달 파일에 수도 사용 내역 시트가 없습니다.",
+        )
+
+    with tab_yoy:
+        render_sheet_mom_tab(
+            df, yoy_df, _WATER_CMP_COLS, _WATER_CMP_LABELS, _WATER_CMP_UNITS,
+            billing_period=billing_period, prev_billing_period=yoy_billing_period,
+            key_prefix="water_yoy", mode="yoy",
+            no_prev_msg="전년 동월 파일이 없습니다. 전년도 파일을 함께 업로드하세요.",
         )
 
     # ═══════════════════════════ 순위 ═════════════════════════════════════════

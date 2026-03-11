@@ -35,6 +35,8 @@ def render_electricity_view(
     prev_df: pd.DataFrame | None = None,
     billing_period: str | None = None,
     prev_billing_period: str | None = None,
+    yoy_df: pd.DataFrame | None = None,
+    yoy_billing_period: str | None = None,
 ) -> None:
     st.header("⚡ 전체 전기 사용내역 분석")
 
@@ -72,8 +74,8 @@ def render_electricity_view(
     )
 
     brand_search_bar("elec")
-    tab_mom, tab_rank, tab_usage, tab_fee, tab_fair, tab_anom = st.tabs(
-        ["📈 월별 변화", "순위", "사용량 구성", "요금 구성", "면적당 비용", "이상 탐지"]
+    tab_mom, tab_yoy, tab_rank, tab_usage, tab_fee, tab_fair, tab_anom = st.tabs(
+        ["📈 월별 변화", "📅 전년 대비", "순위", "사용량 구성", "요금 구성", "면적당 비용", "이상 탐지"]
     )
 
     with tab_mom:
@@ -82,6 +84,14 @@ def render_electricity_view(
             billing_period=billing_period, prev_billing_period=prev_billing_period,
             key_prefix="elec_mom",
             no_prev_msg="이전 달 파일에 전기 사용 내역 시트가 없습니다.",
+        )
+
+    with tab_yoy:
+        render_sheet_mom_tab(
+            df, yoy_df, _ELEC_CMP_COLS, _ELEC_CMP_LABELS, _ELEC_CMP_UNITS,
+            billing_period=billing_period, prev_billing_period=yoy_billing_period,
+            key_prefix="elec_yoy", mode="yoy",
+            no_prev_msg="전년 동월 파일이 없습니다. 전년도 파일을 함께 업로드하세요.",
         )
 
     # ═══════════════════════════ 순위 ═════════════════════════════════════════

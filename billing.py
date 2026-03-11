@@ -1658,17 +1658,36 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
 
 def _mom_tab(curr: pd.DataFrame, prev: pd.DataFrame | None,
              billing_period: str | None = None,
-             prev_billing_period: str | None = None) -> None:
-    """Month-over-month change tab for 수도광열비 부과 내역."""
+             prev_billing_period: str | None = None,
+             mode: str = "mom") -> None:
+    """Change comparison tab for 수도광열비 부과 내역.
+
+    mode="mom" → 월별 변화 labels; mode="yoy" → 전년 대비 labels.
+    """
+    if mode == "yoy":
+        _heading = "📅 전년 대비"
+        _prev_label = "전년"
+        _curr_label = "올해"
+        _chart_label = "전년 동월 대비 변화"
+        _no_data_msg = "전년 동월 파일에 수도광열비 부과 내역 시트가 없습니다."
+        _key_pfx = "billing_yoy"
+    else:
+        _heading = "📈 월별 변화"
+        _prev_label = "전월"
+        _curr_label = "이번달"
+        _chart_label = "전월 대비 변화"
+        _no_data_msg = "이전 달 파일에 수도광열비 부과 내역 시트가 없습니다."
+        _key_pfx = "billing_mom"
+
     period_str = (
         f"{prev_billing_period} → {billing_period}"
         if billing_period and prev_billing_period
         else billing_period or "이번 달"
     )
-    st.subheader(f"📈 월별 변화  ({period_str})")
+    st.subheader(f"{_heading}  ({period_str})")
 
     if prev is None or prev.empty:
-        st.info("이전 달 파일에 수도광열비 부과 내역 시트가 없습니다.")
+        st.info(_no_data_msg)
         return
 
     # Cost columns to compare
@@ -1723,7 +1742,7 @@ def _mom_tab(curr: pd.DataFrame, prev: pd.DataFrame | None,
         "항목",
         _COST_COLS,
         format_func=lambda c: _COST_LABELS.get(c, c),
-        key="billing_mom_col",
+        key=f"{_key_pfx}_col",
     )
     _chg_col = f"{sel_col}_chg"
     plot_df = merged[["brand", "building", f"{sel_col}_c", f"{sel_col}_p", _chg_col]].copy()
@@ -1743,14 +1762,14 @@ def _mom_tab(curr: pd.DataFrame, prev: pd.DataFrame | None,
     ))
     fig.add_vline(x=0, line_color="#888888", line_width=1)
     fig.update_layout(
-        title=f"{_COST_LABELS.get(sel_col, sel_col)} 전월 대비 변화 (만원)",
+        title=f"{_COST_LABELS.get(sel_col, sel_col)} {_chart_label} (만원)",
         height=max(430, len(plot_df) * 22 + 80),
         xaxis_title="변화 (만원)",
         margin=dict(t=55, b=40, l=10, r=130),
         showlegend=False,
         yaxis=dict(tickfont=dict(size=10)),
     )
-    _ev = st.plotly_chart(fig, use_container_width=True, key=f"billing_mom_bar_{sel_col}", on_select="rerun")
+    _ev = st.plotly_chart(fig, use_container_width=True, key=f"{_key_pfx}_bar_{sel_col}", on_select="rerun")
     _pts = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
     if _pts:
         _brand = _pts[0].get("y", "")
@@ -1766,8 +1785,8 @@ def _mom_tab(curr: pd.DataFrame, prev: pd.DataFrame | None,
     # ── Top / bottom tables ───────────────────────────────────────────────────
     def _fmt_billing_table(df):
         d = df[["brand", "building"]].copy()
-        d["전월"] = df[f"{sel_col}_p"].apply(lambda v: _fmt_won(v * 10000) if pd.notna(v) else "—")
-        d["이번달"] = df[f"{sel_col}_c"].apply(lambda v: _fmt_won(v * 10000) if pd.notna(v) else "—")
+        d[_prev_label] = df[f"{sel_col}_p"].apply(lambda v: _fmt_won(v * 10000) if pd.notna(v) else "—")
+        d[_curr_label] = df[f"{sel_col}_c"].apply(lambda v: _fmt_won(v * 10000) if pd.notna(v) else "—")
         d["변화"] = df[_chg_col].apply(lambda v: _fmt_won(v * 10000, signed=True) if pd.notna(v) else "—")
         return d
 
@@ -1804,6 +1823,8 @@ def render_billing_view(
     prev_df: pd.DataFrame | None = None,
     billing_period: str | None = None,
     prev_billing_period: str | None = None,
+    yoy_df: pd.DataFrame | None = None,
+    yoy_billing_period: str | None = None,
 ) -> None:
     st.subheader("수도광열비 부과 내역")
     st.caption("단위: 만원 (VAT 별도)")
@@ -1881,13 +1902,16 @@ def render_billing_view(
 
     # ── Tabs ──
     brand_search_bar("billing")
-    tab_mom, tab_hist, tab_rank, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
-        "📈 월별 변화", "분포", "업체별 순위", "건물별 요약",
+    tab_mom, tab_yoy, tab_hist, tab_rank, tab_bldg, tab_comp, tab_ratio, tab_perm2 = st.tabs([
+        "📈 월별 변화", "📅 전년 대비", "분포", "업체별 순위", "건물별 요약",
         "구성 비율", "공용/전용 비율", "단위면적당",
     ])
 
     with tab_mom:
         _mom_tab(fdf, prev_df, billing_period, prev_billing_period)
+
+    with tab_yoy:
+        _mom_tab(fdf, yoy_df, billing_period, yoy_billing_period, mode="yoy")
     with tab_rank:
         _ranking_tab(fdf)
     with tab_hist:

@@ -232,40 +232,6 @@ def render_mom_tab(
     _plot_df[prev_col] = to_numeric_series(_plot_df[prev_col])
     _plot_df = _plot_df.dropna(subset=[chg_col]).sort_values(chg_col, ascending=True).reset_index(drop=True)
 
-    # ── Change bar chart ──────────────────────────────────────────────────
-    _colors = _plot_df[chg_col].apply(lambda v: "#C44E52" if v > 0 else "#2ca02c").tolist()
-    fig = go.Figure(go.Bar(
-        x=_plot_df[chg_col],
-        y=_plot_df["brand"],
-        orientation="h",
-        marker_color=_colors,
-        text=_plot_df[chg_col].apply(lambda v: f"{v:+,.1f}"),
-        textposition="outside",
-        textfont=dict(size=9, color="#222222"),
-        hovertemplate="<b>%{y}</b><br>변화: %{x:+,.1f} " + unit + "<extra></extra>",
-    ))
-    fig.add_vline(x=0, line_color="#888888", line_width=1)
-    fig.update_layout(
-        title=f"{_UTIL_META[_sel]['label']} 전월 대비 변화 ({unit})",
-        height=max(430, len(_plot_df) * 22 + 80),
-        xaxis_title=f"변화 ({unit})",
-        margin=dict(t=55, b=40, l=10, r=130),
-        showlegend=False,
-        yaxis=dict(tickfont=dict(size=10)),
-    )
-    _ev = st.plotly_chart(fig, use_container_width=True, key=f"mom_bar_{_sel}", on_select="rerun")
-    _pts = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
-    if _pts:
-        _brand = _pts[0].get("y", "")
-        if isinstance(_brand, (list, tuple)):
-            _brand = _brand[0]
-        _fdf = _plot_df[_plot_df["brand"] == _brand]
-        if not _fdf.empty:
-            st.caption(f"선택됨: **{_brand}**")
-            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
-
-    st.divider()
-
     # ── Top/bottom tables (with spike severity badge) ───────────────────
     def _spike_badge(pct_val):
         """Return risk badge based on MoM % change."""
@@ -321,3 +287,36 @@ def render_mom_tab(
     if (all_files and file_map and file_periods and sheet_map
             and len(all_files) >= 3):
         _render_trend_section(present, all_files, file_map, file_periods, sheet_map)
+
+    # ── Change bar chart (full brand list) ─────────────────────────────────
+    st.divider()
+    _colors = _plot_df[chg_col].apply(lambda v: "#C44E52" if v > 0 else "#2ca02c").tolist()
+    fig = go.Figure(go.Bar(
+        x=_plot_df[chg_col],
+        y=_plot_df["brand"],
+        orientation="h",
+        marker_color=_colors,
+        text=_plot_df[chg_col].apply(lambda v: f"{v:+,.1f}"),
+        textposition="outside",
+        textfont=dict(size=9, color="#222222"),
+        hovertemplate="<b>%{y}</b><br>변화: %{x:+,.1f} " + unit + "<extra></extra>",
+    ))
+    fig.add_vline(x=0, line_color="#888888", line_width=1)
+    fig.update_layout(
+        title=f"{_UTIL_META[_sel]['label']} 전월 대비 변화 ({unit})",
+        height=max(430, len(_plot_df) * 22 + 80),
+        xaxis_title=f"변화 ({unit})",
+        margin=dict(t=55, b=40, l=10, r=130),
+        showlegend=False,
+        yaxis=dict(tickfont=dict(size=10)),
+    )
+    _ev = st.plotly_chart(fig, use_container_width=True, key=f"mom_bar_{_sel}", on_select="rerun")
+    _pts = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
+    if _pts:
+        _brand = _pts[0].get("y", "")
+        if isinstance(_brand, (list, tuple)):
+            _brand = _brand[0]
+        _fdf = _plot_df[_plot_df["brand"] == _brand]
+        if not _fdf.empty:
+            st.caption(f"선택됨: **{_brand}**")
+            st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)

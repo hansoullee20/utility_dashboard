@@ -30,6 +30,7 @@ _S: dict[str, dict[str, str]] = {
     "no_sheets_warn":   {"ko": "지원되는 시트를 찾을 수 없습니다.", "en": "No supported sheets found in this file."},
     "nav_anomaly":      {"ko": "🚨 이상감지",        "en": "🚨 Anomaly"},
     "nav_insight":      {"ko": "📊 인사이트",       "en": "📊 Insight"},
+    "nav_profile":      {"ko": "🏢 브랜드",         "en": "🏢 Brand"},
     "nav_detail":       {"ko": "📋 상세",           "en": "📋 Detail"},
     "nav_sheet_view":   {"ko": "📋 시트 보기",      "en": "📋 Sheet View"},
     "nav_analysis":     {"ko": "📊 분석",           "en": "📊 Analysis"},

@@ -53,17 +53,32 @@ def render_sheet_mom_tab(
     prev_billing_period: str | None = None,
     key_prefix: str = "mom",
     no_prev_msg: str = "이전 달 파일이 없습니다.",
+    mode: str = "mom",
 ) -> None:
-    """Generic month-over-month tab for sheet views (water, hotwater, electricity)."""
+    """Generic comparison tab for sheet views (water, hotwater, electricity).
+
+    mode="mom" → 월별 변화 labels; mode="yoy" → 전년 대비 labels.
+    """
     import plotly.graph_objects as go
     from utils import fmt_won
+
+    if mode == "yoy":
+        _heading = "📅 전년 대비"
+        _prev_label = "전년"
+        _curr_label = "올해"
+        _chart_label = "전년 동월 대비 변화"
+    else:
+        _heading = "📈 월별 변화"
+        _prev_label = "전월"
+        _curr_label = "이번달"
+        _chart_label = "전월 대비 변화"
 
     period_str = (
         f"{prev_billing_period} → {billing_period}"
         if billing_period and prev_billing_period
         else billing_period or "이번 달"
     )
-    st.subheader(f"📈 월별 변화  ({period_str})")
+    st.subheader(f"{_heading}  ({period_str})")
 
     if prev is None or prev.empty:
         st.info(no_prev_msg)
@@ -137,7 +152,7 @@ def render_sheet_mom_tab(
     ))
     fig.add_vline(x=0, line_color="#888888", line_width=1)
     fig.update_layout(
-        title=f"{col_labels.get(sel_col, sel_col)} 전월 대비 변화 ({_unit})",
+        title=f"{col_labels.get(sel_col, sel_col)} {_chart_label} ({_unit})",
         height=max(430, len(plot_df) * 22 + 80),
         xaxis_title=f"변화 ({_unit})",
         margin=dict(t=55, b=40, l=10, r=130),
@@ -163,8 +178,8 @@ def render_sheet_mom_tab(
 
     def _fmt_table(df):
         d = df[["brand", "building"]].copy()
-        d["전월"] = df[f"{sel_col}_p"].apply(_val_fmt)
-        d["이번달"] = df[f"{sel_col}_c"].apply(_val_fmt)
+        d[_prev_label] = df[f"{sel_col}_p"].apply(_val_fmt)
+        d[_curr_label] = df[f"{sel_col}_c"].apply(_val_fmt)
         d["변화"] = df[_chg_col].apply(_chg_fmt)
         return d
 
