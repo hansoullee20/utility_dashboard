@@ -103,6 +103,12 @@ def _load_meter_data(file_name, file_map, sheet_map, all_sheet_keys,
                if f"{p}_change" in cur_df.columns]
     ehp_sheet = EHP_OAC_SHEET_NAME if EHP_OAC_SHEET_NAME in all_sheet_keys else None
 
+    # Populate all brand names for watchlist management
+    if "brand" in cur_df.columns:
+        _existing = set(st.session_state.get("_all_brand_names", []))
+        _existing.update(cur_df["brand"].dropna().astype(str).unique())
+        st.session_state["_all_brand_names"] = sorted(_existing)
+
     return cur_df, present, split_bldg, ref_df, ehp_sheet
 
 
@@ -676,99 +682,126 @@ def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
+    st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide",
+                       page_icon="📊")
     st.markdown("""
 <style>
-/* ── Layout ── */
-.block-container { padding-top: 0.8rem !important; }
+/* ── Layout: clean, breathable ── */
+.block-container { padding-top: 0.6rem !important; padding-bottom: 1rem !important; }
 header[data-testid="stHeader"] { height: 0; }
 
-/* ── Tabs: premium look ── */
+/* ── Typography: Inter-style hierarchy ── */
+h1 { font-weight: 800 !important; letter-spacing: -0.03em !important; font-size: 1.65rem !important; }
+h2 { font-weight: 700 !important; letter-spacing: -0.02em !important; font-size: 1.2rem !important; }
+h3 { font-weight: 700 !important; font-size: 1.05rem !important; }
+
+/* ── Tabs: premium glass look ── */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 4px;
-    background: linear-gradient(180deg, rgba(76,114,176,0.06) 0%, transparent 100%);
-    border-radius: 8px 8px 0 0;
-    padding: 4px 4px 0;
+    gap: 2px;
+    background: linear-gradient(180deg, rgba(76,114,176,0.05) 0%, transparent 100%);
+    border-radius: 10px 10px 0 0;
+    padding: 6px 6px 0;
+    border-bottom: 1px solid rgba(0,0,0,0.06);
 }
 .stTabs [data-baseweb="tab"] {
-    font-size: 14px !important;
+    font-size: 13px !important;
     font-weight: 600 !important;
-    padding: 10px 20px !important;
-    border-radius: 8px 8px 0 0;
-    transition: all 0.2s ease;
+    padding: 10px 22px !important;
+    border-radius: 10px 10px 0 0;
+    transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+    color: #666 !important;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background: rgba(76,114,176,0.04) !important;
+    color: #333 !important;
 }
 .stTabs [aria-selected="true"] {
-    font-size: 14px !important;
+    font-size: 13px !important;
     font-weight: 700 !important;
-    background: white !important;
-    box-shadow: 0 -2px 6px rgba(0,0,0,0.06);
+    color: #4C72B0 !important;
+    box-shadow: 0 -2px 8px rgba(76,114,176,0.08);
+    border-bottom: 2px solid #4C72B0 !important;
 }
 
-/* ── Metrics: compact + polished ── */
+/* ── Metrics: refined + compact ── */
 [data-testid="stMetricValue"] {
-    font-size: 1.15rem !important;
-    font-weight: 700 !important;
-    letter-spacing: -0.02em;
+    font-size: 1.2rem !important;
+    font-weight: 800 !important;
+    letter-spacing: -0.03em;
 }
 [data-testid="stMetricDelta"] {
-    font-size: 0.76rem !important;
+    font-size: 0.74rem !important;
     font-weight: 500 !important;
 }
 [data-testid="stMetricLabel"] {
-    font-size: 0.82rem !important;
+    font-size: 0.78rem !important;
     font-weight: 600 !important;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
-    opacity: 0.85;
+    letter-spacing: 0.04em;
+    opacity: 0.7;
 }
 
-/* ── Container borders: subtle shadow ── */
+/* ── Container borders: subtle lift ── */
 [data-testid="stExpander"],
 div[data-testid="stVerticalBlock"] > div[style*="border"] {
-    border-radius: 10px !important;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    border-radius: 12px !important;
+    box-shadow: 0 1px 3px rgba(128,128,128,0.08), 0 4px 12px rgba(128,128,128,0.04);
 }
 
-/* ── DataFrames: tighter row height ── */
+/* ── DataFrames: clean, tight rows ── */
 .stDataFrame [data-testid="stDataFrameResizable"] {
-    font-size: 0.85rem !important;
+    font-size: 0.83rem !important;
+    border-radius: 8px;
 }
 
-/* ── Sidebar: clean dividers ── */
+/* ── Sidebar: refined (no forced background — respects dark mode) ── */
 section[data-testid="stSidebar"] hr {
     margin: 0.5rem 0 !important;
-    border-color: rgba(0,0,0,0.08);
+    opacity: 0.15;
 }
 section[data-testid="stSidebar"] .stSubheader {
-    font-size: 0.9rem !important;
+    font-size: 0.88rem !important;
+    font-weight: 700 !important;
 }
 
-/* ── Chart containers: subtle lift ── */
+/* ── Chart containers: elevated ── */
 [data-testid="stPlotlyChart"] {
-    border-radius: 8px;
+    border-radius: 10px;
     overflow: hidden;
 }
 
-/* ── Download buttons: full-width style ── */
-.stDownloadButton button {
+/* ── Buttons: premium feel ── */
+.stButton button, .stDownloadButton button {
     border-radius: 8px !important;
     font-weight: 600 !important;
-    transition: transform 0.15s ease;
+    font-size: 0.84rem !important;
+    transition: all 0.2s cubic-bezier(0.4,0,0.2,1);
+    letter-spacing: 0.01em;
 }
-.stDownloadButton button:hover {
+.stButton button:hover, .stDownloadButton button:hover {
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
 
 /* ── Selectbox/multiselect: rounded ── */
 [data-baseweb="select"] > div {
     border-radius: 8px !important;
+    transition: border-color 0.2s ease;
 }
 
-/* ── Caption styling ── */
-.stCaption {
-    opacity: 0.75;
+/* ── Slider: accent color ── */
+.stSlider [data-baseweb="slider"] [role="slider"] {
+    background-color: #4C72B0 !important;
 }
+
+/* ── Caption: subtle ── */
+.stCaption { opacity: 0.65; }
+
+/* ── Dividers: lighter ── */
+hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
+
+/* ── Info/warning/success boxes: refined ── */
+.stAlert { border-radius: 10px !important; font-size: 0.88rem !important; }
 </style>
 """, unsafe_allow_html=True)
     st.title("Utility Analysis Dashboard")
@@ -875,8 +908,18 @@ section[data-testid="stSidebar"] .stSubheader {
     import streamlit_antd_components as sac
     _nav_key = f"nav_{file_name}"
     _valid_labels = {_NAV_ANOMALY_BADGE, _NAV_INSIGHT, _NAV_PROFILE, _NAV_DETAIL}
-    # If brand was clicked in anomaly tab, switch to profile
+
+    # Handle "back from profile" request (must happen BEFORE widget)
+    if st.session_state.pop("_profile_do_return", False):
+        _return_to = st.session_state.pop("_profile_return_nav", None)
+        if _return_to:
+            st.session_state[_nav_key] = _return_to
+
+    # If brand was clicked, switch to profile (must happen BEFORE widget)
     if st.session_state.get("_goto_profile_brand"):
+        _prev_nav = st.session_state.get(_nav_key)
+        if _prev_nav and _prev_nav != _NAV_PROFILE:
+            st.session_state["_profile_return_nav"] = _prev_nav
         st.session_state[_nav_key] = _NAV_PROFILE
     elif st.session_state.get(_nav_key) not in _valid_labels:
         st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
@@ -891,6 +934,14 @@ section[data-testid="stSidebar"] .stSubheader {
             height=220,
             key=_nav_key,
         )
+
+        # ── "← 돌아가기" button (visible when navigated to profile via shortcut)
+        _return_nav = st.session_state.get("_profile_return_nav")
+        if _return_nav and nav_mode == _NAV_PROFILE:
+            if st.button("← 돌아가기", key="sidebar_back_btn",
+                         use_container_width=True, type="primary"):
+                st.session_state["_profile_do_return"] = True
+                st.rerun()
 
         # ── Report generation ─────────────────────────────────────────────
         st.divider()
@@ -950,11 +1001,59 @@ section[data-testid="stSidebar"] .stSubheader {
                 use_container_width=True,
             )
 
+        # ── Brands of Interest (관심 브랜드) ──────────────────────────────
+        st.divider()
+        _watchlist = st.session_state.get("_brand_watchlist", [])
+        if _watchlist:
+            st.subheader("⭐ 관심 브랜드")
+            # Quick-click buttons for each watchlisted brand
+            for _wi, _wb in enumerate(_watchlist):
+                _wc1, _wc2 = st.columns([4, 1])
+                with _wc1:
+                    if st.button(
+                        f"🔍 {_wb}", key=f"watchlist_goto_{_wi}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["_goto_profile_brand"] = _wb
+                        st.rerun()
+                with _wc2:
+                    if st.button("✕", key=f"watchlist_rm_{_wi}",
+                                 help=f"{_wb} 제거"):
+                        _watchlist.remove(_wb)
+                        st.session_state["_brand_watchlist"] = _watchlist
+                        st.rerun()
+
+            # Manage watchlist
+            with st.expander("관심 브랜드 관리"):
+                # Add from all brands
+                _all_brands_for_wl = sorted(
+                    set(st.session_state.get("_all_brand_names", []))
+                    - set(_watchlist)
+                )
+                if _all_brands_for_wl:
+                    _add_brand = st.selectbox(
+                        "브랜드 추가", [""] + _all_brands_for_wl,
+                        key="watchlist_add_sel",
+                        label_visibility="collapsed",
+                        placeholder="브랜드 선택하여 추가…",
+                    )
+                    if _add_brand:
+                        _watchlist.append(_add_brand)
+                        st.session_state["_brand_watchlist"] = _watchlist
+                        st.rerun()
+                if st.button("전체 초기화", key="watchlist_clear"):
+                    st.session_state["_brand_watchlist"] = []
+                    st.rerun()
+
         st.divider()
         debug = st.checkbox(t("debug"), value=False)
 
     # ── Route to tier ────────────────────────────────────────────────────────
     yoy_file = _find_yoy_file(file_name)
+
+    # Clear return-to-profile state when user navigates away from profile manually
+    if nav_mode != _NAV_PROFILE:
+        st.session_state.pop("_profile_return_nav", None)
 
     if nav_mode == _NAV_ANOMALY_BADGE:
         _render_tier1_anomaly(
@@ -974,6 +1073,7 @@ section[data-testid="stSidebar"] .stSubheader {
         _goto = st.session_state.pop("_goto_profile_brand", None)
         if _goto:
             st.session_state["profile_brand_select"] = _goto
+
         if "검침 내역" not in all_sheet_keys:
             st.info("브랜드 프로필을 위해 검침 내역 시트가 필요합니다.")
         else:
@@ -982,6 +1082,29 @@ section[data-testid="stSidebar"] .stSubheader {
                 file_name, file_map, sheet_map, all_sheet_keys, prev_file,
                 key_prefix="t_profile",
             )
+            # Build anomaly_df for profile badge
+            _profile_anom_df = None
+            try:
+                from anomaly_features import build_anomaly_df as _build_anom
+                _profile_sheets = {
+                    k: _try_load_sheet(r, k, file_name, file_map, sheet_map)
+                    for r, k in [
+                        (read_billing_sheet, BILLING_SHEET_NAME),
+                        (read_electricity_sheet, ELECTRICITY_SHEET_NAME),
+                        (read_water_sheet, WATER_SHEET_NAME),
+                        (read_hotwater_sheet, HOTWATER_SHEET_NAME),
+                    ]
+                }
+                _profile_anom_df = _build_anom(
+                    meter_df=cur_df,
+                    billing_df=_profile_sheets.get(BILLING_SHEET_NAME),
+                    elec_df=_profile_sheets.get(ELECTRICITY_SHEET_NAME),
+                    water_df=_profile_sheets.get(WATER_SHEET_NAME),
+                    hotwater_df=_profile_sheets.get(HOTWATER_SHEET_NAME),
+                )
+            except Exception:
+                pass
+
             render_brand_profile_tab(
                 cur_df, ref_df, present,
                 tail=st.session_state.get("tail", 20),
@@ -995,6 +1118,7 @@ section[data-testid="stSidebar"] .stSubheader {
                                            file_name, file_map, sheet_map),
                 electricity_df=_try_load_sheet(read_electricity_sheet, ELECTRICITY_SHEET_NAME,
                                               file_name, file_map, sheet_map),
+                anomaly_df=_profile_anom_df,
             )
 
     elif nav_mode == _NAV_DETAIL:
