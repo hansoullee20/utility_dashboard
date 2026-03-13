@@ -282,7 +282,7 @@ def render_electricity_view(
         st.divider()
 
         # Brand-level usage stacked bar
-        _n_show = st.slider("상위 N개 브랜드", 10, min(60, n_total), min(30, n_total),
+        _n_show = st.slider("상위 N개 브랜드", 10, n_total, min(30, n_total),
                             key="elec_usage_n")
         _top = df.nlargest(_n_show, "kwh_total").sort_values("kwh_total", ascending=True)
         _ty  = [_flag_prefix(_flags, b) + str(b)[:26] for b in _top["brand"]]
@@ -479,7 +479,7 @@ def render_electricity_view(
                     pc[2].metric("순 역률요금", _fmt_won(df_pf['역률요금_합계'].sum()))
 
         else:
-            _n_show2 = st.slider("상위 N개 브랜드", 10, min(60, n_total), min(30, n_total),
+            _n_show2 = st.slider("상위 N개 브랜드", 10, n_total, min(30, n_total),
                                  key="elec_fee_n")
             _top2 = df.nlargest(_n_show2, "grand_total").sort_values("grand_total", ascending=True)
             _fy   = [_flag_prefix(_flags, b) + str(b)[:26] for b in _top2["brand"]]

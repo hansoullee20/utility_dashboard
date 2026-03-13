@@ -63,51 +63,97 @@ def _render_insight_summary(anomaly_df: pd.DataFrame, sheets: dict) -> None:
             unsafe_allow_html=True,
         )
 
-        insights: list[str] = []
+        # 1. Risk brand lists with reason
+        danger_df = anomaly_df[anomaly_df["risk_level"] == "🔴 위험"].copy()
+        caution_df = anomaly_df[anomaly_df["risk_level"] == "🟠 주의"].copy()
+        has_reason = "reason" in anomaly_df.columns
 
-        # 1. Risk distribution
-        risk_counts = anomaly_df["risk_level"].value_counts()
-        n_danger = risk_counts.get("🔴 위험", 0)
-        n_caution = risk_counts.get("🟠 주의", 0)
-        if n_danger:
-            insights.append(f"🔴 **즉시 조사 필요** {n_danger}개 브랜드")
-        if n_caution:
-            insights.append(f"🟠 **모니터링 권장** {n_caution}개 브랜드")
+        if not danger_df.empty:
+            _brands_html = []
+            for _, r in danger_df.iterrows():
+                reason = str(r.get("reason", "")) if has_reason else ""
+                _brands_html.append(
+                    f'<span style="background:#C44E5218;border:1px solid #C44E5240;'
+                    f'border-radius:6px;padding:3px 8px;margin:2px;display:inline-block;'
+                    f'font-size:0.82rem">'
+                    f'<b>{r["brand"]}</b>'
+                    f'{"<br><span style=color:#888;font-size:0.75rem>" + reason + "</span>" if reason else ""}'
+                    f'</span>'
+                )
+            st.markdown(
+                f'<div style="margin-bottom:8px">'
+                f'<span style="color:#C44E52;font-weight:700">🔴 즉시 조사 ({len(danger_df)})</span>'
+                f'<div style="margin-top:4px">{"".join(_brands_html)}</div></div>',
+                unsafe_allow_html=True,
+            )
 
-        # 2. Top spike brands
+        if not caution_df.empty:
+            _brands_html = []
+            for _, r in caution_df.iterrows():
+                reason = str(r.get("reason", "")) if has_reason else ""
+                _brands_html.append(
+                    f'<span style="background:#DD8A0012;border:1px solid #DD8A0035;'
+                    f'border-radius:6px;padding:3px 8px;margin:2px;display:inline-block;'
+                    f'font-size:0.82rem">'
+                    f'<b>{r["brand"]}</b>'
+                    f'{"<br><span style=color:#888;font-size:0.75rem>" + reason + "</span>" if reason else ""}'
+                    f'</span>'
+                )
+            st.markdown(
+                f'<div style="margin-bottom:8px">'
+                f'<span style="color:#DD8A00;font-weight:700">🟠 모니터링 ({len(caution_df)})</span>'
+                f'<div style="margin-top:4px">{"".join(_brands_html)}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+        # 2. Spike / cost / zero summary lines
+        lines: list[str] = []
+
         if "spike_max_pct" in anomaly_df.columns:
-            spike_df = anomaly_df[anomaly_df["spike_max_pct"] >= _SPIKE_HIGH].nlargest(3, "spike_max_pct")
+            spike_df = anomaly_df[anomaly_df["spike_max_pct"] >= _SPIKE_HIGH].nlargest(5, "spike_max_pct")
             if not spike_df.empty:
-                spike_parts = [
-                    f"{r['brand']}(+{r['spike_max_pct']:.0f}%)"
-                    for _, r in spike_df.iterrows()
-                ]
-                insights.append(f"📈 **급등**: {', '.join(spike_parts)}")
+                parts = [f"**{r['brand']}** +{r['spike_max_pct']:.0f}%" for _, r in spike_df.iterrows()]
+                lines.append(f"📈 급등: {' · '.join(parts)}")
 
-        # 3. Cost outliers (unit cost Z-scores)
-        for z_col, label in [("water_unit_z", "수도단가"), ("elect_unit_z", "전기단가"),
-                             ("total_cost_per_m2_z", "총비용/m²")]:
-            if z_col in anomaly_df.columns:
-                extreme = anomaly_df[anomaly_df[z_col].abs() >= 2.0]
-                if not extreme.empty:
-                    top = extreme.nlargest(2, z_col, keep="first")
-                    parts = [f"{r['brand']}({_ztg(r[z_col])})" for _, r in top.iterrows()]
-                    insights.append(f"💰 **{label} 이상**: {', '.join(parts)}")
+        _cost_checks = [
+            ("water_unit_z", "water_unit_cost", "수도단가", "원/m³"),
+            ("elect_unit_z", "elect_unit_cost", "전기단가", "원/kWh"),
+        ]
+        # Prefer per-평; fall back to per-m²
+        if "total_cost_per_py_z" in anomaly_df.columns:
+            _cost_checks.append(("total_cost_per_py_z", "total_cost_per_py", "평당 사용량", "만원/평"))
+        elif "total_cost_per_m2_z" in anomaly_df.columns:
+            _cost_checks.append(("total_cost_per_m2_z", "total_cost_per_m2", "평당 사용량", "만원/m²"))
 
-        # 4. Zero-usage count
+        for z_col, val_col, label, unit in _cost_checks:
+            if z_col not in anomaly_df.columns:
+                continue
+            extreme = anomaly_df[anomaly_df[z_col].abs() >= 2.0]
+            if extreme.empty:
+                continue
+            top = extreme.nlargest(3, z_col, keep="first")
+            parts = []
+            for _, r in top.iterrows():
+                val = r.get(val_col)
+                val_str = f" {val:,.1f}{unit}" if val is not None and not pd.isna(val) else ""
+                parts.append(f"**{r['brand']}**({_ztg(r[z_col])}{val_str})")
+            lines.append(f"💰 {label} 이상: {' · '.join(parts)}")
+
         if "n_zero_utilities" in anomaly_df.columns:
-            n_zero = int((anomaly_df["n_zero_utilities"] > 0).sum())
-            if n_zero:
-                insights.append(f"⚠️ **미계량** {n_zero}개 브랜드")
+            zero_brands = anomaly_df[anomaly_df["n_zero_utilities"] > 0]
+            if not zero_brands.empty:
+                n_zero = len(zero_brands)
+                top_zero = zero_brands.nlargest(3, "n_zero_utilities")
+                parts = [f"**{r['brand']}**({int(r['n_zero_utilities'])}항목)" for _, r in top_zero.iterrows()]
+                lines.append(f"⚠️ 미계량 {n_zero}개: {' · '.join(parts)}")
 
-        # 5. Cross-sheet issues
         if BILLING_SHEET_NAME in sheets:
-            insights.append("✅ 비용 시트 연계 완료")
+            lines.append("✅ 비용 시트 연계 완료")
 
-        if not insights:
+        if danger_df.empty and caution_df.empty and not lines:
             st.info("특이 사항 없음")
-        else:
-            st.markdown(" · ".join(insights))
+        elif lines:
+            st.markdown("  \n".join(lines))
 
 
 # ── Zero-usage change detection (vs prev/yoy) ────────────────────────────────
@@ -396,6 +442,7 @@ def _render_heatmap(df: pd.DataFrame, n: int) -> None:
     for col, label in [
         ("water_unit_z",        "수도\n단가등급"),
         ("elect_unit_z",        "전기\n단가등급"),
+        ("total_cost_per_py_z", "평당\n비용등급"),
         ("total_cost_per_m2_z", "총비용\n/m²등급"),
         ("hvac_intensity_z",    "HVAC\n강도등급"),
         ("n_zero_utilities",    "미계량\n항목수"),
@@ -991,8 +1038,8 @@ def render_anomaly_tab(
     # ── 2. Master table + visual ranking — unified investigation view ─────────
     st.subheader("🔍 조사 대상 브랜드")
 
-    _n = st.slider("표시 브랜드 수", 10, min(60, len(anomaly_df)),
-                   min(10, len(anomaly_df)), key="anom_n")
+    _n = st.slider("표시 브랜드 수", 10, len(anomaly_df),
+                   min(20, len(anomaly_df)), key="anom_n")
 
     _col_bar, _col_heat = st.columns(2)
     with _col_bar:
@@ -1009,20 +1056,26 @@ def render_anomaly_tab(
                               "spike_bldg_avg_pct", "spike_peer_ratio"] if c in anomaly_df.columns]
     master_show = id_cols + key_cols + reason_col
     master_view = add_display_index(anomaly_df[master_show])
+    _col_cfg = {
+        "No":                  st.column_config.NumberColumn("No", width="small"),
+        "brand":               st.column_config.TextColumn("브랜드", width="medium"),
+        "building":            st.column_config.TextColumn("건물", width="small"),
+        "floor":               st.column_config.TextColumn("층", width="small"),
+        "composite_score":     st.column_config.ProgressColumn(
+            "복합 점수", format="%.3f", min_value=0, max_value=1, width="small"),
+        "risk_level":          st.column_config.TextColumn("위험도", width="small"),
+        "spike_max_pct":       st.column_config.NumberColumn(
+            "최대 증가율(%)", format="%.1f", width="small"),
+        "spike_worst_util":    st.column_config.TextColumn("급등 항목", width="small"),
+        "spike_bldg_avg_pct":  st.column_config.NumberColumn(
+            "건물평균(%)", format="%.1f", width="small"),
+        "spike_peer_ratio":    st.column_config.NumberColumn(
+            "vs건물", format="%.1fx", width="small"),
+        "reason":              st.column_config.TextColumn("이유", width="large"),
+    }
     st.dataframe(
         master_view,
-        column_config={
-            "composite_score": st.column_config.ProgressColumn(
-                "복합 점수", format="%.3f", min_value=0, max_value=1),
-            "spike_max_pct":       st.column_config.NumberColumn(
-                "최대 증가율(%)", format="%.1f"),
-            "spike_worst_util":    st.column_config.TextColumn("급등 항목"),
-            "spike_bldg_avg_pct":  st.column_config.NumberColumn(
-                "건물평균(%)", format="%.1f"),
-            "spike_peer_ratio":    st.column_config.NumberColumn(
-                "vs건물 배수", format="%.1fx"),
-            "reason":              st.column_config.TextColumn("이유", width="large"),
-        },
+        column_config=_col_cfg,
         hide_index=True,
         use_container_width=True,
     )

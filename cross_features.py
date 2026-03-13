@@ -83,14 +83,17 @@ def build_unit_costs(meter_df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.Dat
         usage = merged["elect_usage_kw"].replace(0, np.nan)
         merged["elect_unit_cost"] = (merged["elect_total"] * 10_000 / usage).round(0)
 
-    # Total cost per m²  (keep in 만원/m² for readability; ×10k for ₩/m²)
+    # Total cost per m² / per 평  (keep in 만원 units for readability)
+    _PY_FACTOR = 3.3058
     if "total" in merged.columns and size is not None:
         merged["total_cost_per_m2"] = (merged["total"] / size).round(4)
+        merged["total_cost_per_py"] = (merged["total"] / size * _PY_FACTOR).round(4)
 
     # Z-scores
     for col, zcol in [
         ("water_unit_cost",   "water_unit_z"),
         ("elect_unit_cost",   "elect_unit_z"),
+        ("total_cost_per_py", "total_cost_per_py_z"),
         ("total_cost_per_m2", "total_cost_per_m2_z"),
     ]:
         if col in merged.columns:

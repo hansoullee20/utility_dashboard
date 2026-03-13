@@ -336,10 +336,10 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
     # Anomaly detection — single page, no sub-tabs
     prev_data = file_map.get(prev_file) if prev_file else None
     prev_sheets = sheet_map.get(prev_file, []) if prev_file else None
-    prev_lbl = file_periods.get(prev_file) if prev_file else None
+    prev_lbl = "전월"
     yoy_data = file_map.get(yoy_file) if yoy_file else None
     yoy_sheets = sheet_map.get(yoy_file, []) if yoy_file else None
-    yoy_lbl = file_periods.get(yoy_file) if yoy_file else None
+    yoy_lbl = "전년동월"
     render_anomaly_tab(
         cur_df, file_name, file_map[file_name], all_sheet_keys,
         split_by_building=split_bldg,

@@ -143,7 +143,7 @@ def render_hotwater_view(
                           horizontal=True, key="hw_comp_view")
 
         if _cview == "브랜드별 순위":
-            _n_show = st.slider("상위 N개", 10, min(60, n_total), min(30, n_total), key="hw_comp_n")
+            _n_show = st.slider("상위 N개", 10, n_total, min(30, n_total), key="hw_comp_n")
             _top = df.nlargest(_n_show, "total").sort_values("total", ascending=True)
             fig_c = go.Figure()
             for bld in ["A","B","C","D"]:

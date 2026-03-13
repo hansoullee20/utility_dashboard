@@ -240,6 +240,7 @@ def _add_cost_signals(df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.DataFram
         "water_unit_cost", "water_unit_z",
         "elect_unit_cost", "elect_unit_z",
         "total_cost_per_m2", "total_cost_per_m2_z",
+        "total_cost_per_py", "total_cost_per_py_z",
     ] if c in unit_df.columns]
 
     if not cost_cols:
@@ -247,7 +248,8 @@ def _add_cost_signals(df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.DataFram
 
     merged = df.merge(unit_df[join_cols + cost_cols], on=join_cols, how="left")
 
-    z_cols = [c for c in ["water_unit_z", "elect_unit_z", "total_cost_per_m2_z"]
+    z_cols = [c for c in ["water_unit_z", "elect_unit_z", "total_cost_per_py_z",
+                           "total_cost_per_m2_z"]
               if c in merged.columns]
     merged["cost_score"] = (
         _normalize(merged[z_cols].abs().max(axis=1).fillna(0))
@@ -335,7 +337,7 @@ def _build_reason_flags(df: pd.DataFrame) -> pd.Series:
         from utils import z_to_grade as _ztg
         _Z = [("수도단가", r.get("water_unit_z")),
               ("전기단가", r.get("elect_unit_z")),
-              ("총비용/m²", r.get("total_cost_per_m2_z"))]
+              ("평당비용", r.get("total_cost_per_py_z") or r.get("total_cost_per_m2_z"))]
         _Z = [(l, float(v)) for l, v in _Z if v is not None and not pd.isna(v) and abs(v) >= 1.5]
         if _Z:
             l, v = max(_Z, key=lambda x: abs(x[1]))

@@ -30,6 +30,7 @@ _BLDG_COLOR = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
 _COST_META = {
     "water_unit_cost":   {"label": "💧 수도 단가",  "unit": "₩/m³",   "z": "water_unit_z"},
     "elect_unit_cost":   {"label": "⚡ 전기 단가",  "unit": "₩/kWh",  "z": "elect_unit_z"},
+    "total_cost_per_py": {"label": "📊 평당 비용",  "unit": "만원/평", "z": "total_cost_per_py_z"},
     "total_cost_per_m2": {"label": "📊 총비용/m²", "unit": "만원/m²", "z": "total_cost_per_m2_z"},
 }
 

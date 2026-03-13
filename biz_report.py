@@ -535,6 +535,8 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
             ("water_unit_z",    "수도 등급"),
             ("elect_unit_cost", "전기 단가(₩/kWh)"),
             ("elect_unit_z",    "전기 등급"),
+            ("total_cost_per_py", "평당비용(만₩/평)"),
+            ("total_cost_per_py_z", "평당비용 등급"),
             ("total_cost_per_m2", "총비용(만₩/m²)"),
             ("total_cost_per_m2_z", "총비용 등급"),
         ]:

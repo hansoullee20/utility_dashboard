@@ -195,7 +195,7 @@ def render_water_view(
         _cview = st.radio("보기", ["브랜드별 stacked", "전체 항목 donut"],
                           horizontal=True, key="water_comp_view")
         if _cview.startswith("브"):
-            _n_show = st.slider("상위 N개", 10, min(60, n_total), min(30, n_total), key="water_comp_n")
+            _n_show = st.slider("상위 N개", 10, n_total, min(30, n_total), key="water_comp_n")
             _top = df.nlargest(_n_show, "total").sort_values("total", ascending=True)
             fig_c = go.Figure()
             for label, col, clr in _COMP_COLS:

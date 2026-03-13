@@ -114,7 +114,7 @@ def _render_trend_section(
 
     # Top N brands by total usage (to keep chart readable)
     brand_totals = util_df.groupby("brand")["usage"].sum().sort_values(ascending=False)
-    _max_brands = min(15, len(brand_totals))
+    _max_brands = len(brand_totals)
     _n_show = st.slider("표시 브랜드 수", 3, _max_brands, min(10, _max_brands), key="trend_n_brands")
     top_brands = brand_totals.head(_n_show).index.tolist()
     plot_df = util_df[util_df["brand"].isin(top_brands)].copy()

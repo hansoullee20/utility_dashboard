@@ -1983,7 +1983,7 @@ def _hvac_tab(df: pd.DataFrame) -> None:
     handle_chart_click(_ev_bldg_hvac, bldg, brand_col="building", field="x")
 
     # Top brands by hvac_excl
-    top_n = st.slider("상위 브랜드 수", 5, min(50, len(df)), 20, key="billing_hvac_topn")
+    top_n = st.slider("상위 브랜드 수", 5, len(df), min(20, len(df)), key="billing_hvac_topn")
     brand_grp = (df.groupby("brand")["hvac_excl"]
                    .sum().reset_index()
                    .sort_values("hvac_excl", ascending=False)

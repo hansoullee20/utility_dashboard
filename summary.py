@@ -1337,7 +1337,7 @@ def render_summary_view(
 
         _pc1, _pc2 = st.columns([3, 1])
         with _pc1:
-            _pareto_n = st.slider("표시 브랜드 수", 5, min(50, len(_sorted)), min(20, len(_sorted)), key="sum_pareto_n")
+            _pareto_n = st.slider("표시 브랜드 수", 5, len(_sorted), min(20, len(_sorted)), key="sum_pareto_n")
         with _pc2:
             _pareto_logy = st.checkbox("Log 스케일", key="sum_pareto_logy")
         _pareto = _sorted.head(_pareto_n)
