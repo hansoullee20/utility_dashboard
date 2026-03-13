@@ -943,64 +943,6 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
                 st.session_state["_profile_do_return"] = True
                 st.rerun()
 
-        # ── Report generation ─────────────────────────────────────────────
-        st.divider()
-        st.subheader("📄 보고서 생성")
-        _REPORT_OPTIONS = ["종합", "이상감지", "인사이트", "상세"]
-        _report_scope = st.radio(
-            "보고서 범위",
-            _REPORT_OPTIONS,
-            key="report_scope",
-            horizontal=True,
-        )
-        _report_pdf_key = f"sidebar_report_{file_name}"
-        if st.button("📄 보고서 생성", key="gen_report_sidebar", use_container_width=True):
-            with st.spinner("보고서 생성 중…"):
-                _pdf = _generate_report(
-                    _report_scope, file_name, file_map, sheet_map,
-                    all_sheet_keys, prev_file, file_periods, tail,
-                )
-                if _pdf:
-                    st.session_state[_report_pdf_key] = _pdf
-                    _fn_map = {"종합": "종합_리포트", "이상감지": "이상감지_리포트",
-                               "인사이트": "인사이트_리포트", "상세": "상세_리포트"}
-                    st.session_state[f"{_report_pdf_key}_fn"] = f"{_fn_map[_report_scope]}.pdf"
-                    st.success("생성 완료!")
-                else:
-                    st.error("데이터가 부족하여 보고서를 생성할 수 없습니다.")
-        if _report_pdf_key in st.session_state:
-            st.download_button(
-                "⬇️ PDF 다운로드",
-                st.session_state[_report_pdf_key],
-                file_name=st.session_state.get(f"{_report_pdf_key}_fn", "보고서.pdf"),
-                mime="application/pdf",
-                key="dl_report_sidebar",
-                use_container_width=True,
-            )
-
-        # ── Excel export ────────────────────────────────────────────────
-        st.subheader("📊 데이터 내보내기")
-        _xl_key = f"sidebar_xl_{file_name}"
-        if st.button("📊 Excel 내보내기", key="gen_xl_sidebar", use_container_width=True):
-            with st.spinner("Excel 생성 중…"):
-                try:
-                    _xl = _generate_excel_export(
-                        file_name, file_map, sheet_map, all_sheet_keys, prev_file,
-                    )
-                    st.session_state[_xl_key] = _xl
-                    st.success("생성 완료!")
-                except Exception as _e:
-                    st.error(f"Excel 생성 실패: {_e}")
-        if _xl_key in st.session_state:
-            st.download_button(
-                "⬇️ Excel 다운로드",
-                st.session_state[_xl_key],
-                file_name="유틸리티_분석.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_xl_sidebar",
-                use_container_width=True,
-            )
-
         # ── Brands of Interest (관심 브랜드) ──────────────────────────────
         st.divider()
         _watchlist = st.session_state.get("_brand_watchlist", [])
@@ -1044,6 +986,67 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
                 if st.button("전체 초기화", key="watchlist_clear"):
                     st.session_state["_brand_watchlist"] = []
                     st.rerun()
+
+        # ── Report generation ─────────────────────────────────────────────
+        st.divider()
+        st.subheader("📄 보고서 생성")
+        _REPORT_OPTIONS = ["종합 리포트", "이상감지 리포트", "비용·효율 리포트", "검침 상세"]
+        _SCOPE_MAP = {"종합 리포트": "종합", "이상감지 리포트": "이상감지",
+                      "비용·효율 리포트": "인사이트", "검침 상세": "상세"}
+        _report_scope_label = st.radio(
+            "보고서 범위",
+            _REPORT_OPTIONS,
+            key="report_scope",
+            horizontal=True,
+        )
+        _report_scope = _SCOPE_MAP[_report_scope_label]
+        _report_pdf_key = f"sidebar_report_{file_name}"
+        if st.button("📄 보고서 생성", key="gen_report_sidebar", use_container_width=True):
+            with st.spinner("보고서 생성 중…"):
+                _pdf = _generate_report(
+                    _report_scope, file_name, file_map, sheet_map,
+                    all_sheet_keys, prev_file, file_periods, tail,
+                )
+                if _pdf:
+                    st.session_state[_report_pdf_key] = _pdf
+                    _fn_map = {"종합": "종합_리포트", "이상감지": "이상감지_리포트",
+                               "인사이트": "비용효율_리포트", "상세": "검침상세_리포트"}
+                    st.session_state[f"{_report_pdf_key}_fn"] = f"{_fn_map[_report_scope]}.pdf"
+                    st.success("생성 완료!")
+                else:
+                    st.error("데이터가 부족하여 보고서를 생성할 수 없습니다.")
+        if _report_pdf_key in st.session_state:
+            st.download_button(
+                "⬇️ PDF 다운로드",
+                st.session_state[_report_pdf_key],
+                file_name=st.session_state.get(f"{_report_pdf_key}_fn", "보고서.pdf"),
+                mime="application/pdf",
+                key="dl_report_sidebar",
+                use_container_width=True,
+            )
+
+        # ── Excel export ────────────────────────────────────────────────
+        st.subheader("📊 데이터 내보내기")
+        _xl_key = f"sidebar_xl_{file_name}"
+        if st.button("📊 Excel 내보내기", key="gen_xl_sidebar", use_container_width=True):
+            with st.spinner("Excel 생성 중…"):
+                try:
+                    _xl = _generate_excel_export(
+                        file_name, file_map, sheet_map, all_sheet_keys, prev_file,
+                    )
+                    st.session_state[_xl_key] = _xl
+                    st.success("생성 완료!")
+                except Exception as _e:
+                    st.error(f"Excel 생성 실패: {_e}")
+        if _xl_key in st.session_state:
+            st.download_button(
+                "⬇️ Excel 다운로드",
+                st.session_state[_xl_key],
+                file_name="유틸리티_분석.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_xl_sidebar",
+                use_container_width=True,
+            )
 
         st.divider()
         debug = st.checkbox(t("debug"), value=False)
