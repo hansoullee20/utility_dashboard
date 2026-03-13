@@ -701,7 +701,7 @@ h3 { font-weight: 700 !important; font-size: 1.05rem !important; }
     background: linear-gradient(180deg, rgba(76,114,176,0.05) 0%, transparent 100%);
     border-radius: 10px 10px 0 0;
     padding: 6px 6px 0;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
+    border-bottom: 1px solid rgba(128,128,128,0.12);
 }
 .stTabs [data-baseweb="tab"] {
     font-size: 13px !important;
@@ -709,16 +709,17 @@ h3 { font-weight: 700 !important; font-size: 1.05rem !important; }
     padding: 10px 22px !important;
     border-radius: 10px 10px 0 0;
     transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
-    color: #666 !important;
+    opacity: 0.55;
 }
 .stTabs [data-baseweb="tab"]:hover {
-    background: rgba(76,114,176,0.04) !important;
-    color: #333 !important;
+    background: rgba(76,114,176,0.06) !important;
+    opacity: 0.8;
 }
 .stTabs [aria-selected="true"] {
     font-size: 13px !important;
     font-weight: 700 !important;
     color: #4C72B0 !important;
+    opacity: 1;
     box-shadow: 0 -2px 8px rgba(76,114,176,0.08);
     border-bottom: 2px solid #4C72B0 !important;
 }
