@@ -12,6 +12,9 @@ from viz import plot_hist_with_tails as _plot_hist
 
 
 from utils import fmt_won as _fmt_won
+from utils_plot import handle_chart_click as _handle_chart_click
+from cross_features import build_elec_breakdown, build_water_breakdown
+from tab_cross import _render_elec_breakdown, _render_water_breakdown
 
 
 def _sum_cols(df: pd.DataFrame, cols: list) -> pd.Series:
@@ -86,6 +89,7 @@ def render_summary_view(
     billing_df: pd.DataFrame | None = None,
     prev_billing_df: pd.DataFrame | None = None,
     yoy_billing_df: pd.DataFrame | None = None,
+    meter_df: pd.DataFrame | None = None,
 ) -> None:
     _available      = [n for n, d in [("수도", water_df), ("온수", hotwater_df), ("전기", elec_df), ("난방", billing_df)] if d is not None]
     _prev_available = [n for n, d in [("수도", prev_water_df), ("온수", prev_hotwater_df), ("전기", prev_elec_df), ("난방", prev_billing_df)] if d is not None]
@@ -99,24 +103,33 @@ def render_summary_view(
 
     # ── Aggregate each available sheet by brand ────────────────────────────────
     if water_df is not None and not water_df.empty:
-        _w = water_df.groupby("brand").agg(
-            building=("building","first"), floor=("floor","first"),
-            size_m2=("size_m2","sum"), water_total=("total","sum"),
-        ).reset_index()
+        _w_agg = dict(building=("building","first"), floor=("floor","first"),
+                      size_m2=("size_m2","sum"), water_total=("total","sum"))
+        if "usage_m3" in water_df.columns:
+            _w_agg["water_m3"] = ("usage_m3", "sum")
+        _w = water_df.groupby("brand").agg(**_w_agg).reset_index()
     else:
         _w = pd.DataFrame(columns=["brand","building","floor","size_m2","water_total"])
 
     if hotwater_df is not None and not hotwater_df.empty:
-        _hw = hotwater_df.groupby("brand").agg(hw_total=("total","sum")).reset_index()
+        _hw_agg = dict(hw_total=("total","sum"))
+        if "usage_m3" in hotwater_df.columns:
+            _hw_agg["hw_m3"] = ("usage_m3", "sum")
+        _hw = hotwater_df.groupby("brand").agg(**_hw_agg).reset_index()
     else:
         _hw = pd.DataFrame(columns=["brand","hw_total"])
 
     if elec_df is not None and not elec_df.empty:
-        _el = elec_df.groupby("brand").agg(
-            elec_total=("grand_total","sum"), kwh_total=("kwh_total","sum")
-        ).reset_index()
+        _el_agg = dict(elec_total=("grand_total","sum"), kwh_total=("kwh_total","sum"))
+        if "kwh_ehp" in elec_df.columns:
+            _el_agg["kwh_ehp"] = ("kwh_ehp", "sum")
+        if "kwh_fcu" in elec_df.columns:
+            _el_agg["kwh_fcu"] = ("kwh_fcu", "sum")
+        _el = elec_df.groupby("brand").agg(**_el_agg).reset_index()
+        _el["kwh_hvac"] = _el.get("kwh_ehp", 0) + _el.get("kwh_fcu", 0)
+        _el = _el.drop(columns=["kwh_ehp", "kwh_fcu"], errors="ignore")
     else:
-        _el = pd.DataFrame(columns=["brand","elec_total","kwh_total"])
+        _el = pd.DataFrame(columns=["brand","elec_total","kwh_total","kwh_hvac"])
 
     if billing_df is not None and not billing_df.empty and "heat_total" in billing_df.columns:
         _ht = billing_df.groupby("brand").agg(heat_total=("heat_total","sum")).reset_index()
@@ -127,7 +140,8 @@ def render_summary_view(
 
     merged = _w.merge(_hw, on="brand", how="outer").merge(_el, on="brand", how="outer").merge(_ht, on="brand", how="outer")
     # Fill missing utilities with 0
-    for col in ["water_total","hw_total","elec_total","heat_total","kwh_total","size_m2"]:
+    for col in ["water_total","hw_total","elec_total","heat_total","kwh_total","kwh_hvac","size_m2",
+                "water_m3","hw_m3"]:
         if col in merged.columns:
             merged[col] = merged[col].fillna(0)
         else:
@@ -150,6 +164,9 @@ def render_summary_view(
             _meta["size_m2"].reindex(merged.index, fill_value=0),
         )
         merged = merged.reset_index()
+
+    _PY_FACTOR = 3.3058
+    merged["size_py"] = (merged["size_m2"] / _PY_FACTOR).round(2)
 
     merged["util_total"] = merged["water_total"] + merged["hw_total"] + merged["elec_total"] + merged["heat_total"]
     merged = merged[merged["util_total"] > 0].sort_values("util_total", ascending=False).reset_index(drop=True)
@@ -191,43 +208,44 @@ def render_summary_view(
     if _period_cap:
         st.caption(f"기간: {_period_cap}")
 
-    mc = st.columns(6)
-    mc[0].metric("통합 브랜드", f"{len(merged)}개")
+    with st.container(border=True):
+        mc = st.columns(6)
+        mc[0].metric("통합 브랜드", f"{len(merged)}개")
 
-    if _has_prev:
-        _util_prev_sum = merged["util_prev"].sum()
-        _util_delta    = _util_sum - _util_prev_sum
-        _util_pct      = _util_delta / _util_prev_sum * 100 if _util_prev_sum else 0
-        mc[1].metric("총 유틸리티 비용", _fmt_won(_util_sum),
-                     delta=f"{_fmt_won(_util_delta)} ({_util_pct:+.1f}%)",
-                     delta_color="inverse")
-        for i, (col_curr, col_prev, label) in enumerate([
-            ("water_total", "water_prev", "수도"),
-            ("hw_total",    "hw_prev",    "온수"),
-            ("elec_total",  "elec_prev",  "전기"),
-            ("heat_total",  "heat_prev",  "난방"),
-        ], start=2):
-            _curr = merged[col_curr].sum()
-            _prev = merged[col_prev].sum()
-            _d = _curr - _prev
-            _p = _d / _prev * 100 if _prev else 0
-            mc[i].metric(
-                label,
-                f"{_fmt_won(_curr)} ({_curr/_util_sum*100:.0f}%)",
-                delta=f"{_fmt_won(_d)} ({_p:+.1f}%)",
-                delta_color="inverse",
-            )
-    else:
-        mc[1].metric("총 유틸리티 비용", _fmt_won(_util_sum))
-        mc[2].metric("수도", f"{_fmt_won(merged['water_total'].sum())} ({merged['water_total'].sum()/_util_sum*100:.0f}%)")
-        mc[3].metric("온수", f"{_fmt_won(merged['hw_total'].sum())} ({merged['hw_total'].sum()/_util_sum*100:.0f}%)")
-        mc[4].metric("전기", f"{_fmt_won(merged['elec_total'].sum())} ({merged['elec_total'].sum()/_util_sum*100:.0f}%)")
-        mc[5].metric("난방", f"{_fmt_won(merged['heat_total'].sum())} ({merged['heat_total'].sum()/_util_sum*100:.0f}%)")
+        if _has_prev:
+            _util_prev_sum = merged["util_prev"].sum()
+            _util_delta    = _util_sum - _util_prev_sum
+            _util_pct      = _util_delta / _util_prev_sum * 100 if _util_prev_sum else 0
+            mc[1].metric("총 유틸리티 비용", _fmt_won(_util_sum),
+                         delta=f"{_fmt_won(_util_delta)} ({_util_pct:+.1f}%)",
+                         delta_color="inverse")
+            for i, (col_curr, col_prev, label) in enumerate([
+                ("water_total", "water_prev", "수도"),
+                ("hw_total",    "hw_prev",    "온수"),
+                ("elec_total",  "elec_prev",  "전기"),
+                ("heat_total",  "heat_prev",  "난방"),
+            ], start=2):
+                _curr = merged[col_curr].sum()
+                _prev = merged[col_prev].sum()
+                _d = _curr - _prev
+                _p = _d / _prev * 100 if _prev else 0
+                mc[i].metric(
+                    label,
+                    f"{_fmt_won(_curr)} ({_curr/_util_sum*100:.0f}%)",
+                    delta=f"{_fmt_won(_d)} ({_p:+.1f}%)",
+                    delta_color="inverse",
+                )
+        else:
+            mc[1].metric("총 유틸리티 비용", _fmt_won(_util_sum))
+            mc[2].metric("수도", f"{_fmt_won(merged['water_total'].sum())} ({merged['water_total'].sum()/_util_sum*100:.0f}%)")
+            mc[3].metric("온수", f"{_fmt_won(merged['hw_total'].sum())} ({merged['hw_total'].sum()/_util_sum*100:.0f}%)")
+            mc[4].metric("전기", f"{_fmt_won(merged['elec_total'].sum())} ({merged['elec_total'].sum()/_util_sum*100:.0f}%)")
+            mc[5].metric("난방", f"{_fmt_won(merged['heat_total'].sum())} ({merged['heat_total'].sum()/_util_sum*100:.0f}%)")
 
     _has_yoy = any(d is not None for d in [yoy_water_df, yoy_hotwater_df, yoy_elec_df, yoy_billing_df])
 
     _has_compare = _has_prev or _has_yoy
-    _tab_labels = ["총 유틸리티 순위", "유틸리티 구성", "면적당 총비용", "건물별 비교", "🔍 항목별 분석", "📋 경영 보고"]
+    _tab_labels = ["사용 분석", "유틸리티 구성", "📋 경영 보고"]
     if _has_compare:
         _tab_labels.insert(1, "📈 기간 비교")
     _tabs = st.tabs(_tab_labels)
@@ -237,9 +255,6 @@ def render_summary_view(
     tab_rank = next(_ti)
     tab_compare = next(_ti) if _has_compare else None
     tab_mix = next(_ti)
-    tab_area = next(_ti)
-    tab_bld = next(_ti)
-    tab_cat = next(_ti)
     tab_mgmt = next(_ti)
 
     def _boxplot_with_labels(s: pd.Series, label_s: pd.Series,
@@ -514,22 +529,25 @@ def render_summary_view(
                     _bot[_chg_col] = _bot[_chg_col].map(_fmt_won)
                     st.dataframe(_bot, hide_index=True, use_container_width=True)
 
-    # ═══════════════════════════ 총 유틸리티 순위 ═════════════════════════════
+    # ═══════════════════════════ 사용 분석 ═════════════════════════════════════
     with tab_rank:
         # ── Category selector ────────────────────────────────────────────────
         _CAT_META = [
-            ("전체",  "util_total",   None,      "합계 (만원)"),
-            ("💧 수도", "water_total", "#4C72B0", "수도 (만원)"),
-            ("🌡️ 온수", "hw_total",   "#C44E52", "온수 (만원)"),
-            ("⚡ 전기", "elec_total",  "#DD8A00", "전기 (만원)"),
-            ("🔥 난방", "heat_total",  "#E377C2", "난방 (만원)"),
+            ("💧 수도",  "water_m3",  "#4C72B0", "수도 (m³)"),
+            ("🌡️ 온수", "hw_m3",     "#C44E52", "온수 (m³)"),
+            ("⚡ 전기",  "kwh_total", "#DD8A00", "전기 (kWh)"),
         ]
         _avail_cats = [label for label, col, _, _ in _CAT_META if merged[col].sum() > 0]
-        _cat_sel = st.radio("분석 기준", _avail_cats, horizontal=True, key="sum_rank_cat")
-        _sel_col  = next(col for label, col, _, _ in _CAT_META if label == _cat_sel)
-        _sel_clr  = next(clr for label, col, clr, _ in _CAT_META if label == _cat_sel)
-        _sel_label = next(lbl for label, col, clr, lbl in _CAT_META if label == _cat_sel)
+        if not _avail_cats:
+            st.info("사용량 데이터가 없습니다.")
+        else:
+            _cat_sel = st.radio("분석 기준", _avail_cats, horizontal=True, key="sum_rank_cat")
+            _sel_col  = next(col for label, col, _, _ in _CAT_META if label == _cat_sel)
+            _sel_clr  = next(clr for label, col, clr, _ in _CAT_META if label == _cat_sel)
+            _sel_label = next(lbl for label, col, clr, lbl in _CAT_META if label == _cat_sel)
         _sel_series = merged[_sel_col]
+        _UNIT_MAP = {"water_m3": "m³", "hw_m3": "m³", "kwh_total": "kWh"}
+        _sel_unit = _UNIT_MAP.get(_sel_col, "")
 
         # Derived stats for selected series
         _sel_pos  = _sel_series[_sel_series > 0]
@@ -545,24 +563,9 @@ def render_summary_view(
             lambda v: "▲ 상위" if v >= _r_hi_w else ("▼ 하위" if v <= _r_lo_w else "")
         )
 
-        # ── 현재 데이터 해석 prep (no st.* calls) ───────────────────────────
-        _util_total_all = merged["util_total"].sum()
-        _dom_util = max(
-            [("수도", merged["water_total"].sum()), ("온수", merged["hw_total"].sum()), ("전기", merged["elec_total"].sum()), ("난방", merged["heat_total"].sum())],
-            key=lambda x: x[1],
-        )
-        _dom_pct = _dom_util[1] / _util_total_all * 100 if _util_total_all > 0 else 0
         _n_brands = len(merged)
-        _top3_share = merged.nlargest(3, "util_total")["util_total"].sum() / _util_total_all * 100
-        _top10p_n   = max(1, int(_n_brands * 0.1))
-        _top10p_share = merged.nlargest(_top10p_n, "util_total")["util_total"].sum() / _util_total_all * 100
-        _r_up_all   = _iqr_upper(merged["util_total"])
-        _outlier_share = (merged[merged["util_total"] > _r_up_all]["util_total"].sum()
-                          / _util_total_all * 100) if _r_up_all < float("inf") else 0.0
-        _top1_all   = merged.loc[merged["util_total"].idxmax()]
-        _top1_dom   = max([("수도", _top1_all["water_total"]), ("온수", _top1_all["hw_total"]), ("전기", _top1_all["elec_total"]), ("난방", _top1_all["heat_total"])], key=lambda x: x[1])
 
-        def _cat_summary(col: str, label: str, icon: str) -> str:
+        def _usage_summary(col: str, label: str, icon: str, unit: str) -> str:
             s = merged[col]
             if s.sum() == 0:
                 return ""
@@ -572,77 +575,60 @@ def render_summary_view(
             _top  = merged.loc[s.idxmax()]
             _med  = s.median()
             _avg  = s.mean()
-            _skew = "⚠️ 평균>중앙값 (고비용 브랜드 견인)" if _avg > _med * 1.1 else "✅ 분포 균등"
+            _skew = "⚠️ 평균>중앙값 (고사용 브랜드 견인)" if _avg > _med * 1.1 else "✅ 분포 균등"
             lines = [
                 f"#### {icon} {label}",
-                f"- 합계 **{_fmt_won(s.sum())}** | 평균 {_fmt_won(_avg)} | 중앙값 {_fmt_won(_med)} — {_skew}",
-                f"- 1위: **{_top['brand']}** {_fmt_won(_top[col])} (중앙값의 {_top[col]/_med:.1f}배)" if _med > 0 else f"- 1위: **{_top['brand']}** {_fmt_won(_top[col])}",
+                f"- 합계 **{s.sum():,.1f} {unit}** | 평균 {_avg:,.1f} | 중앙값 {_med:,.1f} — {_skew}",
+                f"- 1위: **{_top['brand']}** {_top[col]:,.1f} {unit} (중앙값의 {_top[col]/_med:.1f}배)" if _med > 0 else f"- 1위: **{_top['brand']}** {_top[col]:,.1f} {unit}",
                 f"- 상위 이상치: **{_n_out}개**" + (" — 계량기 점검 및 누수 여부 확인 권장" if _n_out > 0 else " — 없음"),
             ]
             return "\n".join(lines)
 
         with st.expander("이 탭 설명"):
             st.markdown("""
-**어떤 브랜드가 유틸리티 비용을 가장 많이 쓰고 있나요?**
+**어떤 브랜드가 유틸리티를 가장 많이 사용하고 있나요?**
 
-수도·온수·전기 비용을 합산하거나 항목별로 나눠 브랜드 순위를 매기는 탭입니다.
+수도(m³)·온수(m³)·전기(kWh) 사용량을 항목별로 나눠 브랜드 순위를 매기는 탭입니다.
 
-- **분석 기준**: 전체(합산) 또는 수도·온수·전기 개별 항목 선택 가능
-- **순위 차트**: 상위 N개 브랜드 비용 비교. 전체 선택 시 항목별 누적 막대, 개별 선택 시 단색 막대.
+- **분석 기준**: 수도·온수·전기 개별 항목 선택
+- **순위 차트**: 상위 N개 브랜드 사용량 비교.
 - **박스플롯**: 선택 기준의 통계 분포 및 이상치 브랜드 테이블.
-- **히스토그램**: 비용 분포의 전체 형태. 주황색 구간은 테일(이상치 영역).
-- **현재 데이터 해석**: 전체 + 항목별 종합 요약이 항상 표시됩니다.
+- **히스토그램**: 사용량 분포의 전체 형태. 주황색 구간은 테일(이상치 영역).
 
 > **이상치 판별 기준 (IQR 방식)**
-> 데이터의 25%(Q1)와 75%(Q3) 지점 사이 범위를 IQR이라 합니다.
-> **상위 이상치**: Q3 + 1.5×IQR 초과 — 비정상적으로 높은 비용.
-> **하위 이상치**: Q1 − 1.5×IQR 미만 — 비정상적으로 낮은 비용(미계량·공실 의심).
+> **상위 이상치**: Q3 + 1.5×IQR 초과 — 비정상적으로 높은 사용량.
+> **하위 이상치**: Q1 − 1.5×IQR 미만 — 비정상적으로 낮은 사용량(미계량·공실 의심).
 """)
         with st.expander("현재 데이터 해석"):
-            _med_all = merged["util_total"].median()
-            _avg_all = merged["util_total"].mean()
-            _skew_all = "평균이 중앙값보다 높아 고비용 브랜드가 전체 평균을 견인하고 있습니다." if _avg_all > _med_all * 1.1 else "비용 분포가 비교적 균등합니다."
-            st.markdown(f"""
-#### 전체 통합 요약
-- **{_n_brands}개** 브랜드, 총 **{_fmt_won(_util_total_all)}** | 평균 {_avg_all/1e4:,.0f}만 원 | 중앙값 {_med_all/1e4:,.0f}만 원
-- {_skew_all}
-- 주요 항목: **{_dom_util[0]} ({_dom_pct:.0f}%)** — 이 유틸리티 관리에 우선 집중 권장
-- 상위 3개 브랜드 비중 **{_top3_share:.1f}%** | 상위 10%({_top10p_n}개) 비중 **{_top10p_share:.1f}%**
-  > {"⚠️ 비용이 소수에 집중되어 계량기 점검 및 임대 조건 재검토가 필요합니다." if _top10p_share > 50 else "✅ 비용 분포가 비교적 분산되어 있습니다."}
-- IQR 이상치 브랜드 **{int((merged['util_total'] > _r_up_all).sum())}개** → 전체 비용의 **{_outlier_share:.1f}%** 부담
-- 1위: **{_top1_all['brand']}** {_fmt_won(_top1_all['util_total'])} (주요 항목: {_top1_dom[0]} {_fmt_won(_top1_dom[1])})
-""")
-            for _col, _lbl, _ico in [("water_total","수도","💧"), ("hw_total","온수","🌡️"), ("elec_total","전기","⚡"), ("heat_total","난방","🔥")]:
-                _s = _cat_summary(_col, _lbl, _ico)
+            for _col, _lbl, _ico, _u in [
+                ("water_m3", "수도", "💧", "m³"),
+                ("hw_m3", "온수", "🌡️", "m³"),
+                ("kwh_total", "전기", "⚡", "kWh"),
+            ]:
+                _s = _usage_summary(_col, _lbl, _ico, _u)
                 if _s:
                     st.markdown(_s)
 
         # ── Metrics row ──────────────────────────────────────────────────────
-        sc = st.columns(4)
-        sc[0].metric("합계",   _fmt_won(_total_sel))
-        sc[1].metric("평균",   _fmt_won(_avg_sel))
-        sc[2].metric("중앙값", _fmt_won(_med_sel))
-        sc[3].metric("1위",    _top1_sel["brand"])
+        with st.container(border=True):
+            sc = st.columns(4)
+            sc[0].metric("합계",   f"{_total_sel:,.1f} {_sel_unit}")
+            sc[1].metric("평균",   f"{_avg_sel:,.1f} {_sel_unit}")
+            sc[2].metric("중앙값", f"{_med_sel:,.1f} {_sel_unit}")
+            sc[3].metric("1위",    _top1_sel["brand"])
 
         # ── Shared table helpers ─────────────────────────────────────────────
-        _RANK_DISP_COLS = ["brand", "이상치", "util_total", "elec_total", "water_total", "hw_total", "heat_total", "building", "floor"]
+        _RANK_DISP_COLS = [c for c in ["brand", "이상치", "water_m3", "hw_m3", "kwh_total", "building", "floor"]
+                           if c in merged.columns]
         _RANK_COL_CFG = {
             "brand":       st.column_config.TextColumn("브랜드"),
             "이상치":      st.column_config.TextColumn("이상치", width="small"),
             "building":    st.column_config.TextColumn("건물", width="small"),
             "floor":       st.column_config.TextColumn("층",   width="small"),
-            "water_total": st.column_config.NumberColumn("수도 (만원)",  format="%.1f"),
-            "hw_total":    st.column_config.NumberColumn("온수 (만원)",  format="%.1f"),
-            "elec_total":  st.column_config.NumberColumn("전기 (만원)",  format="%.1f"),
-            "heat_total":  st.column_config.NumberColumn("난방 (만원)",  format="%.1f"),
-            "util_total":  st.column_config.NumberColumn("합계 (만원)",  format="%.1f"),
+            "water_m3":    st.column_config.NumberColumn("수도 (m³)",   format="%.1f"),
+            "hw_m3":       st.column_config.NumberColumn("온수 (m³)",   format="%.1f"),
+            "kwh_total":   st.column_config.NumberColumn("전기 (kWh)",  format="%.0f"),
         }
-        def _to_manwon(df):
-            d = df.copy()
-            for _c in ["util_total", "water_total", "hw_total", "elec_total", "heat_total"]:
-                if _c in d.columns:
-                    d[_c] = d[_c] / 1e4
-            return d
 
         def _rank_tables(df_sorted: pd.DataFrame, top_mask, bot_mask, mid_mask):
             _top_df = df_sorted[top_mask].sort_values(_sel_col, ascending=False)
@@ -650,19 +636,19 @@ def render_summary_view(
             _mid_df = df_sorted[~top_mask & ~bot_mask].sort_values(_sel_col, ascending=False)
             st.markdown(f"**▲ 상위 이상치** ({len(_top_df)}개)")
             if not _top_df.empty:
-                st.dataframe(_to_manwon(_top_df)[_RANK_DISP_COLS].reset_index(drop=True),
+                st.dataframe(_top_df[_RANK_DISP_COLS].reset_index(drop=True),
                              column_config=_RANK_COL_CFG, use_container_width=True, hide_index=True)
             else:
                 st.caption("해당 없음")
             st.markdown(f"**▼ 하위 이상치** ({len(_bot_df)}개)")
             if not _bot_df.empty:
-                st.dataframe(_to_manwon(_bot_df)[_RANK_DISP_COLS].reset_index(drop=True),
+                st.dataframe(_bot_df[_RANK_DISP_COLS].reset_index(drop=True),
                              column_config=_RANK_COL_CFG, use_container_width=True, hide_index=True)
             else:
                 st.caption("해당 없음")
             st.markdown(f"**정상 범위** ({len(_mid_df)}개)")
             if not _mid_df.empty:
-                st.dataframe(_to_manwon(_mid_df)[_RANK_DISP_COLS].reset_index(drop=True),
+                st.dataframe(_mid_df[_RANK_DISP_COLS].reset_index(drop=True),
                              column_config=_RANK_COL_CFG, use_container_width=True, hide_index=True)
 
         st.divider()
@@ -677,47 +663,29 @@ def render_summary_view(
         if _rank_view == "순위 차트":
             _n = st.slider("상위 N개", 1, len(merged), min(20, len(merged)), key="sum_rank_n")
             _top = merged.nlargest(_n, _sel_col).sort_values(_sel_col, ascending=True)
-            _max_raw = _top[_sel_col].max() if _cat_sel != "전체" else _top["util_total"].max()
-            _div, _unit = (1e8, "억원") if _max_raw >= 1e8 else (1e4, "만원")
+            _xv = _top[_sel_col].values
             fig_r = go.Figure()
-            if _cat_sel == "전체":
-                for label, col, clr in [("수도","water_total","#4C72B0"),
-                                          ("온수","hw_total","#C44E52"),
-                                          ("전기","elec_total","#DD8A00"),
-                                          ("난방","heat_total","#E377C2")]:
-                    _xv = _top[col].values / _div
-                    fig_r.add_trace(go.Bar(
-                        x=_xv, y=[str(b)[:26] for b in _top["brand"]],
-                        name=label, orientation="h", marker_color=clr,
-                        hovertemplate="<b>%{y}</b><br>" + label + f": %{{x:,.0f}} {_unit}<extra></extra>",
-                        text=[f"{v:,.0f}" if v >= 0.5 else ("" if v == 0 else f"{v:,.0f}") for v in _xv],
-                        textposition="inside", textfont=dict(size=9, color="white"),
-                    ))
-                _barmode = "stack"
-            else:
-                _xv = _top[_sel_col].values / _div
-                fig_r.add_trace(go.Bar(
-                    x=_xv, y=[str(b)[:26] for b in _top["brand"]],
-                    name=_cat_sel, orientation="h", marker_color=_sel_clr,
-                    hovertemplate="<b>%{y}</b><br>" + _cat_sel + f": %{{x:,.0f}} {_unit}<extra></extra>",
-                    text=[f"{v:,.0f}" if v >= 0.5 else ("" if v == 0 else f"{v:,.0f}") for v in _xv],
-                    textposition="inside", textfont=dict(size=9, color="white"),
-                ))
-                _barmode = "relative"
+            fig_r.add_trace(go.Bar(
+                x=_xv, y=[str(b)[:26] for b in _top["brand"]],
+                name=_cat_sel, orientation="h", marker_color=_sel_clr,
+                hovertemplate="<b>%{y}</b><br>" + _cat_sel + f": %{{x:,.1f}} {_sel_unit}<extra></extra>",
+                text=[f"{v:,.1f}" if v >= 0.5 else ("" if v == 0 else f"{v:,.2f}") for v in _xv],
+                textposition="inside", textfont=dict(size=9, color="white"),
+            ))
             _r_up = _r_up_sel
             if _r_up < float("inf"):
-                fig_r.add_vline(x=_r_up / _div, line_dash="dash", line_color="#8B2BE2", line_width=2)
+                fig_r.add_vline(x=_r_up, line_dash="dash", line_color="#8B2BE2", line_width=2)
                 fig_r.add_annotation(
-                    x=_r_up / _div, y=1, yref="paper",
-                    text=f"⚠ IQR 상한 {_fmt_won(_r_up)}",
+                    x=_r_up, y=1, yref="paper",
+                    text=f"⚠ IQR 상한 {_r_up:,.1f} {_sel_unit}",
                     showarrow=False, xanchor="left", xshift=6,
                     font=dict(size=11, color="#8B2BE2"),
                     bgcolor="rgba(255,255,255,0.6)", bordercolor="#8B2BE2", borderwidth=1,
                 )
             fig_r.update_layout(
-                barmode=_barmode, height=max(480, _n * 22 + 80),
-                xaxis_title=_unit, plot_bgcolor="white",
-                xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+                barmode="relative", height=max(480, _n * 22 + 80),
+                xaxis_title=f"{_sel_label} ({_sel_unit})",
+                xaxis=dict(griddash="dot"),
                 legend=dict(x=1.02, y=0.5, xanchor="left", yanchor="middle"),
                 margin=dict(l=10, r=100, t=30, b=40),
             )
@@ -728,7 +696,7 @@ def render_summary_view(
                     _rdf = merged[[str(b)[:26] == _ry for b in merged["brand"]]]
                     if not _rdf.empty:
                         st.caption(f"선택됨: **{_ry}**")
-                        st.dataframe(_to_manwon(_rdf)[_RANK_DISP_COLS].reset_index(drop=True),
+                        st.dataframe(_rdf[_RANK_DISP_COLS].reset_index(drop=True),
                                      column_config=_RANK_COL_CFG, use_container_width=True, hide_index=True)
             _rank_tbl = (
                 merged.nlargest(_n, _sel_col)
@@ -736,12 +704,12 @@ def render_summary_view(
                 .reset_index(drop=True)
             )
             _rank_tbl.index = _rank_tbl.index + 1
-            st.dataframe(_to_manwon(_rank_tbl)[_RANK_DISP_COLS], column_config=_RANK_COL_CFG,
+            st.dataframe(_rank_tbl[_RANK_DISP_COLS], column_config=_RANK_COL_CFG,
                          use_container_width=True)
 
         elif _rank_view == "박스플롯":
-            _sel_man = _sel_series / 1e4
-            _boxplot_with_labels(_sel_man, merged["brand"], f"{_cat_sel} 비용 (만원)", "sum_rank_box",
+            _boxplot_with_labels(_sel_series, merged["brand"],
+                                 f"{_sel_label} ({_sel_unit})", "sum_rank_box",
                                  source_df=merged,
                                  disp_cols=_RANK_DISP_COLS)
             _top_mask = _sel_series >= _r_hi_w
@@ -753,26 +721,44 @@ def render_summary_view(
             _iqr_k = st.slider("IQR 배수 (k)", min_value=0.5, max_value=3.0, value=1.5, step=0.25,
                                key="sum_rank_iqr_k",
                                help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
-            _sel_manwon = _sel_series / 1e4
-            _hq1  = float(_sel_manwon.quantile(0.25))
-            _hq3  = float(_sel_manwon.quantile(0.75))
+            _hq1  = float(_sel_series.quantile(0.25))
+            _hq3  = float(_sel_series.quantile(0.75))
             _hiqr = _hq3 - _hq1
             _lo_u = _hq1 - _iqr_k * _hiqr
             _hi_u = _hq3 + _iqr_k * _hiqr
             st.markdown(
-                f"$$Q_1 = {_hq1:,.0f},\\quad Q_3 = {_hq3:,.0f},\\quad IQR = {_hiqr:,.0f}$$\n\n"
-                f"$$\\text{{Lower}} = Q_1 - {_iqr_k}\\times IQR = {_lo_u:,.0f}\\text{{ 만원}}"
-                f",\\quad \\text{{Upper}} = Q_3 + {_iqr_k}\\times IQR = {_hi_u:,.0f}\\text{{ 만원}}$$"
+                f"$$Q_1 = {_hq1:,.1f},\\quad Q_3 = {_hq3:,.1f},\\quad IQR = {_hiqr:,.1f}$$\n\n"
+                f"$$\\text{{Lower}} = Q_1 - {_iqr_k}\\times IQR = {_lo_u:,.1f}\\text{{ {_sel_unit}}}"
+                f",\\quad \\text{{Upper}} = Q_3 + {_iqr_k}\\times IQR = {_hi_u:,.1f}\\text{{ {_sel_unit}}}$$"
             )
-            _plot_hist(_sel_manwon, _h_bins, float(_lo_u), float(_hi_u),
-                       f"{_cat_sel} 비용 분포 (만원)", key="sum_rank_hist",
-                       source_df=merged, val_col=_sel_col, val_scale=1e4,
-                       display_cols=["brand", "building", "floor", "util_total",
-                                     "water_total", "hw_total", "elec_total", "heat_total"],
+            _plot_hist(_sel_series, _h_bins, float(_lo_u), float(_hi_u),
+                       f"{_sel_label} 분포 ({_sel_unit})", key="sum_rank_hist",
+                       source_df=merged, val_col=_sel_col, val_scale=1.0,
+                       display_cols=["brand", "building", "floor",
+                                     "water_m3", "hw_m3", "kwh_total"],
                        show_bins_slider=False)
-            _top_iqr_m = _sel_series > _hi_u * 1e4
-            _bot_iqr_m = _sel_series < _lo_u * 1e4
+            _top_iqr_m = _sel_series > _hi_u
+            _bot_iqr_m = _sel_series < _lo_u
             _rank_tables(merged, _top_iqr_m, _bot_iqr_m, ~_top_iqr_m & ~_bot_iqr_m)
+
+        # ── Category breakdowns (when specific utility selected) ─────────
+        if _cat_sel == "⚡ 전기" and elec_df is not None and not elec_df.empty:
+            st.divider()
+            try:
+                elec_br = build_elec_breakdown(elec_df, meter_df=meter_df)
+                if not elec_br.empty:
+                    _render_elec_breakdown(elec_br, split_by_building=split_by_building)
+            except Exception as _e:
+                st.warning(f"전기 분류 로드 실패: {_e}")
+
+        if _cat_sel == "💧 수도" and water_df is not None and not water_df.empty:
+            st.divider()
+            try:
+                water_br = build_water_breakdown(water_df, meter_df=meter_df)
+                if not water_br.empty:
+                    _render_water_breakdown(water_br, split_by_building=split_by_building)
+            except Exception as _e:
+                st.warning(f"수도 분류 로드 실패: {_e}")
 
     # ═══════════════════════════ 유틸리티 구성 ════════════════════════════════
     with tab_mix:
@@ -827,7 +813,8 @@ def render_summary_view(
             ))
             fig_d.update_layout(title="전체 유틸리티 비중", height=380,
                                 margin=dict(l=20,r=20,t=50,b=20))
-            st.plotly_chart(fig_d, use_container_width=True, key="sum_mix_donut")
+            _ev_donut = st.plotly_chart(fig_d, use_container_width=True, key="sum_mix_donut", on_select="rerun")
+            _handle_chart_click(_ev_donut, merged, brand_col="brand", field="x")
 
         with _mv2:
             # Per-brand mix: who is dominated by electricity vs water?
@@ -912,580 +899,6 @@ def render_summary_view(
             hide_index=True,
         )
 
-    # ═══════════════════════════ 면적당 총비용 ════════════════════════════════
-    with tab_area:
-        _df_a = merged[merged["size_m2"] > 0].copy()
-        _df_a["total_pm2"] = (_df_a["util_total"]  / _df_a["size_m2"]).round(0)
-        _df_a["water_pm2"] = (_df_a["water_total"] / _df_a["size_m2"]).round(0)
-        _df_a["hw_pm2"]    = (_df_a["hw_total"]    / _df_a["size_m2"]).round(0)
-        _df_a["elec_pm2"]  = (_df_a["elec_total"]  / _df_a["size_m2"]).round(0)
-        _df_a["heat_pm2"]  = (_df_a["heat_total"]  / _df_a["size_m2"]).round(0)
-
-        # ── Category selector ────────────────────────────────────────────────
-        _AREA_CAT_META = [
-            ("전체",    "total_pm2",  None,      "합계 (원/㎡)"),
-            ("💧 수도", "water_pm2",  "#4C72B0", "수도 (원/㎡)"),
-            ("🌡️ 온수", "hw_pm2",    "#C44E52", "온수 (원/㎡)"),
-            ("⚡ 전기", "elec_pm2",   "#DD8A00", "전기 (원/㎡)"),
-            ("🔥 난방", "heat_pm2",   "#E377C2", "난방 (원/㎡)"),
-        ]
-        _area_avail = [lbl for lbl, col, _, _ in _AREA_CAT_META if _df_a[col].sum() > 0]
-        _area_cat = st.radio("분석 기준", _area_avail, horizontal=True, key="sum_area_cat")
-        _asel_col = next(col for lbl, col, _, _ in _AREA_CAT_META if lbl == _area_cat)
-        _asel_clr = next(clr for lbl, col, clr, _ in _AREA_CAT_META if lbl == _area_cat)
-
-        _sf = _df_a[_asel_col]
-        _f_up_sel = _iqr_upper(_sf[_sf > 0]) if (_sf > 0).sum() >= 4 else float("inf")
-        _f_lo_w, _f_hi_w = _iqr_whiskers(_sf)
-        _f_lo = max(0.0, _f_lo_w)
-
-        # ── Statistics table — all categories ────────────────────────────────
-        def _stats_row(col: str) -> dict:
-            s = _df_a[col]
-            pos = s[s > 0]
-            up = _iqr_upper(pos) if len(pos) >= 4 else float("nan")
-            q1, q3 = s.quantile(0.25), s.quantile(0.75)
-            iqr = q3 - q1
-            return {
-                "최솟값":    round(s.min()),
-                "Q1 (25%)": round(q1),
-                "중앙값":    round(s.median()),
-                "평균":      round(s.mean()),
-                "Q3 (75%)": round(q3),
-                "IQR 상한":  round(up) if not np.isnan(up) else None,
-                "최댓값":    round(s.max()),
-                "표준편차":  round(s.std()),
-                "이상치 수": int((s > up).sum()) if not np.isnan(up) else 0,
-            }
-
-        _stat_cols = [
-            ("📊 전체", "total_pm2"),
-            ("💧 수도",  "water_pm2"),
-            ("🌡️ 온수", "hw_pm2"),
-            ("⚡ 전기",  "elec_pm2"),
-            ("🔥 난방",  "heat_pm2"),
-        ]
-        _stat_rows = {lbl: _stats_row(col) for lbl, col in _stat_cols if _df_a[col].sum() > 0}
-        if _stat_rows:
-            _stat_df = pd.DataFrame(_stat_rows).T
-            _stat_df.index.name = "항목"
-            _stat_cfg = {c: st.column_config.NumberColumn(c, format="%,.0f")
-                         for c in _stat_df.columns if c != "이상치 수"}
-            _stat_cfg["이상치 수"] = st.column_config.NumberColumn("이상치 수", format="%d")
-            st.dataframe(_stat_df.reset_index(), column_config=_stat_cfg,
-                         use_container_width=True, hide_index=True)
-
-        # ── Expanders ────────────────────────────────────────────────────────
-        def _area_cat_summary(col: str, label: str, icon: str) -> str:
-            s = _df_a[col]
-            if s.sum() == 0:
-                return ""
-            _pos = s[s > 0]
-            _up  = _iqr_upper(_pos) if len(_pos) >= 4 else float("inf")
-            _n_out = int((s > _up).sum())
-            _med = s.median()
-            _avg = s.mean()
-            _top = _df_a.loc[s.idxmax()]
-            _bot = _df_a.loc[s.idxmin()]
-            _skew = "⚠️ 평균>중앙값 (고비용 브랜드 견인)" if _avg > _med * 1.1 else "✅ 분포 균등"
-            lines = [
-                f"#### {icon} {label}",
-                f"- 중앙값 **{_med:,.0f} 원/㎡** · 평균 **{_avg:,.0f} 원/㎡** — {_skew}",
-                f"- 최고: **{_top['brand']}** {_top[col]:,.0f} 원/㎡"
-                + (f" (중앙값의 {_top[col]/_med:.1f}배)  ⚠️ IQR 초과" if _up < float("inf") and _top[col] > _up else ""),
-                f"- 최저: **{_bot['brand']}** {_bot[col]:,.0f} 원/㎡"
-                + (" → ⚠️ 미계량 의심" if _f_lo > 0 and _bot[col] < _f_lo else ""),
-                f"- 상위 이상치: **{_n_out}개**" + (" — 누수·과소비·계량 오류 점검 권장" if _n_out > 0 else " — 없음"),
-            ]
-            return "\n".join(lines)
-
-        with st.expander("이 탭 설명"):
-            st.markdown("""
-**면적 대비 유틸리티 비용이 적정한가요?**
-
-브랜드별 임대 면적(㎡)당 유틸리티 비용을 비교하는 탭입니다. 단순 총액이 아닌 면적 보정 지표이므로 규모가 다른 브랜드 간 공정한 비교가 가능합니다.
-
-- **분석 기준**: 전체(합산) 또는 수도·온수·전기 개별 항목 선택 가능
-- **순위 차트**: 선택 기준의 원/㎡ 순위. 전체 선택 시 항목별 누적 막대.
-- **이상치 기준선(보라)**: 통계적 정상 범위 상단(Q3 + 1.5×IQR). 초과 브랜드는 에너지 감사 또는 누수 점검 대상.
-- **중앙값(초록)**: 전체 중간값 기준선.
-- **현재 데이터 해석**: 선택 기준 + 전체 항목별 요약이 함께 표시됩니다.
-
-> **이상치 판별 기준 (IQR 방식)**
-> 데이터의 25%(Q1)와 75%(Q3) 지점 사이 범위를 IQR이라 합니다.
-> **상위 이상치**: Q3 + 1.5×IQR 초과 — 비정상적으로 높은 비용.
-> **하위 이상치**: Q1 − 1.5×IQR 미만 — 비정상적으로 낮은 비용(미계량·공실 의심).
-""")
-        with st.expander("현재 데이터 해석"):
-            _lines_area = []
-            for _col, _lbl, _ico in [
-                ("total_pm2","전체 합산","📊"),
-                ("water_pm2","수도","💧"),
-                ("hw_pm2","온수","🌡️"),
-                ("elec_pm2","전기","⚡"),
-                ("heat_pm2","난방","🔥"),
-            ]:
-                _s = _area_cat_summary(_col, _lbl, _ico)
-                if _s:
-                    _lines_area.append(_s)
-            st.markdown("\n\n".join(_lines_area))
-
-        # ── Metrics row ──────────────────────────────────────────────────────
-        ac = st.columns(4)
-        ac[0].metric("중앙값",    f"{_sf.median():,.0f} 원/㎡")
-        ac[1].metric("평균",      f"{_sf.mean():,.0f} 원/㎡")
-        ac[2].metric("IQR 상한",  f"{_f_up_sel:,.0f} 원/㎡" if _f_up_sel < float("inf") else "—")
-        ac[3].metric("상한 초과", f"{int((_sf > _f_up_sel).sum())}개")
-
-        st.divider()
-        _init_session_keys([
-            ("sum_area_hist_bins", 50), ("sum_area_hist_bins_i", 50),
-            ("sum_area_hist_tail", 20), ("sum_area_hist_tail_i", 20),
-        ])
-        _area_view = st.radio(
-            "그래프 보기", ["히스토그램", "순위 차트", "박스플롯"],
-            horizontal=True, key="sum_area_view",
-        )
-
-        _AREA_DISP_COLS = ["brand", "total_pm2", "water_pm2", "hw_pm2", "elec_pm2", "heat_pm2", "building", "floor", "size_m2"]
-        _AREA_COL_CFG = {
-            "brand":      st.column_config.TextColumn("브랜드"),
-            "total_pm2":  st.column_config.NumberColumn("합계 원/㎡",  format="%,.0f"),
-            "water_pm2":  st.column_config.NumberColumn("수도 원/㎡",  format="%,.0f"),
-            "hw_pm2":     st.column_config.NumberColumn("온수 원/㎡",  format="%,.0f"),
-            "elec_pm2":   st.column_config.NumberColumn("전기 원/㎡",  format="%,.0f"),
-            "heat_pm2":   st.column_config.NumberColumn("난방 원/㎡",  format="%,.0f"),
-            "building":   st.column_config.TextColumn("건물", width="small"),
-            "floor":      st.column_config.TextColumn("층",   width="small"),
-            "size_m2":    st.column_config.NumberColumn("면적(㎡)", format="%,.1f"),
-        }
-
-        def _area_tables(mask_top, mask_bot):
-            _t = _df_a[mask_top].sort_values(_asel_col, ascending=False)
-            _b = _df_a[mask_bot].sort_values(_asel_col, ascending=False)
-            _m = _df_a[~mask_top & ~mask_bot].sort_values(_asel_col, ascending=False)
-            st.markdown(f"**▲ 상위 이상치** ({len(_t)}개)")
-            if not _t.empty:
-                st.dataframe(_t[_AREA_DISP_COLS].reset_index(drop=True),
-                             column_config=_AREA_COL_CFG, use_container_width=True, hide_index=True)
-            else:
-                st.caption("해당 없음")
-            st.markdown(f"**▼ 하위 이상치** ({len(_b)}개)")
-            if not _b.empty:
-                st.dataframe(_b[_AREA_DISP_COLS].reset_index(drop=True),
-                             column_config=_AREA_COL_CFG, use_container_width=True, hide_index=True)
-            else:
-                st.caption("해당 없음")
-            st.markdown(f"**정상 범위** ({len(_m)}개)")
-            if not _m.empty:
-                st.dataframe(_m[_AREA_DISP_COLS].reset_index(drop=True),
-                             column_config=_AREA_COL_CFG, use_container_width=True, hide_index=True)
-
-        if _area_view == "순위 차트":
-            _n_a = st.slider("상위 N개", 1, len(_df_a), min(20, len(_df_a)), key="sum_area_n")
-            _top_a = _df_a.nlargest(_n_a, _asel_col).sort_values(_asel_col, ascending=True)
-            fig_ab = go.Figure()
-            if _area_cat == "전체":
-                for _lbl, _col, _clr in [("수도","water_pm2","#4C72B0"),
-                                           ("온수","hw_pm2","#C44E52"),
-                                           ("전기","elec_pm2","#DD8A00"),
-                                           ("난방","heat_pm2","#E377C2")]:
-                    fig_ab.add_trace(go.Bar(
-                        x=_top_a[_col].values, y=[str(b)[:26] for b in _top_a["brand"]],
-                        name=_lbl, orientation="h", marker_color=_clr,
-                        text=[f"{v:,.0f}" if v > 0 else "" for v in _top_a[_col].values],
-                        textposition="inside", textfont=dict(size=9, color="white"),
-                        hovertemplate=f"<b>%{{y}}</b><br>{_lbl}: %{{x:,.0f}} 원/㎡<extra></extra>",
-                    ))
-                _barmode = "stack"
-            else:
-                fig_ab.add_trace(go.Bar(
-                    x=_top_a[_asel_col].values, y=[str(b)[:26] for b in _top_a["brand"]],
-                    name=_area_cat, orientation="h", marker_color=_asel_clr,
-                    text=[f"{v:,.0f}" if v > 0 else "" for v in _top_a[_asel_col].values],
-                    textposition="inside", textfont=dict(size=9, color="white"),
-                    hovertemplate=f"<b>%{{y}}</b><br>{_area_cat}: %{{x:,.0f}} 원/㎡<extra></extra>",
-                ))
-                _barmode = "relative"
-            if _f_up_sel < float("inf"):
-                fig_ab.add_vline(x=_f_up_sel, line_dash="dash", line_color="#8B2BE2", line_width=2)
-                fig_ab.add_annotation(
-                    x=_f_up_sel, y=1, yref="paper",
-                    text=f"⚠ IQR 상한 {_f_up_sel:,.0f} 원/㎡",
-                    showarrow=False, xanchor="left", xshift=6,
-                    font=dict(size=11, color="#8B2BE2"),
-                    bgcolor="rgba(255,255,255,0.6)", bordercolor="#8B2BE2", borderwidth=1,
-                )
-            fig_ab.add_vline(x=float(_sf.median()), line_dash="dash", line_color="#2CA02C", line_width=2)
-            fig_ab.add_annotation(
-                x=float(_sf.median()), y=1, yref="paper",
-                text=f"중앙값 {_sf.median():,.0f} 원/㎡",
-                showarrow=False, xanchor="right", xshift=-6,
-                font=dict(size=11, color="#2CA02C"),
-                bgcolor="rgba(255,255,255,0.6)", bordercolor="#2CA02C", borderwidth=1,
-            )
-            fig_ab.update_layout(
-                barmode=_barmode,
-                title=f"면적당 비용 — {_area_cat} (상위 {_n_a}개, 원/㎡)",
-                height=max(420, _n_a * 22 + 80), xaxis_title="원/㎡",
-                xaxis=dict(griddash="dot"),
-                legend=dict(x=1.02, y=0.5, xanchor="left", yanchor="middle"),
-                margin=dict(l=10, r=100, t=30, b=40),
-            )
-            _aev = st.plotly_chart(fig_ab, use_container_width=True, key="sum_area_stacked", on_select="rerun")
-            if _aev and hasattr(_aev, "selection") and _aev.selection.points:
-                _ay = _aev.selection.points[0].get("y") or _aev.selection.points[0].get("label", "")
-                if _ay:
-                    _adf = _df_a[[str(b)[:26] == _ay for b in _df_a["brand"]]]
-                    if not _adf.empty:
-                        st.caption(f"선택됨: **{_ay}**")
-                        st.dataframe(_adf[_AREA_DISP_COLS].reset_index(drop=True),
-                                     column_config=_AREA_COL_CFG, use_container_width=True, hide_index=True)
-            _rank_a = _df_a.nlargest(_n_a, _asel_col).sort_values(_asel_col, ascending=False).reset_index(drop=True)
-            _rank_a.index = _rank_a.index + 1
-            st.dataframe(_rank_a[_AREA_DISP_COLS], column_config=_AREA_COL_CFG, use_container_width=True)
-
-        elif _area_view == "박스플롯":
-            _boxplot_with_labels(_sf, _df_a["brand"], f"{_area_cat} 면적당 비용 (원/㎡)", "sum_area_box",
-                                 source_df=_df_a, disp_cols=_AREA_DISP_COLS)
-            _area_tables(_sf >= _f_hi_w, _sf <= _f_lo_w)
-
-        else:  # 히스토그램
-            _ah_bins = _synced_slider_input("sum_area_hist_bins", "Bins", 5, 200, 50, 5)
-            _ah_tail = _synced_slider_input("sum_area_hist_tail", "Tail %", 1, 50, 20, 1)
-            _lo_a, _hi_a = _sf.quantile([_ah_tail / 100, 1 - _ah_tail / 100])
-            _plot_hist(_sf, _ah_bins, float(_lo_a), float(_hi_a),
-                       f"{_area_cat} 면적당 비용 분포 (원/㎡)", tail_pct=_ah_tail, key="sum_area_hist",
-                       source_df=_df_a, val_col=_asel_col,
-                       display_cols=["brand", "building", "floor", "size_m2",
-                                     "total_pm2", "water_pm2", "hw_pm2", "elec_pm2", "heat_pm2"],
-                       show_bins_slider=False)
-            _area_tables(_sf >= _hi_a, _sf <= _lo_a)
-
-    # ═══════════════════════════ 건물별 비교 ══════════════════════════════════
-    with tab_bld:
-        _bld_pre = merged.groupby("building").agg(
-            util=("util_total","sum"), area=("size_m2","sum"), cnt=("brand","count")
-        ).reindex(["A","B","C","D"]).dropna(how="all")
-        _bld_pre["pm2"] = _bld_pre["util"] / _bld_pre["area"].replace(0, float("nan"))
-        _bld_max_total = _bld_pre["util"].idxmax()
-        _bld_max_pm2   = _bld_pre["pm2"].idxmax()
-        with st.expander("이 탭 설명"):
-            st.markdown("""
-**건물별로 유틸리티 비용 부담이 어떻게 다른가요?**
-
-A·B·C·D 건물별 유틸리티 총비용과 면적 효율을 비교하는 탭입니다.
-
-- **누적 막대 차트**: 건물별 수도·온수·전기 총비용을 항목별로 쌓아서 보여줍니다. 특정 건물의 비용이 두드러지게 높다면 해당 건물의 설비 상태나 입점 구성을 점검할 필요가 있습니다.
-- **원/㎡ 차트**: 건물별 면적당 유틸리티 비용입니다. 총액이 아닌 효율 기준이므로 규모 차이를 제거하고 비교할 수 있습니다.
-- **요약 테이블**: 건물별 브랜드 수, 항목별 금액, 총면적, 면적당 비용을 종합한 표입니다.
-""")
-        with st.expander("현재 데이터 해석"):
-            _bld_pm2_med = _bld_pre['pm2'].median()
-            _bld_util_total = _bld_pre['util'].sum()
-            st.markdown(f"""
-#### 건물별 요약
-{chr(10).join(f"- **{idx}동**: 총 {row['util']/1e4:,.0f}만 원 ({row['util']/_bld_util_total*100:.0f}%) · {row['pm2']:,.0f} 원/㎡ · {int(row['cnt'])}개 브랜드" for idx, row in _bld_pre.iterrows() if pd.notna(row['util']))}
-
-#### 주요 포인트
-- **총비용 최고**: **{_bld_max_total}동** — {_bld_pre.loc[_bld_max_total, 'util']/1e4:,.0f}만 원 · 전체의 {_bld_pre.loc[_bld_max_total, 'util']/_bld_util_total*100:.0f}%
-- **면적 효율 최고**: **{_bld_max_pm2}동** — {_bld_pre.loc[_bld_max_pm2, 'pm2']:,.0f} 원/㎡ {"⚠️ 중앙값({:.0f} 원/㎡) 대비 30% 이상 높습니다. 해당 건물 설비·입점 구성 점검 권장".format(_bld_pm2_med) if _bld_pre.loc[_bld_max_pm2, 'pm2'] > _bld_pm2_med * 1.3 else "→ 건물 간 효율 차이 허용 범위 내"}
-
-#### 의사결정 가이드
-{"- ⚠️ 특정 건물에 비용이 집중되어 있습니다. 설비 점검 및 입점 구성 재검토가 필요합니다." if _bld_pre['util'].max() / _bld_pre['util'].min() > 3 else "- ✅ 건물 간 비용 분포가 비교적 균형 잡혀 있습니다."}
-- 면적당 비용이 가장 낮은 건물은 **{_bld_pre['pm2'].idxmin()}동** ({_bld_pre['pm2'].min():,.0f} 원/㎡) — 운영 효율 벤치마크로 참고 가능
-""")
-        _bld_agg = merged.groupby("building").agg(
-            브랜드수=("brand","count"),
-            수도=("water_total","sum"),
-            온수=("hw_total","sum"),
-            전기=("elec_total","sum"),
-            난방=("heat_total","sum"),
-            합계=("util_total","sum"),
-            총면적=("size_m2","sum"),
-        ).reindex(["A","B","C","D"]).dropna(how="all").reset_index()
-        _bld_agg["원/m²"] = (_bld_agg["합계"] / _bld_agg["총면적"]).round(0)
-
-        # Stacked bar by building
-        fig_bld = go.Figure()
-        for label, col, clr in [("수도","수도","#4C72B0"),("온수","온수","#C44E52"),("전기","전기","#DD8A00"),("난방","난방","#E377C2")]:
-            fig_bld.add_trace(go.Bar(
-                x=[r["building"]+"동" for _,r in _bld_agg.iterrows()],
-                y=[r[col] for _,r in _bld_agg.iterrows()],
-                name=label, marker_color=clr,
-                text=[f"{r[col]/1e6:.2f}M" for _,r in _bld_agg.iterrows()],
-                textposition="inside", textfont=dict(size=11,color="white"),
-            ))
-        fig_bld.update_layout(
-            barmode="stack", title="건물별 유틸리티 총비용 구성", height=380,
-            plot_bgcolor="white", yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
-            legend=dict(orientation="h", x=0, y=1.08, xanchor="left", yanchor="bottom"),
-            margin=dict(l=10, r=10, t=100, b=30),
-        )
-        st.plotly_chart(fig_bld, use_container_width=True, key="sum_bld_stacked")
-
-        # 원/m² bar
-        fig_bpm2 = go.Figure()
-        for _,row in _bld_agg.iterrows():
-            fig_bpm2.add_trace(go.Bar(
-                x=[row["building"]+"동"], y=[row["원/m²"]],
-                marker_color=_BLD_COLOR.get(row["building"],"#888"),
-                text=[f"{row['원/m²']:,.0f}"], textposition="outside",
-                textfont=dict(size=11), showlegend=False,
-            ))
-        fig_bpm2.update_layout(
-            title="건물별 면적당 유틸리티 비용 (원/m²)", height=300,
-            plot_bgcolor="white", yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
-            margin=dict(l=10,r=10,t=50,b=30),
-        )
-        st.plotly_chart(fig_bpm2, use_container_width=True, key="sum_bld_pm2")
-
-        # Summary table
-        _bld_disp = _bld_agg.copy()
-        for col in ["수도","온수","전기","난방","합계"]:
-            _bld_disp[col] = _bld_disp[col].apply(lambda v: f"{v/1e6:.2f}M")
-        _bld_disp["총면적"]  = _bld_disp["총면적"].apply(lambda v: f"{v:,.0f} m²")
-        _bld_disp["원/m²"]  = _bld_disp["원/m²"].apply(lambda v: f"{v:,.0f}")
-        _bld_disp["building"] = _bld_disp["building"] + "동"
-        _bld_disp = _bld_disp.rename(columns={"building":"건물","브랜드수":"브랜드",
-                                               "수도":"수도 (원)","온수":"온수 (원)",
-                                               "전기":"전기 (원)","난방":"난방 (원)","합계":"합계 (원)"})
-        st.dataframe(_bld_disp, use_container_width=True, hide_index=True)
-
-    # ═══════════════════════════ 항목별 분석 ════════════════════════════════════
-    with tab_cat:
-        with st.expander("이 탭 설명"):
-            st.markdown("""
-**각 유틸리티 내부의 비용이 어떻게 구성되어 있나요?**
-
-수도·전기·온수 각각의 항목별 세부 내역을 브랜드 기준으로 분석합니다.
-
-- **수도**: 상수도 / 하수도 / 부과금 + 전용/공용 분리
-- **전기**: 비용 — 전용 / EHP / 공용 분리 | 사용량(kWh) — 일반전기 / HVAC(FCU·AHU·EHP) / 기타(펌프·환풍기)
-- **온수**: 전용 / 공용 청구 분리
-
-각 항목의 비중을 파악하면 설비 유형별 비용 드라이버를 특정하고 절감 레버를 찾는 데 도움이 됩니다.
-""")
-
-        with st.expander("현재 데이터 해석"):
-            _interp_lines = []
-            # 수도 insights
-            if water_df is not None and not water_df.empty:
-                _wi = water_df.groupby("brand").agg(
-                    **{c: (c, "sum") for c in ["water_excl","water_comm","sewage_excl","sewage_comm",
-                                                "levy_excl","levy_comm","total_excl","total_comm","usage_m3"]
-                       if c in water_df.columns}
-                ).reset_index()
-                _w_total = (
-                    (_wi["total_excl"].sum() if "total_excl" in _wi.columns else 0) +
-                    (_wi["total_comm"].sum() if "total_comm" in _wi.columns else 0)
-                )
-                _w_comm = _wi["total_comm"].sum() if "total_comm" in _wi.columns else 0
-                _w_comm_pct = _w_comm / _w_total * 100 if _w_total > 0 else 0
-                _w_sewage = ((_wi["sewage_excl"].sum() if "sewage_excl" in _wi.columns else 0) +
-                             (_wi["sewage_comm"].sum() if "sewage_comm" in _wi.columns else 0))
-                _w_sewage_pct = _w_sewage / _w_total * 100 if _w_total > 0 else 0
-                _w_levy = ((_wi["levy_excl"].sum() if "levy_excl" in _wi.columns else 0) +
-                           (_wi["levy_comm"].sum() if "levy_comm" in _wi.columns else 0))
-                _w_levy_pct = _w_levy / _w_total * 100 if _w_total > 0 else 0
-                _interp_lines.append(f"""#### 💧 수도
-- 공용 분담 비중 **{_w_comm_pct:.1f}%** ({_fmt_won(_w_comm)}) {"— ⚠️ 공용 비중이 30% 초과. 공용 구역 누수 또는 배분 기준 검토 권장" if _w_comm_pct > 30 else "— ✅ 공용 비중 정상"}
-- 하수도 비중 **{_w_sewage_pct:.1f}%** · 부과금 비중 **{_w_levy_pct:.1f}%**
-  {"→ ⚠️ 부과금 비중 과다 — 지자체 부과 내역 확인 필요" if _w_levy_pct > 15 else ""}""")
-
-            # 전기 insights
-            if elec_df is not None and not elec_df.empty:
-                _ei = elec_df.groupby("brand").agg(
-                    **{c: (c, "sum") for c in ["excl_total","ehp_total","comm_total",
-                                               "kwh_elec01","kwh_elec02","kwh_fcu","kwh_ahu",
-                                               "kwh_ehp","kwh_pump","kwh_kitchen_fan"]
-                       if c in elec_df.columns}
-                ).reset_index()
-                _e_cost_total = sum(_ei[c].sum() for c in ["excl_total","ehp_total","comm_total"] if c in _ei.columns)
-                _e_ehp_cost = _ei["ehp_total"].sum() if "ehp_total" in _ei.columns else 0
-                _e_comm_cost = _ei["comm_total"].sum() if "comm_total" in _ei.columns else 0
-                _e_ehp_pct = _e_ehp_cost / _e_cost_total * 100 if _e_cost_total > 0 else 0
-                _e_comm_pct = _e_comm_cost / _e_cost_total * 100 if _e_cost_total > 0 else 0
-                _kwh_hvac = sum(_ei[c].sum() for c in ["kwh_fcu","kwh_ahu","kwh_ehp"] if c in _ei.columns)
-                _kwh_gen  = sum(_ei[c].sum() for c in ["kwh_elec01","kwh_elec02"] if c in _ei.columns)
-                _kwh_etc  = sum(_ei[c].sum() for c in ["kwh_pump","kwh_kitchen_fan"] if c in _ei.columns)
-                _kwh_total = _kwh_hvac + _kwh_gen + _kwh_etc
-                _hvac_kwh_pct = _kwh_hvac / _kwh_total * 100 if _kwh_total > 0 else 0
-                _top_ehp = _ei.loc[_ei["ehp_total"].idxmax()]["brand"] if "ehp_total" in _ei.columns else "—"
-                _top_hvac_kwh = _ei.loc[(_ei[["kwh_fcu","kwh_ahu","kwh_ehp"]].sum(axis=1)).idxmax()]["brand"] if all(c in _ei.columns for c in ["kwh_fcu","kwh_ahu","kwh_ehp"]) else "—"
-                _interp_lines.append(f"""#### ⚡ 전기
-- EHP 비용 비중 **{_e_ehp_pct:.1f}%** ({_fmt_won(_e_ehp_cost)}) | 공용 전기 비중 **{_e_comm_pct:.1f}%**
-  {"→ ⚠️ EHP 비중 과다 — 냉난방 설비 효율 점검 또는 고HVAC 업종 집중 확인" if _e_ehp_pct > 30 else "→ ✅ EHP 비중 정상"}
-- HVAC 사용량 비중 **{_hvac_kwh_pct:.1f}%** (FCU·AHU·EHP 합산) | 일반전기 **{_kwh_gen/1e3:,.0f}k kWh** · HVAC **{_kwh_hvac/1e3:,.0f}k kWh**
-- EHP 최다 비용 브랜드: **{_top_ehp}** | HVAC kWh 최다: **{_top_hvac_kwh}**""")
-
-            # 온수 insights
-            if hotwater_df is not None and not hotwater_df.empty:
-                _hwi = hotwater_df.groupby("brand").agg(
-                    **{c: (c, "sum") for c in ["fee_excl","fee_comm","total","usage_m3"] if c in hotwater_df.columns}
-                ).reset_index()
-                _hw_total = _hwi["total"].sum() if "total" in _hwi.columns else 0
-                _hw_comm  = _hwi["fee_comm"].sum() if "fee_comm" in _hwi.columns else 0
-                _hw_comm_pct = _hw_comm / _hw_total * 100 if _hw_total > 0 else 0
-                _interp_lines.append(f"""#### 🌡️ 온수
-- 공용 비중 **{_hw_comm_pct:.1f}%** ({_fmt_won(_hw_comm)})
-  {"→ ⚠️ 공용 온수 비중이 예상보다 높습니다. 배관 손실 또는 공용 설비 사용 현황 확인 권장" if _hw_comm_pct > 20 else "→ ✅ 공용 온수 비중 정상"}""")
-
-            if _interp_lines:
-                st.markdown("\n\n".join(_interp_lines))
-            else:
-                st.info("분석 가능한 항목 데이터가 없습니다.")
-
-        def _stacked_bar(df_agg: pd.DataFrame, brand_col: str, layers: list[tuple],
-                         title: str, y_label: str, chart_key: str, top_n: int = 25) -> None:
-            """Generic horizontal stacked bar: layers = [(label, col, color)]."""
-            _layer_cols = [col for _, col, _ in layers]
-            _df = df_agg.copy()
-            _df["__total__"] = _df[_layer_cols].sum(axis=1)
-            _plot_df = _df.nlargest(top_n, "__total__").sort_values("__total__", ascending=True)
-            fig = go.Figure()
-            for lbl, col, clr in layers:
-                fig.add_trace(go.Bar(
-                    y=_plot_df[brand_col], x=_plot_df[col],
-                    name=lbl, marker_color=clr, orientation="h",
-                    hovertemplate=f"<b>%{{y}}</b><br>{lbl}: %{{x:,.0f}}<extra></extra>",
-                ))
-            fig.update_layout(
-                barmode="stack", title=title, height=max(300, min(top_n * 22, 600)),
-                xaxis_title=y_label,
-                legend=dict(orientation="h", x=0, y=1.04, xanchor="left", yanchor="bottom"),
-                margin=dict(l=10, r=10, t=80, b=30),
-            )
-            st.plotly_chart(fig, use_container_width=True, key=chart_key)
-
-        # ── 수도 ─────────────────────────────────────────────────────────────
-        if water_df is not None and not water_df.empty:
-            st.subheader("💧 수도 — 항목별 분류")
-            _agg_cols = {"building": ("building", "first")}
-            for _c in ["usage_m3", "water_excl", "water_comm", "sewage_excl", "sewage_comm",
-                       "levy_excl", "levy_comm", "total_excl", "total_comm"]:
-                if _c in water_df.columns:
-                    _agg_cols[_c] = (_c, "sum")
-            _cat_w = water_df.groupby("brand").agg(**_agg_cols).reset_index()
-
-            _has_water_comm = "water_comm" in _cat_w.columns
-            if "water_excl" in _cat_w.columns:
-                _cat_w["상수도"] = _cat_w["water_excl"] + (_cat_w["water_comm"] if _has_water_comm else 0)
-            if "sewage_excl" in _cat_w.columns:
-                _cat_w["하수도"] = _cat_w["sewage_excl"] + (_cat_w["sewage_comm"] if "sewage_comm" in _cat_w.columns else 0)
-            if "levy_excl" in _cat_w.columns:
-                _cat_w["부과금"] = _cat_w["levy_excl"] + (_cat_w["levy_comm"] if "levy_comm" in _cat_w.columns else 0)
-            _cat_w["합계"] = sum(
-                _cat_w[c] for c in ["상수도", "하수도", "부과금"] if c in _cat_w.columns
-            )
-            _cat_w = _cat_w[_cat_w["합계"] > 0]
-
-            _wlayers_cat = [(lbl, lbl, clr) for lbl, clr in
-                            [("상수도", "#4C72B0"), ("하수도", "#8172B3"), ("부과금", "#76B7B2")]
-                            if lbl in _cat_w.columns]
-            if _wlayers_cat:
-                _stacked_bar(_cat_w, "brand", _wlayers_cat,
-                             "수도 항목별 비용 (상위 25)", "원", "cat_water_items")
-
-            # 전용 vs 공용
-            if "total_excl" in _cat_w.columns and "total_comm" in _cat_w.columns:
-                _wlayers_ec = [("전용", "total_excl", "#4C72B0"), ("공용", "total_comm", "#76B7B2")]
-                _stacked_bar(_cat_w, "brand", _wlayers_ec,
-                             "수도 전용 / 공용 분리 (상위 25)", "원", "cat_water_excl_comm")
-
-            # Key insight
-            if "total_comm" in _cat_w.columns and "합계" in _cat_w.columns:
-                _wc_comm_rate = _cat_w["total_comm"].sum() / _cat_w["합계"].sum() * 100
-                _wc_top_comm = _cat_w.loc[_cat_w["total_comm"].idxmax()]
-                st.caption(
-                    f"공용 수도 비중 **{_wc_comm_rate:.1f}%** — "
-                    f"공용 최다 부담 브랜드: **{_wc_top_comm['brand']}** "
-                    f"({_wc_top_comm['total_comm']/1e4:,.0f}만 원)"
-                )
-
-        # ── 전기 ─────────────────────────────────────────────────────────────
-        if elec_df is not None and not elec_df.empty:
-            st.subheader("⚡ 전기 — 항목별 분류")
-
-            _ecols = {}
-            for _c in ["excl_total", "ehp_total", "comm_total",
-                       "kwh_elec01", "kwh_elec02", "kwh_fcu", "kwh_ahu",
-                       "kwh_ehp", "kwh_pump", "kwh_kitchen_fan", "kwh_total"]:
-                if _c in elec_df.columns:
-                    _ecols[_c] = (_c, "sum")
-            _cat_e = elec_df.groupby("brand").agg(
-                building=("building", "first"), **_ecols
-            ).reset_index()
-
-            # Cost breakdown: 전용 / EHP / 공용
-            _e_cost_layers = [(lbl, col, clr) for lbl, col, clr in [
-                ("전용 전기", "excl_total", "#DD8A00"),
-                ("EHP",      "ehp_total",  "#C44E52"),
-                ("공용 전기", "comm_total", "#8172B3"),
-            ] if col in _cat_e.columns]
-            if _e_cost_layers:
-                _cat_e["_ecost_total"] = sum(_cat_e[col] for _, col, _ in _e_cost_layers)
-                _cat_e_cost = _cat_e[_cat_e["_ecost_total"] > 0].copy()
-                _stacked_bar(_cat_e_cost, "brand", _e_cost_layers,
-                             "전기 비용 구성 — 전용 / EHP / 공용 (상위 25)", "원", "cat_elec_cost")
-
-            # KWH breakdown: 일반 / HVAC / 기타
-            _kwh_layers: list[tuple] = []
-            _cat_e["kwh_일반"] = _sum_cols(_cat_e, ["kwh_elec01", "kwh_elec02"])
-            _cat_e["kwh_HVAC"] = _sum_cols(_cat_e, ["kwh_fcu", "kwh_ahu", "kwh_ehp"])
-            _cat_e["kwh_기타"] = _sum_cols(_cat_e, ["kwh_pump", "kwh_kitchen_fan"])
-            _cat_e["_kwh_sum"] = _cat_e["kwh_일반"] + _cat_e["kwh_HVAC"] + _cat_e["kwh_기타"]
-            for _lbl, _clr in [("kwh_일반", "#DD8A00"), ("kwh_HVAC", "#C44E52"), ("kwh_기타", "#76B7B2")]:
-                if _cat_e[_lbl].sum() > 0:
-                    _kwh_layers.append((_lbl.replace("kwh_", ""), _lbl, _clr))
-            if _kwh_layers:
-                _cat_e_kwh = _cat_e[_cat_e["_kwh_sum"] > 0].copy()
-                _stacked_bar(_cat_e_kwh, "brand", _kwh_layers,
-                             "전기 사용량 구성 — 일반 / HVAC / 기타 (상위 25, kWh)", "kWh",
-                             "cat_elec_kwh")
-
-            # Key insight
-            if "kwh_HVAC" in _cat_e.columns and "_kwh_sum" in _cat_e.columns:
-                _e_hvac_sum = _cat_e["kwh_HVAC"].sum()
-                _e_total_sum = _cat_e["_kwh_sum"].sum()
-                if _e_total_sum > 0:
-                    _hvac_rate = _e_hvac_sum / _e_total_sum * 100
-                    _top_hvac = _cat_e.loc[_cat_e["kwh_HVAC"].idxmax()]
-                    st.caption(
-                        f"전체 전기 사용량 중 HVAC 비중 **{_hvac_rate:.1f}%** — "
-                        f"HVAC 최다 브랜드: **{_top_hvac['brand']}** "
-                        f"({_top_hvac['kwh_HVAC']:,.0f} kWh)"
-                    )
-
-        # ── 온수 ─────────────────────────────────────────────────────────────
-        if hotwater_df is not None and not hotwater_df.empty:
-            st.subheader("🌡️ 온수 — 전용 / 공용 분리")
-            _hwcols = {}
-            for _c in ["usage_m3", "fee_excl", "fee_comm", "total"]:
-                if _c in hotwater_df.columns:
-                    _hwcols[_c] = (_c, "sum")
-            _cat_hw = hotwater_df.groupby("brand").agg(
-                building=("building", "first"), **_hwcols
-            ).reset_index()
-
-            _hw_layers = [(lbl, col, clr) for lbl, col, clr in [
-                ("전용", "fee_excl", "#C44E52"),
-                ("공용", "fee_comm", "#E4A0A0"),
-            ] if col in _cat_hw.columns]
-            if _hw_layers:
-                _cat_hw["_hw_total"] = sum(_cat_hw[col] for _, col, _ in _hw_layers)
-                _cat_hw_plot = _cat_hw[_cat_hw["_hw_total"] > 0].copy()
-                _stacked_bar(_cat_hw_plot, "brand", _hw_layers,
-                             "온수 전용 / 공용 비용 (상위 25)", "원", "cat_hw_excl_comm")
-
-            if "fee_comm" in _cat_hw.columns and "total" in _cat_hw.columns:
-                _hw_comm_total = _cat_hw["fee_comm"].sum()
-                _hw_total = _cat_hw["total"].sum()
-                if _hw_total > 0:
-                    st.caption(
-                        f"온수 공용 비중 **{_hw_comm_total/_hw_total*100:.1f}%** "
-                        f"({_hw_comm_total/1e4:,.0f}만 원)"
-                    )
 
     # ═══════════════════════════ 경영 보고 ════════════════════════════════════
     with tab_mgmt:
@@ -1885,7 +1298,8 @@ A·B·C·D 건물별 유틸리티 총비용과 면적 효율을 비교하는 탭
             legend=dict(orientation="h", x=1, y=1, xanchor="right", yanchor="top"),
             margin=dict(l=10, r=60, t=50, b=100),
         )
-        st.plotly_chart(fig_p, use_container_width=True, key="sum_pareto_chart")
+        _ev_pareto = st.plotly_chart(fig_p, use_container_width=True, key="sum_pareto_chart", on_select="rerun")
+        _handle_chart_click(_ev_pareto, _pareto, brand_col="brand", field="x")
 
         _p80 = int((_sorted["누적 비중 (%)"] <= 80).sum()) + 1
         st.caption(

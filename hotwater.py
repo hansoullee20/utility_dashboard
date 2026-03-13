@@ -6,7 +6,7 @@ import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix, fmt_won as _fmt_won
 from filters import render_sheet_filters, brand_search_bar
-from utils_plot import render_sheet_mom_tab
+from utils_plot import render_sheet_mom_tab, handle_chart_click
 
 
 _HW_CMP_COLS   = ["total", "fee_excl", "usage_m3"]
@@ -192,7 +192,19 @@ def render_hotwater_view(
                 ))
                 fig_pie.update_layout(title="계량 vs 미계량 (전체)", height=340,
                                       margin=dict(l=20,r=20,t=50,b=20))
-                st.plotly_chart(fig_pie, use_container_width=True, key="hw_comp_pie")
+                _ev_pie = st.plotly_chart(fig_pie, use_container_width=True, key="hw_comp_pie", on_select="rerun")
+                _sel_pie = _ev_pie.selection.points if _ev_pie and hasattr(_ev_pie, "selection") else []
+                if _sel_pie:
+                    _lbl = _sel_pie[0].get("label") or ""
+                    if _lbl == "계량":
+                        _fdf = df[df["usage_m3"] > 0]
+                    elif _lbl == "미계량":
+                        _fdf = df[df["usage_m3"] == 0]
+                    else:
+                        _fdf = pd.DataFrame()
+                    if not _fdf.empty:
+                        st.caption(f"선택됨: **{_lbl}**")
+                        st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
             with c2:
                 fig_met = go.Figure()
                 for label, clr in [("계량","#4C72B0"),("미계량","#DDDDDD")]:
@@ -228,7 +240,15 @@ def render_hotwater_view(
             ))
             fig_bd.update_layout(title="건물별 온수요금 비중", height=420,
                                  margin=dict(l=20,r=20,t=50,b=20))
-            st.plotly_chart(fig_bd, use_container_width=True, key="hw_comp_bld_donut")
+            _ev_donut = st.plotly_chart(fig_bd, use_container_width=True, key="hw_comp_bld_donut", on_select="rerun")
+            _sel_donut = _ev_donut.selection.points if _ev_donut and hasattr(_ev_donut, "selection") else []
+            if _sel_donut:
+                _lbl = _sel_donut[0].get("label") or ""
+                _bld = _lbl.replace("동", "")
+                _fdf = df[df["building"] == _bld] if _bld else pd.DataFrame()
+                if not _fdf.empty:
+                    st.caption(f"선택됨: **{_lbl}**")
+                    st.dataframe(_fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
 
     # ═══════════════════════════ 면적당 비용 ══════════════════════════════════
     with tab_fair:

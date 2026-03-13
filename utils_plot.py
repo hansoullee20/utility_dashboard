@@ -7,6 +7,26 @@ import streamlit as st
 _BLDG_COLOR = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
 
 
+def handle_chart_click(ev, df: pd.DataFrame, brand_col: str = "brand",
+                       field: str = "x", trunc: int = 0) -> None:
+    """Generic click handler for plotly charts — show selected brand detail."""
+    pts = ev.selection.points if ev and hasattr(ev, "selection") else []
+    if not pts:
+        return
+    val = pts[0].get(field) or ""
+    if isinstance(val, (list, tuple)):
+        val = val[0]
+    if not val:
+        return
+    if trunc:
+        fdf = df[df[brand_col].astype(str).str[:trunc] == str(val)[:trunc]]
+    else:
+        fdf = df[df[brand_col] == val]
+    if not fdf.empty:
+        st.caption(f"선택됨: **{val}**")
+        st.dataframe(fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
+
+
 def bar_chart(
     df: pd.DataFrame,
     x: str,

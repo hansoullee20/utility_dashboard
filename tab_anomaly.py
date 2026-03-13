@@ -95,25 +95,27 @@ def _load_sheets(file_name: str, file_data: bytes, all_sheet_keys: list[str]) ->
 
 def _render_kpis(df: pd.DataFrame, has_billing: bool, has_elec: bool) -> None:
     counts = df["risk_level"].value_counts()
-    cols = st.columns(5)
-    cols[0].metric("분석 브랜드", f"{len(df)}개",
-                   help="이상감지 분석 대상 전체 브랜드 수")
-    cols[1].metric("🔴 위험", f"{counts.get('🔴 위험', 0)}개",
-                   help="복합 이상 점수 ≥ 0.65 — 즉시 조사 필요")
-    cols[2].metric("🟠 주의", f"{counts.get('🟠 주의', 0)}개",
-                   help="복합 이상 점수 ≥ 0.40 — 모니터링 권장")
-    cols[3].metric("🟡 관찰", f"{counts.get('🟡 관찰', 0)}개",
-                   help="복합 이상 점수 ≥ 0.20 — 경미한 이상 신호")
-    cols[4].metric("🟢 정상", f"{counts.get('🟢 정상', 0)}개",
-                   help="복합 이상 점수 < 0.20 — 정상 범위")
     sources = ["검침"] + (["청구"] if has_billing else []) + (["전기"] if has_elec else [])
-    st.caption(f"📂 분석 데이터: **{' · '.join(sources)}**")
+    kpi_container = st.container(border=True)
+    with kpi_container:
+        cols = st.columns(5)
+        cols[0].metric("분석 브랜드", f"{len(df)}개",
+                       help="이상감지 분석 대상 전체 브랜드 수")
+        cols[1].metric("🔴 위험", f"{counts.get('🔴 위험', 0)}개",
+                       help="복합 이상 점수 ≥ 0.65 — 즉시 조사 필요")
+        cols[2].metric("🟠 주의", f"{counts.get('🟠 주의', 0)}개",
+                       help="복합 이상 점수 ≥ 0.40 — 모니터링 권장")
+        cols[3].metric("🟡 관찰", f"{counts.get('🟡 관찰', 0)}개",
+                       help="복합 이상 점수 ≥ 0.20 — 경미한 이상 신호")
+        cols[4].metric("🟢 정상", f"{counts.get('🟢 정상', 0)}개",
+                       help="복합 이상 점수 < 0.20 — 정상 범위")
+        st.caption(f"📂 분석 데이터: **{' · '.join(sources)}**")
 
 
 # ── Section: Composite ranked bar chart ───────────────────────────────────────
 
 def _render_composite_bar(df: pd.DataFrame, n: int, split_by_building: bool) -> None:
-    top = df.head(n).copy()
+    top = df.head(n).copy().iloc[::-1]  # reverse so highest is at top of h-bar
     marker_color = (
         [_BLDG_COLOR.get(str(b), "#888") for b in top["building"]]
         if split_by_building and "building" in top.columns
@@ -402,8 +404,18 @@ def render_anomaly_tab(
     # ── 1. KPI row — "How many problems?" ────────────────────────────────────
     _render_kpis(anomaly_df, has_billing, has_elec)
 
-    # ── 2. Master table — "Who to investigate and WHY?" ──────────────────────
+    # ── 2. Master table + visual ranking — unified investigation view ─────────
     st.subheader("🔍 조사 대상 브랜드")
+
+    _n = st.slider("표시 브랜드 수", 10, min(60, len(anomaly_df)),
+                   min(10, len(anomaly_df)), key="anom_n")
+
+    _col_bar, _col_heat = st.columns(2)
+    with _col_bar:
+        _render_composite_bar(anomaly_df, _n, split_by_building)
+    with _col_heat:
+        _render_heatmap(anomaly_df, _n)
+
     st.caption("복합 이상 점수 순으로 정렬 — **이유** 컬럼에서 각 브랜드가 왜 플래그되었는지 확인하세요.")
 
     id_cols    = [c for c in ["brand", "building", "floor"] if c in anomaly_df.columns]
@@ -431,18 +443,6 @@ def render_anomaly_tab(
         use_container_width=True,
     )
     download_df_as_excel(master_view, filename="anomaly_investigation.xlsx", sheet_name="조사대상")
-
-    st.divider()
-
-    # ── 3. Visual ranking — "See the full picture at a glance" ───────────────
-    _n = st.slider("표시 브랜드 수", 10, min(60, len(anomaly_df)),
-                   min(10, len(anomaly_df)), key="anom_n")
-
-    _chart_tab_bar, _chart_tab_heat = st.tabs(["📊 복합 점수 순위", "🗺️ 이상 히트맵"])
-    with _chart_tab_bar:
-        _render_composite_bar(anomaly_df, _n, split_by_building)
-    with _chart_tab_heat:
-        _render_heatmap(anomaly_df, _n)
 
     st.divider()
 

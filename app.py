@@ -1,9 +1,10 @@
 """app.py — Utility Analysis Dashboard: page config, routing, orchestration.
 
 Three-tier navigation (question-driven, not data-source-driven):
-  Tier 1  🚨 이상감지   — "Who to investigate?" (anomaly detection + MoM spikes)
-  Tier 2  📊 인사이트   — "Why?" (cost analysis, efficiency, summary, brand profile)
-  Tier 3  📋 상세       — "Show me the raw data" (per-sheet detail views)
+  Tier 1  🚨 점검 대상   — "Who to investigate?" (anomaly detection + vacancy)
+  Tier 2  📊 현황 분석   — "Why?" (summary, period comparison, cost, efficiency)
+  Tier 3  🏢 브랜드     — Single brand deep-dive
+  Tier 4  📋 원본 데이터 — "Show me the raw data" (per-sheet detail views)
 """
 import re
 from datetime import date as _date
@@ -255,7 +256,7 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
 
 def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
                           prev_file, file_periods, meter_files, yoy_file=None):
-    """Tier 1: Anomaly Detection + MoM + YoY — 'Who to investigate?'"""
+    """Tier 1: 점검 대상 — 'Who to investigate?'"""
     if "검침 내역" not in all_sheet_keys:
         st.info("이상감지를 위해 **검침 내역** 시트가 필요합니다.")
         return
@@ -267,41 +268,17 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
     from filters import brand_search_bar
     brand_search_bar("t1")
 
-    tab_anom, tab_mom, tab_yoy = st.tabs(["🚨 이상감지", "📈 월별 변화", "📅 전년 대비"])
-
-    with tab_anom:
-        render_anomaly_tab(
-            cur_df, file_name, file_map[file_name], all_sheet_keys,
-            split_by_building=split_bldg,
-        )
-
-    with tab_mom:
-        render_mom_tab(
-            cur_df, present,
-            billing_period=file_periods.get(file_name),
-            prev_billing_period=file_periods.get(prev_file) if prev_file else None,
-            prev_file=prev_file,
-            all_files=meter_files,
-            file_map=file_map,
-            file_periods=file_periods,
-            sheet_map=sheet_map,
-        )
-
-    with tab_yoy:
-        from tab_yoy import render_yoy_tab
-        render_yoy_tab(
-            cur_df, present,
-            billing_period=file_periods.get(file_name),
-            yoy_file=yoy_file,
-            yoy_period=file_periods.get(yoy_file) if yoy_file else None,
-            file_map=file_map,
-            sheet_map=sheet_map,
-        )
+    # Anomaly detection — single page, no sub-tabs
+    render_anomaly_tab(
+        cur_df, file_name, file_map[file_name], all_sheet_keys,
+        split_by_building=split_bldg,
+    )
 
 
 def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
-                          prev_file, file_periods, yoy_file=None):
-    """Tier 2: Business Insight — 'Why is it anomalous?'"""
+                          prev_file, file_periods, yoy_file=None,
+                          meter_files=None):
+    """Tier 2: 현황 분석 — 'Why is it anomalous?'"""
     has_meter = "검침 내역" in all_sheet_keys
     _UTIL_SHEETS = {WATER_SHEET_NAME, HOTWATER_SHEET_NAME, ELECTRICITY_SHEET_NAME}
     has_util = any(s.strip() in _UTIL_SHEETS for s in all_sheet_keys)
@@ -337,13 +314,25 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
     tab_labels = []
     tab_keys = []
     if has_util:
-        tab_labels.append("📋 유틸리티 요약")
+        tab_labels.append("📊 유틸리티 분석")
         tab_keys.append("summary")
     if has_meter:
         tab_labels += ["💰 비용 분석", "⚡ 효율 분석"]
         tab_keys += ["cost", "eff"]
+        tab_labels.append("📈 기간 비교")
+        tab_keys.append("period")
+        if prev_file or yoy_file:
+            tab_labels.append("🔄 공실 현황")
+            tab_keys.append("vacancy")
 
-    tabs = st.tabs(tab_labels)
+    import streamlit_antd_components as _sac2
+    _t2_sel = _sac2.segmented(
+        [_sac2.SegmentedItem(label=lbl) for lbl in tab_labels],
+        key="t2_seg", use_container_width=True,
+    )
+    st.divider()
+
+    _t2_key = tab_keys[tab_labels.index(_t2_sel)] if _t2_sel in tab_labels else tab_keys[0]
 
     # Load YoY meter data if available
     yoy_cur_df = None
@@ -353,85 +342,134 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
             yoy_file, file_map, _yoy_sheets, _yoy_sheets, None,
         )
 
-    for tab_ui, key in zip(tabs, tab_keys):
-        with tab_ui:
-            if key == "cost" and cur_df is not None:
-                render_cross_tab(
-                    cur_df, file_name, file_map[file_name], all_sheet_keys,
-                    split_by_building=split_bldg,
-                    yoy_df=yoy_cur_df,
-                    yoy_file=yoy_file,
-                    yoy_file_data=file_map.get(yoy_file) if yoy_file else None,
-                    yoy_sheet_names=sheet_map.get(yoy_file, []),
-                    billing_period=file_periods.get(file_name),
-                    yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
-                )
+    if _t2_key == "cost" and cur_df is not None:
+        render_cross_tab(
+            cur_df, file_name, file_map[file_name], all_sheet_keys,
+            split_by_building=split_bldg,
+            yoy_df=yoy_cur_df,
+            yoy_file=yoy_file,
+            yoy_file_data=file_map.get(yoy_file) if yoy_file else None,
+            yoy_sheet_names=sheet_map.get(yoy_file, []),
+            billing_period=file_periods.get(file_name),
+            yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
+        )
 
-            elif key == "eff" and cur_df is not None:
-                render_efficiency_tab(
+    elif _t2_key == "eff" and cur_df is not None:
+        render_efficiency_tab(
+            cur_df, present,
+            file_name=file_name,
+            file_data=file_map[file_name],
+            ehp_sheet=ehp_sheet,
+            split_by_building=split_bldg,
+            yoy_df=yoy_cur_df,
+            billing_period=file_periods.get(file_name),
+            yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
+            sheet_names=all_sheet_keys,
+        )
+
+    elif _t2_key == "period" and cur_df is not None:
+        import streamlit_antd_components as _sac_period
+        _period_modes = []
+        if prev_file:
+            _period_modes.append("📈 전월 대비")
+        if yoy_file:
+            _period_modes.append("📅 전년 대비")
+        if not _period_modes:
+            st.info("비교 데이터가 없습니다. 전월 또는 전년 파일을 함께 업로드하세요.")
+        else:
+            _period_sel = _sac_period.segmented(
+                [_sac_period.SegmentedItem(label=lbl) for lbl in _period_modes],
+                key="t2_period_seg", use_container_width=True,
+            ) if len(_period_modes) > 1 else _period_modes[0]
+
+            if _period_sel == "📈 전월 대비":
+                render_mom_tab(
                     cur_df, present,
-                    file_name=file_name,
-                    file_data=file_map[file_name],
-                    ehp_sheet=ehp_sheet,
-                    split_by_building=split_bldg,
-                    yoy_df=yoy_cur_df,
-                    billing_period=file_periods.get(file_name),
-                    yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
-                )
-
-            elif key == "summary":
-                import pandas as _pd
-                _load = lambda r, c, fn=None: _try_load_sheet(
-                    r, c, fn or file_name, file_map, sheet_map)
-
-                w_df  = _load(read_water_sheet,       WATER_SHEET_NAME)
-                hw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME)
-                el_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME)
-                b_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME)
-
-                if all(d is None for d in [w_df, hw_df, el_df]):
-                    st.error(t("no_util_sheets"))
-                    return
-
-                pw_df  = _load(read_water_sheet,       WATER_SHEET_NAME,       prev_file) if prev_file else None
-                phw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    prev_file) if prev_file else None
-                pel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, prev_file) if prev_file else None
-                pb_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME,     prev_file) if prev_file else None
-
-                yw_df  = _load(read_water_sheet,       WATER_SHEET_NAME,       yoy_file) if yoy_file else None
-                yhw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    yoy_file) if yoy_file else None
-                yel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, yoy_file) if yoy_file else None
-                yb_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME,     yoy_file) if yoy_file else None
-
-                # ── Reuse Tier-2 meter filter selections for summary data ─────
-                _sb = st.session_state.get("t2_building", ["All"])
-                _sf = st.session_state.get("t2_floor", ["All"])
-                _gm = st.session_state.get("t2_gongshil", "All")
-                _bs = st.session_state.get("t2_brand_search", "").strip().lower()
-                _split = not ("All" in _sb and "All" in _sf)
-                def _flt(d):
-                    if d is None or d.empty:
-                        return d
-                    return apply_sheet_filter(d, _sb, _sf, _gm, _bs)
-                w_df, hw_df, el_df = _flt(w_df), _flt(hw_df), _flt(el_df)
-                b_df = _flt(b_df)
-                pw_df, phw_df, pel_df = _flt(pw_df), _flt(phw_df), _flt(pel_df)
-                pb_df = _flt(pb_df)
-                yw_df, yhw_df, yel_df = _flt(yw_df), _flt(yhw_df), _flt(yel_df)
-                yb_df = _flt(yb_df)
-
-                render_summary_view(
-                    w_df, hw_df, el_df,
-                    split_by_building=_split,
-                    prev_water_df=pw_df, prev_hotwater_df=phw_df,
-                    prev_elec_df=pel_df,
                     billing_period=file_periods.get(file_name),
                     prev_billing_period=file_periods.get(prev_file) if prev_file else None,
-                    yoy_water_df=yw_df, yoy_hotwater_df=yhw_df,
-                    yoy_elec_df=yel_df,
-                    yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
-                    billing_df=b_df, prev_billing_df=pb_df, yoy_billing_df=yb_df,
+                    prev_file=prev_file,
+                    all_files=meter_files if meter_files and len(meter_files) >= 3 else None,
+                    file_map=file_map,
+                    file_periods=file_periods,
+                    sheet_map=sheet_map,
                 )
+            elif _period_sel == "📅 전년 대비":
+                from tab_yoy import render_yoy_tab
+                render_yoy_tab(
+                    cur_df, present,
+                    billing_period=file_periods.get(file_name),
+                    yoy_file=yoy_file,
+                    yoy_period=file_periods.get(yoy_file) if yoy_file else None,
+                    file_map=file_map,
+                    sheet_map=sheet_map,
+                )
+
+
+    elif _t2_key == "vacancy" and cur_df is not None:
+        from tab_vacancy import render_vacancy_tab
+        render_vacancy_tab(
+            cur_df,
+            prev_file=prev_file,
+            yoy_file=yoy_file,
+            file_map=file_map,
+            sheet_map=sheet_map,
+            billing_period=file_periods.get(file_name),
+            prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+            yoy_period=file_periods.get(yoy_file) if yoy_file else None,
+        )
+
+    elif _t2_key == "summary":
+        _load = lambda r, c, fn=None: _try_load_sheet(
+            r, c, fn or file_name, file_map, sheet_map)
+
+        w_df  = _load(read_water_sheet,       WATER_SHEET_NAME)
+        hw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME)
+        el_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME)
+        b_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME)
+
+        if all(d is None for d in [w_df, hw_df, el_df]):
+            st.error(t("no_util_sheets"))
+            return
+
+        pw_df  = _load(read_water_sheet,       WATER_SHEET_NAME,       prev_file) if prev_file else None
+        phw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    prev_file) if prev_file else None
+        pel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, prev_file) if prev_file else None
+        pb_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME,     prev_file) if prev_file else None
+
+        yw_df  = _load(read_water_sheet,       WATER_SHEET_NAME,       yoy_file) if yoy_file else None
+        yhw_df = _load(read_hotwater_sheet,     HOTWATER_SHEET_NAME,    yoy_file) if yoy_file else None
+        yel_df = _load(read_electricity_sheet,  ELECTRICITY_SHEET_NAME, yoy_file) if yoy_file else None
+        yb_df  = _load(read_billing_sheet,      BILLING_SHEET_NAME,     yoy_file) if yoy_file else None
+
+        _sb = st.session_state.get("t2_building", ["All"])
+        _sf = st.session_state.get("t2_floor", ["All"])
+        _gm = st.session_state.get("t2_gongshil", "All")
+        _bs = st.session_state.get("t2_brand_search", "").strip().lower()
+        _split = not ("All" in _sb and "All" in _sf)
+        def _flt(d):
+            if d is None or d.empty:
+                return d
+            return apply_sheet_filter(d, _sb, _sf, _gm, _bs)
+        w_df, hw_df, el_df = _flt(w_df), _flt(hw_df), _flt(el_df)
+        b_df = _flt(b_df)
+        pw_df, phw_df, pel_df = _flt(pw_df), _flt(phw_df), _flt(pel_df)
+        pb_df = _flt(pb_df)
+        yw_df, yhw_df, yel_df = _flt(yw_df), _flt(yhw_df), _flt(yel_df)
+        yb_df = _flt(yb_df)
+
+        render_summary_view(
+            w_df, hw_df, el_df,
+            split_by_building=_split,
+            prev_water_df=pw_df, prev_hotwater_df=phw_df,
+            prev_elec_df=pel_df,
+            billing_period=file_periods.get(file_name),
+            prev_billing_period=file_periods.get(prev_file) if prev_file else None,
+            yoy_water_df=yw_df, yoy_hotwater_df=yhw_df,
+            yoy_elec_df=yel_df,
+            yoy_billing_period=file_periods.get(yoy_file) if yoy_file else None,
+            billing_df=b_df, prev_billing_df=pb_df, yoy_billing_df=yb_df,
+            meter_df=cur_df,
+        )
 
 
 def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
@@ -562,6 +600,9 @@ def main():
     st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
     st.markdown("""
 <style>
+/* ── reduce top padding ── */
+.block-container { padding-top: 1rem !important; }
+header[data-testid="stHeader"] { height: 0; }
 /* ── st.tabs: larger, bolder tab labels ── */
 .stTabs [data-baseweb="tab-list"] { gap: 6px; }
 .stTabs [data-baseweb="tab"] {
@@ -672,8 +713,8 @@ def main():
         nav_mode = sac.tabs(
             [sac.TabsItem(label=_NAV_ANOMALY),
              sac.TabsItem(label=_NAV_INSIGHT),
-             sac.TabsItem(label=_NAV_DETAIL),
-             sac.TabsItem(label=_NAV_PROFILE)],
+             sac.TabsItem(label=_NAV_PROFILE),
+             sac.TabsItem(label=_NAV_DETAIL)],
             index=0,
             position="left",
             height=220,
@@ -731,6 +772,7 @@ def main():
         _render_tier2_insight(
             file_name, file_map, sheet_map, all_sheet_keys,
             prev_file, file_periods, yoy_file=yoy_file,
+            meter_files=meter_files,
         )
 
     elif nav_mode == _NAV_PROFILE:

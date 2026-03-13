@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from data import to_numeric_series, st_safe
+from utils_plot import handle_chart_click
 
 _C_PREV  = "#A8C4E0"   # light blue  — previous month
 _C_CURR  = "#4C72B0"   # blue        — this month
@@ -122,7 +123,9 @@ def _peer_chart(
         height=300,
     )
     fig.update_yaxes(zeroline=True, rangemode="tozero")
-    st.plotly_chart(fig, use_container_width=True)
+    _ev = st.plotly_chart(fig, use_container_width=True, on_select="rerun",
+                          key=f"peer_{title[:8]}")
+    handle_chart_click(_ev, df, brand_col="brand", field="x")
 
 
 def _bar(labels, values, colors, title, unit):
@@ -163,7 +166,7 @@ def _render_comparison_charts(row, cur_df, present, selected_brand):
         avg_curr = to_numeric_series(peers[f"{p}_current"]).mean() if f"{p}_current" in peers.columns else np.nan
 
         with cols[i % 2]:
-            st.plotly_chart(
+            _ev = st.plotly_chart(
                 _bar(
                     ["이번달", "동종 평균"],
                     [curr, avg_curr],
@@ -171,7 +174,10 @@ def _render_comparison_charts(row, cur_df, present, selected_brand):
                     lbl, unit,
                 ),
                 use_container_width=True,
+                on_select="rerun",
+                key=f"comp_curr_{p}",
             )
+            handle_chart_click(_ev, cur_df, brand_col="brand", field="x")
 
     # ── Chart 2: MoM change — brand vs peer average ───────────────────────────
     st.subheader("📉 전월 대비 변화량 — 동종 업체 평균 대비")
@@ -212,7 +218,9 @@ def _render_comparison_charts(row, cur_df, present, selected_brand):
             margin=dict(t=40, b=20, l=40, r=10),
             height=320,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        _ev = st.plotly_chart(fig, use_container_width=True, on_select="rerun",
+                              key="comp_mom_chg")
+        handle_chart_click(_ev, cur_df, brand_col="brand", field="x")
 
 
 def render_brand_profile_tab(
@@ -227,12 +235,33 @@ def render_brand_profile_tab(
     hotwater_df: pd.DataFrame | None = None,
     electricity_df: pd.DataFrame | None = None,
 ) -> None:
-    """Render a comprehensive profile for a user-selected brand."""
+    """Render brand profile with sub-tabs: single profile + comparison."""
     brands = sorted(cur_df["brand"].dropna().astype(str).unique().tolist())
     if not brands:
         st.info("표시할 브랜드가 없습니다.")
         return
 
+    tab_single, tab_compare = st.tabs(["🔍 브랜드 프로필", "⚖️ 브랜드 비교"])
+
+    with tab_compare:
+        _render_brand_comparison(
+            cur_df, present, billing_period, prev_billing_period,
+            billing_df, water_df, hotwater_df, electricity_df, brands,
+        )
+
+    with tab_single:
+        _render_single_brand_profile(
+            cur_df, ref_df, present, tail, billing_period,
+            prev_billing_period, billing_df, water_df, hotwater_df,
+            electricity_df, brands,
+        )
+
+
+def _render_single_brand_profile(
+    cur_df, ref_df, present, tail, billing_period, prev_billing_period,
+    billing_df, water_df, hotwater_df, electricity_df, brands,
+):
+    """Single-brand deep-dive (original profile view)."""
     _search = st.session_state.get("profile_sel_search", "").strip().lower()
     brands_shown = [b for b in brands if _search in b.lower()] if _search else brands
     if not brands_shown:
@@ -456,3 +485,234 @@ def render_brand_profile_tab(
         raw_brand = raw_brand[ordered].reset_index(drop=True)
         raw_brand.insert(0, "No", range(1, len(raw_brand) + 1))
         st.dataframe(st_safe(raw_brand), hide_index=True, use_container_width=True)
+
+
+# ── Brand Comparison ─────────────────────────────────────────────────────────
+
+_COMPARE_COLORS = [
+    "#4C72B0", "#DD8A00", "#C44E52", "#2CA02C", "#9467BD",
+    "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
+]
+
+
+def _render_brand_comparison(
+    cur_df, present, billing_period, prev_billing_period,
+    billing_df, water_df, hotwater_df, electricity_df, brands,
+):
+    """Side-by-side comparison of 2+ brands."""
+    selected = st.multiselect(
+        "비교할 브랜드 선택 (2개 이상)", brands,
+        default=brands[:2] if len(brands) >= 2 else brands,
+        key="compare_brands",
+    )
+    if len(selected) < 2:
+        st.info("비교하려면 2개 이상의 브랜드를 선택하세요.")
+        return
+
+    rows = cur_df[cur_df["brand"].astype(str).isin(selected)].copy()
+    if rows.empty:
+        st.warning("선택한 브랜드의 데이터를 찾을 수 없습니다.")
+        return
+
+    # ── 1. Overview table ─────────────────────────────────────────────────────
+    st.subheader("📋 기본 정보")
+    info_rows = []
+    for b in selected:
+        r = rows[rows["brand"].astype(str) == b]
+        if r.empty:
+            continue
+        r = r.iloc[0]
+        m2 = _v(r, "size_m2")
+        info_rows.append({
+            "브랜드": b,
+            "건물": str(r.get("building", "—")),
+            "층": str(r.get("floor", "—")),
+            "면적(㎡)": round(m2, 1) if not pd.isna(m2) else None,
+        })
+    if info_rows:
+        st.dataframe(pd.DataFrame(info_rows), hide_index=True, use_container_width=True)
+
+    # ── 2. Usage comparison (검침내역) ────────────────────────────────────────
+    st.subheader("📊 사용량 비교 (검침내역)")
+    for p in present:
+        lbl = _LABEL.get(p, p)
+        unit = _UNIT.get(p, "")
+        curr_col = f"{p}_current"
+        chg_col = f"{p}_change"
+        pct_col = f"{p}_pct"
+        pm2_col = f"{p}_usage_per_m2"
+
+        comp_rows = []
+        for b in selected:
+            r = rows[rows["brand"].astype(str) == b]
+            if r.empty:
+                continue
+            r = r.iloc[0]
+            comp_rows.append({
+                "브랜드": b,
+                f"이번달 ({unit})": _v(r, curr_col),
+                "변화량": _v(r, chg_col),
+                "변화율(%)": _v(r, pct_col),
+                "m²당": _v(r, pm2_col),
+            })
+        if not comp_rows:
+            continue
+        cdf = pd.DataFrame(comp_rows)
+        st.markdown(f"**{lbl}**")
+        st.dataframe(
+            cdf, hide_index=True, use_container_width=True,
+            column_config={
+                f"이번달 ({unit})": st.column_config.NumberColumn(format="%,.2f"),
+                "변화량": st.column_config.NumberColumn(format="%+,.2f"),
+                "변화율(%)": st.column_config.NumberColumn(format="%+,.2f"),
+                "m²당": st.column_config.NumberColumn(format="%,.4f"),
+            },
+        )
+
+    # ── 3. Grouped bar charts ─────────────────────────────────────────────────
+    st.subheader("📊 이번달 사용량 비교")
+    _usage_cols = [(p, f"{p}_current", _LABEL.get(p, p), _UNIT.get(p, ""))
+                   for p in present if f"{p}_current" in rows.columns]
+    if _usage_cols:
+        n_cats = len(_usage_cols)
+        fig_u = make_subplots(rows=1, cols=n_cats,
+                              subplot_titles=[lbl for _, _, lbl, _ in _usage_cols])
+        for ci, (_, col, lbl, unit) in enumerate(_usage_cols, 1):
+            for bi, b in enumerate(selected):
+                r = rows[rows["brand"].astype(str) == b]
+                val = float(_v(r.iloc[0], col)) if not r.empty else 0.0
+                clr = _COMPARE_COLORS[bi % len(_COMPARE_COLORS)]
+                fig_u.add_trace(go.Bar(
+                    name=b, x=[b], y=[val if not pd.isna(val) else 0],
+                    marker_color=clr,
+                    text=[f"{val:,.1f}" if not pd.isna(val) else ""],
+                    textposition="outside", cliponaxis=False,
+                    legendgroup=b, showlegend=(ci == 1),
+                ), row=1, col=ci)
+            fig_u.update_yaxes(title_text=unit, row=1, col=ci)
+        fig_u.update_layout(
+            barmode="group", height=350,
+            legend=dict(orientation="h", y=1.12, x=0),
+            margin=dict(t=70, b=20, l=30, r=10),
+        )
+        fig_u.update_yaxes(zeroline=True, rangemode="tozero")
+        _ev = st.plotly_chart(fig_u, use_container_width=True, on_select="rerun",
+                              key="cmp_usage_bar")
+        handle_chart_click(_ev, rows, brand_col="brand", field="x")
+
+    # ── 4. MoM change comparison ──────────────────────────────────────────────
+    st.subheader("📉 전월 대비 변화량 비교")
+    _chg_cols = [(p, f"{p}_change", _LABEL.get(p, p))
+                 for p in present if f"{p}_change" in rows.columns]
+    if _chg_cols:
+        cat_labels = [lbl for _, _, lbl in _chg_cols]
+        fig_c = go.Figure()
+        for bi, b in enumerate(selected):
+            r = rows[rows["brand"].astype(str) == b]
+            if r.empty:
+                continue
+            r = r.iloc[0]
+            vals = [float(_v(r, col)) if not pd.isna(_v(r, col)) else 0
+                    for _, col, _ in _chg_cols]
+            clr = _COMPARE_COLORS[bi % len(_COMPARE_COLORS)]
+            fig_c.add_trace(go.Bar(
+                name=b, x=cat_labels, y=vals,
+                marker_color=clr,
+                text=[f"{v:+,.2f}" for v in vals],
+                textposition="outside", cliponaxis=False,
+            ))
+        fig_c.update_layout(
+            barmode="group", height=350,
+            yaxis=dict(zeroline=True, zerolinewidth=1.5),
+            legend=dict(orientation="h", y=1.08, x=0),
+            margin=dict(t=40, b=20, l=40, r=10),
+        )
+        _ev = st.plotly_chart(fig_c, use_container_width=True, on_select="rerun",
+                              key="cmp_mom_bar")
+        handle_chart_click(_ev, rows, brand_col="brand", field="x")
+
+    # ── 5. Billing comparison ─────────────────────────────────────────────────
+    if billing_df is not None and not billing_df.empty:
+        st.subheader("💰 수도광열비 비교")
+        _bill_metrics = [
+            ("total", "총합계"), ("water_total", "상하수도"),
+            ("elect_total", "전기"), ("heat_total", "열"),
+        ]
+        _avail = [(c, l) for c, l in _bill_metrics if c in billing_df.columns]
+        if _avail:
+            bill_rows = []
+            for b in selected:
+                bdf = _filter_brand(billing_df, b)
+                if bdf.empty:
+                    continue
+                row_data = {"브랜드": b}
+                for col, lbl in _avail:
+                    row_data[lbl] = to_numeric_series(bdf[col]).sum()
+                bill_rows.append(row_data)
+            if bill_rows:
+                bdf_cmp = pd.DataFrame(bill_rows)
+                st.dataframe(bdf_cmp, hide_index=True, use_container_width=True,
+                             column_config={l: st.column_config.NumberColumn(f"{l} (만원)", format="%,.2f")
+                                            for _, l in _avail})
+
+                fig_b = go.Figure()
+                for bi, b in enumerate(selected):
+                    br = next((r for r in bill_rows if r["브랜드"] == b), None)
+                    if not br:
+                        continue
+                    vals = [br.get(l, 0) for _, l in _avail]
+                    clr = _COMPARE_COLORS[bi % len(_COMPARE_COLORS)]
+                    fig_b.add_trace(go.Bar(
+                        name=b, x=[l for _, l in _avail], y=vals,
+                        marker_color=clr,
+                        text=[f"{v:,.1f}" for v in vals],
+                        textposition="outside", cliponaxis=False,
+                    ))
+                fig_b.update_layout(
+                    barmode="group", height=350,
+                    yaxis=dict(title="만원", zeroline=True, rangemode="tozero"),
+                    legend=dict(orientation="h", y=1.08, x=0),
+                    margin=dict(t=40, b=20, l=40, r=10),
+                )
+                _ev = st.plotly_chart(fig_b, use_container_width=True, on_select="rerun",
+                                      key="cmp_bill_bar")
+                handle_chart_click(_ev, billing_df, brand_col="brand", field="x")
+
+    # ── 6. Radar chart (normalized) ───────────────────────────────────────────
+    st.subheader("🕸️ 레이더 비교")
+    radar_cols = [(f"{p}_current", _LABEL.get(p, p)) for p in present
+                  if f"{p}_current" in rows.columns]
+    if len(radar_cols) >= 3:
+        fig_r = go.Figure()
+        cats = [lbl for _, lbl in radar_cols]
+        # Normalize each metric 0–1 across selected brands
+        raw_vals = {}
+        for b in selected:
+            r = rows[rows["brand"].astype(str) == b]
+            if r.empty:
+                continue
+            raw_vals[b] = [float(_v(r.iloc[0], c)) if not pd.isna(_v(r.iloc[0], c)) else 0
+                           for c, _ in radar_cols]
+        if raw_vals:
+            all_v = np.array(list(raw_vals.values()))
+            maxes = all_v.max(axis=0)
+            maxes[maxes == 0] = 1  # avoid div-by-zero
+            for bi, (b, vals) in enumerate(raw_vals.items()):
+                normed = [v / m for v, m in zip(vals, maxes)]
+                clr = _COMPARE_COLORS[bi % len(_COMPARE_COLORS)]
+                fig_r.add_trace(go.Scatterpolar(
+                    r=normed + [normed[0]],  # close the polygon
+                    theta=cats + [cats[0]],
+                    name=b, fill="toself", opacity=0.3,
+                    line=dict(color=clr, width=2),
+                ))
+            fig_r.update_layout(
+                polar=dict(radialaxis=dict(visible=True, range=[0, 1.05])),
+                height=420,
+                legend=dict(orientation="h", y=-0.1, x=0),
+                margin=dict(t=30, b=60, l=40, r=40),
+            )
+            st.plotly_chart(fig_r, use_container_width=True)
+            st.caption("각 항목을 브랜드 간 최댓값 기준으로 0–1 정규화한 레이더 차트입니다.")
+    elif radar_cols:
+        st.caption("레이더 차트는 3개 이상의 유틸리티 항목이 필요합니다.")

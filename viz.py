@@ -24,6 +24,8 @@ def plot_hist_with_tails(
     tail_pct: float = None,
     val_scale: float = 1.0,
     show_bins_slider: bool = True,
+    show_stats_row: bool = True,
+    show_outlier_list: bool = True,
 ):
     vals = to_numeric_series(s).dropna()
     if vals.empty:
@@ -52,7 +54,7 @@ def plot_hist_with_tails(
         unselected=dict(marker=dict(opacity=0.9)),
         selected=dict(marker=dict(opacity=1.0)),
         textposition="outside",
-        textfont=dict(size=9, color="#222222"),
+        textfont=dict(size=9),
         hovertemplate="<b>%{customdata[0]:.4g} – %{customdata[1]:.4g}</b><br>Count: %{y}<extra></extra>",
     )
 
@@ -111,8 +113,7 @@ def plot_hist_with_tails(
         xanchor="right", yanchor="top",
         text="<br>".join(box_lines),
         showarrow=False,
-        font=dict(size=11, color="#333333", family="monospace"),
-        bgcolor="rgba(255,255,255,0.9)",
+        font=dict(size=11, family="monospace"),
         bordercolor="#AAAAAA",
         borderwidth=1,
         borderpad=6,
@@ -125,35 +126,30 @@ def plot_hist_with_tails(
 
     fig.update_layout(
         title=dict(
-            text=f"<b>{title}</b>   <span style='font-size:12px;color:#888'>n={n_total} · tail={n_tail} ({tail_pct:.1f}%)</span>",
-            font=dict(size=13, color="#222222"), x=0,
+            text=f"<b>{title}</b>   <span style='font-size:12px'>n={n_total} · tail={n_tail} ({tail_pct:.1f}%)</span>",
+            font=dict(size=13), x=0,
         ),
         height=380,
         bargap=0,
         margin=dict(l=50, r=20, t=55, b=45),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
         xaxis=dict(
             showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
-            zeroline=False, showline=True, linecolor="#AAAAAA", linewidth=1,
-            tickfont=dict(size=11, color="#222222"),
+            zeroline=False,
+            tickfont=dict(size=11),
         ),
         yaxis=dict(
-            title=dict(text="Count (건)", font=dict(size=11, color="#222222")),
+            title=dict(text="Count (건)", font=dict(size=11)),
             showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
             zeroline=True, zerolinecolor="#AAAAAA", zerolinewidth=1,
-            showline=True, linecolor="#AAAAAA", linewidth=1,
             rangemode="tozero",
-            tickfont=dict(size=11, color="#222222"),
+            tickfont=dict(size=11),
         ),
-        font=dict(family="Arial, sans-serif"),
         showlegend=True,
         legend=dict(
             orientation="v",
             x=0.99, xanchor="right",
             y=0.97, yanchor="top",
-            font=dict(size=11, color="#333333", family="monospace"),
-            bgcolor="rgba(255,255,255,0.9)",
+            font=dict(size=11, family="monospace"),
             bordercolor="#AAAAAA",
             borderwidth=1,
         ),
@@ -172,13 +168,14 @@ def plot_hist_with_tails(
 
     event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key=key)
 
-    st.dataframe(pd.DataFrame([{
-        "n": stats["n"], "min": round(stats["min"], 4), "p20": round(stats["p20"], 4),
-        "median": round(stats["median"], 4), "mean": round(stats["mean"], 4),
-        "std": round(stats["std"], 4), "p80": round(stats["p80"], 4), "max": round(stats["max"], 4),
-    }]), hide_index=True, use_container_width=True)
+    if show_stats_row:
+        st.dataframe(pd.DataFrame([{
+            "n": stats["n"], "min": round(stats["min"], 4), "p20": round(stats["p20"], 4),
+            "median": round(stats["median"], 4), "mean": round(stats["mean"], 4),
+            "std": round(stats["std"], 4), "p80": round(stats["p80"], 4), "max": round(stats["max"], 4),
+        }]), hide_index=True, use_container_width=True)
 
-    if source_df is not None and val_col is not None:
+    if source_df is not None and val_col is not None and show_outlier_list:
         _scaled = source_df[val_col] / val_scale
 
         # ── Bin-click table (directly below stats) ────────────────────────────

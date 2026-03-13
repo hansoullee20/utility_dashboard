@@ -11,6 +11,7 @@ from data import st_safe
 from features import add_display_index, download_df_as_excel, get_simple_floors, parse_floor_value
 from filters import brand_search_bar
 from utils import fmt_won as _fmt_won
+from utils_plot import handle_chart_click
 from viz import plot_hist_with_tails
 
 # Color palette — mirrors viz.py
@@ -289,7 +290,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
             yaxis=_axis(autorange="reversed"),
             **_LAYOUT_BASE,
         )
-        st.plotly_chart(fig, use_container_width=True, key=key, theme=None)
+        _ev = st.plotly_chart(fig, use_container_width=True, key=key, theme=None, on_select="rerun")
+        handle_chart_click(_ev, pd.DataFrame({"brand": series.index, "value": series.values}), brand_col="brand", field="y")
 
     def _hist(series: pd.Series, xlab: str, color: str, key: str):
         clean = series.dropna()
@@ -377,7 +379,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                 bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA", borderwidth=1,
             ),
         )
-        st.plotly_chart(fig, use_container_width=True, key=key, theme=None)
+        _ev_hist = st.plotly_chart(fig, use_container_width=True, key=key, theme=None, on_select="rerun")
+        handle_chart_click(_ev_hist, pd.DataFrame({"brand": series.index, "value": series.values}), brand_col="brand", field="x")
 
     # ── Filters ───────────────────────────────────────────────────────────────
     _bldg_col  = next((c for c in num_df.columns if c in ("건물", "동", "building")), None)
@@ -675,7 +678,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     annotations=annotations,
                     **_LAYOUT_BASE,
                 )
-                st.plotly_chart(fig, use_container_width=True, key="hvac_fee_stacked", theme=None)
+                _ev_stacked = st.plotly_chart(fig, use_container_width=True, key="hvac_fee_stacked", theme=None, on_select="rerun")
+                handle_chart_click(_ev_stacked, pd.DataFrame({"brand": pivot.index}), brand_col="brand", field="y")
 
                 _stat_entries = [("기본요금 (원)", pivot["기본요금"]), ("사용요금 (원)", pivot["사용요금"])]
                 if comm_fee_col:
@@ -825,7 +829,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                                           font=dict(size=13, color="#000000"), showarrow=False)],
                         **_LAYOUT_BASE,
                     )
-                    st.plotly_chart(_fig_donut, use_container_width=True, key="hvac_donut", theme=None)
+                    _ev_donut = st.plotly_chart(_fig_donut, use_container_width=True, key="hvac_donut", theme=None, on_select="rerun")
+                    handle_chart_click(_ev_donut, pd.DataFrame({"brand": ["기본요금", "사용요금"] + (["공용요금"] if comm_fee_col else [])}), brand_col="brand", field="x")
 
                     # ── Stats table ──────────────────────────────────────────
                     _comp_rows = [("기본요금", _total_base_pct, _base_pct),
@@ -882,7 +887,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                         legend=dict(font=dict(color="#000000")),
                         **_LAYOUT_BASE,
                     )
-                    st.plotly_chart(_fig_prop, use_container_width=True, key="hvac_prop_stack", theme=None)
+                    _ev_prop = st.plotly_chart(_fig_prop, use_container_width=True, key="hvac_prop_stack", theme=None, on_select="rerun")
+                    handle_chart_click(_ev_prop, pd.DataFrame({"brand": _sorted.index}), brand_col="brand", field="y")
 
                     # ── Stats table ──────────────────────────────────────────
                     _prop_stat_rows = []
@@ -937,7 +943,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     yaxis=_axis(autorange="reversed"),
                     **_LAYOUT_BASE,
                 )
-                st.plotly_chart(_fig_ratio, use_container_width=True, key="hvac_ratio_bar", theme=None)
+                _ev_ratio = st.plotly_chart(_fig_ratio, use_container_width=True, key="hvac_ratio_bar", theme=None, on_select="rerun")
+                handle_chart_click(_ev_ratio, pd.DataFrame({"brand": _ratio_sorted.index}), brand_col="brand", field="y")
 
             # ── View: 분포 ────────────────────────────────────────────────────
             elif _prop_view == "분포":
@@ -1178,7 +1185,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                         yaxis=_axis(autorange="reversed"),
                         **_LAYOUT_BASE,
                     )
-                    st.plotly_chart(fig, use_container_width=True, key=f"hvac_fair_{key_sfx}", theme=None)
+                    _ev_fair = st.plotly_chart(fig, use_container_width=True, key=f"hvac_fair_{key_sfx}", theme=None, on_select="rerun")
+                    handle_chart_click(_ev_fair, pd.DataFrame({"brand": s_sorted.index}), brand_col="brand", field="y")
 
                     # ── Stats + expanders for bar chart (IQR) ─────────────────
                     st.dataframe(pd.DataFrame([{
@@ -1278,7 +1286,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                             bgcolor="rgba(255,255,255,0.9)", bordercolor="#AAAAAA", borderwidth=1,
                         ),
                     )
-                    st.plotly_chart(hfig, use_container_width=True, key=f"hvac_fair_hist_{key_sfx}", theme=None)
+                    _ev_fair_hist = st.plotly_chart(hfig, use_container_width=True, key=f"hvac_fair_hist_{key_sfx}", theme=None, on_select="rerun")
+                    handle_chart_click(_ev_fair_hist, pd.DataFrame({"brand": s.index}), brand_col="brand", field="x")
 
                     # ── Stats + expanders for histogram (tail %) ──────────────
                     st.dataframe(pd.DataFrame([{
@@ -1439,7 +1448,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     font=dict(size=11, color="#222222"),
                 )
                 _hm_fig.update_traces(textfont_size=10)
-                st.plotly_chart(_hm_fig, use_container_width=True, key="hvac_heatmap", theme=None)
+                _ev_corr_hm = st.plotly_chart(_hm_fig, use_container_width=True, key="hvac_heatmap", theme=None, on_select="rerun")
+                handle_chart_click(_ev_corr_hm, pd.DataFrame({"brand": _col_names}), brand_col="brand", field="y")
 
             st.divider()
             st.subheader("수동 산점도")
@@ -1543,7 +1553,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                         ),
                         font=dict(family="Arial, sans-serif", color="#222222"),
                     )
-                    st.plotly_chart(_sfig, use_container_width=True, key="hvac_corr_scatter", theme=None)
+                    _ev_scatter = st.plotly_chart(_sfig, use_container_width=True, key="hvac_corr_scatter", theme=None, on_select="rerun")
+                    handle_chart_click(_ev_scatter, _sc_df, brand_col="브랜드", field="x")
 
                     if len(_xv) >= 2:
                         _r2 = _rv ** 2
@@ -1602,7 +1613,8 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                 yaxis=dict(autorange="reversed", tickfont=dict(size=9)),
                 plot_bgcolor="white", paper_bgcolor="white",
             )
-            st.plotly_chart(_hm_fig, use_container_width=True, key="hvac_anom_heatmap", theme=None)
+            _ev_anom_hm = st.plotly_chart(_hm_fig, use_container_width=True, key="hvac_anom_heatmap", theme=None, on_select="rerun")
+            handle_chart_click(_ev_anom_hm, pd.DataFrame({"brand": _hm_brands}), brand_col="brand", field="y")
 
             # ── Flag legend ───────────────────────────────────────────────────
             with st.expander("플래그 기준 안내", expanded=False):
@@ -1967,7 +1979,8 @@ def _hvac_tab(df: pd.DataFrame) -> None:
         legend=dict(orientation="h", x=0.5, xanchor="center", y=1.08),
         margin=dict(l=60, r=20, t=80, b=50),
     )
-    st.plotly_chart(fig_bldg, use_container_width=True, key="billing_hvac_bldg_chart")
+    _ev_bldg_hvac = st.plotly_chart(fig_bldg, use_container_width=True, key="billing_hvac_bldg_chart", on_select="rerun")
+    handle_chart_click(_ev_bldg_hvac, bldg, brand_col="building", field="x")
 
     # Top brands by hvac_excl
     top_n = st.slider("상위 브랜드 수", 5, min(50, len(df)), 20, key="billing_hvac_topn")
@@ -1991,7 +2004,8 @@ def _hvac_tab(df: pd.DataFrame) -> None:
         margin=dict(l=60, r=20, t=70, b=100),
         showlegend=False,
     )
-    st.plotly_chart(fig_brand, use_container_width=True, key="billing_hvac_brand_chart")
+    _ev_brand = st.plotly_chart(fig_brand, use_container_width=True, key="billing_hvac_brand_chart", on_select="rerun")
+    handle_chart_click(_ev_brand, brand_grp, brand_col="brand", field="x")
 
     # Building summary table
     tbl = (df.groupby("building")
@@ -2067,7 +2081,8 @@ def _ranking_tab(df: pd.DataFrame) -> None:
         legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom", font=dict(size=11, color="#333333")),
         margin=dict(l=left_margin, r=20, t=70, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_rank = st.plotly_chart(fig, use_container_width=True, key="billing_ranking_bar", on_select="rerun")
+    handle_chart_click(_ev_rank, plot_df, brand_col="brand", field="y")
 
     # ── Full ranked table (all brands, with context columns) ──
     context_cols = ["building", "floor", "unit", "size_m2"]
@@ -2102,7 +2117,6 @@ _HIST_REF_COL = {
 
 def _histogram_tab(df: pd.DataFrame) -> None:
     bins     = st.session_state.get("bins", 50)
-    tail_pct = st.session_state.get("tail", 20)
 
     # ── Local 공실 filter ──
     has_gong = df["brand"].astype(str).str.contains("공실", na=False).any()
@@ -2136,8 +2150,19 @@ def _histogram_tab(df: pd.DataFrame) -> None:
         st.info("No data for selected column.")
         return
 
-    lo = float(s.quantile(tail_pct / 100))
-    hi = float(s.quantile(1 - tail_pct / 100))
+    _bh_iqr_k = st.slider("IQR 배수 (k)", min_value=0.5, max_value=3.0, value=1.5, step=0.25,
+                           key="billing_hist_iqr_k",
+                           help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
+    _bq1 = float(s.quantile(0.25))
+    _bq3 = float(s.quantile(0.75))
+    _biqr = _bq3 - _bq1
+    lo = _bq1 - _bh_iqr_k * _biqr
+    hi = _bq3 + _bh_iqr_k * _biqr
+    st.markdown(
+        f"$$Q_1 = {_bq1:,.2f},\\quad Q_3 = {_bq3:,.2f},\\quad IQR = {_biqr:,.2f}$$\n\n"
+        f"$$\\text{{Lower}} = {lo:,.2f}\\text{{ 만원}}"
+        f",\\quad \\text{{Upper}} = {hi:,.2f}\\text{{ 만원}}$$"
+    )
 
     title = f"{sel_util} {view_mode} (만원)"
     display_cols = [c for c in ["brand", val_col, "building", "floor", "unit", "size_m2"] if c in df.columns]
@@ -2147,7 +2172,6 @@ def _histogram_tab(df: pd.DataFrame) -> None:
         source_df=df, val_col=val_col,
         key=f"billing_hist_{sel_util}_{view_mode}",
         display_cols=display_cols,
-        tail_pct=tail_pct,
     )
 
     # ── Tail table ──
@@ -2155,20 +2179,19 @@ def _histogram_tab(df: pd.DataFrame) -> None:
         "표시 범위", ["전체", "상위", "중간", "하위"],
         horizontal=True, key="hist_show",
     )
-    label = f"{tail_pct}%"
 
     if show_mode == "전체":
         tbl = df[display_cols].dropna(subset=[val_col]).sort_values(val_col, ascending=False).copy()
         st.markdown(f"**전체 {len(tbl)}개 업체** — 내림차순")
     elif show_mode == "상위":
         tbl = df[df[val_col] >= hi][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**상위 {label} (≥ {hi:,.2f})** — {len(tbl)}개 업체")
+        st.markdown(f"**상위 IQR 상한 (≥ {hi:,.2f})** — {len(tbl)}개 업체")
     elif show_mode == "중간":
         tbl = df[(df[val_col] > lo) & (df[val_col] < hi)][display_cols].sort_values(val_col, ascending=False).copy()
         st.markdown(f"**중간** ({lo:,.2f} – {hi:,.2f}) — {len(tbl)}개 업체")
     else:  # 하위
         tbl = df[df[val_col] <= lo][display_cols].sort_values(val_col, ascending=False).copy()
-        st.markdown(f"**하위 {label} (≤ {lo:,.2f})** — {len(tbl)}개 업체")
+        st.markdown(f"**하위 IQR 하한 (≤ {lo:,.2f})** — {len(tbl)}개 업체")
 
     tbl = add_display_index(tbl)
     st.dataframe(st_safe(tbl), hide_index=True, use_container_width=True,
@@ -2219,7 +2242,8 @@ def _building_tab(df: pd.DataFrame) -> None:
         legend=dict(orientation="h", x=0, y=1.02, yanchor="bottom", font=dict(size=11, color="#333333")),
         margin=dict(l=10, r=20, t=70, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_bldg = st.plotly_chart(fig, use_container_width=True, key="billing_building_bar", on_select="rerun")
+    handle_chart_click(_ev_bldg, agg, brand_col="building", field="x")
 
     # Pie — total bill share per building
     if "total" in agg.columns:
@@ -2239,7 +2263,8 @@ def _building_tab(df: pd.DataFrame) -> None:
             margin=dict(l=10, r=10, t=55, b=10),
             showlegend=True,
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        _ev_pie = st.plotly_chart(fig_pie, use_container_width=True, key="billing_building_pie", on_select="rerun")
+        handle_chart_click(_ev_pie, agg, brand_col="building", field="x")
 
     st.markdown("**건물별 합계**")
     st.dataframe(st_safe(agg), hide_index=True, use_container_width=True)
@@ -2320,7 +2345,8 @@ def _composition_tab(df: pd.DataFrame) -> None:
                     font=dict(size=11, color="#333333")),
         margin=dict(l=left_margin, r=20, t=70, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_comp = st.plotly_chart(fig, use_container_width=True, key="billing_composition_bar", on_select="rerun")
+    handle_chart_click(_ev_comp, plot_df, brand_col="brand", field="y")
 
     # Composition table
     tbl = df.sort_values(sort_col, ascending=False).copy()
@@ -2424,7 +2450,8 @@ def _ratio_tab(df: pd.DataFrame) -> None:
         showlegend=False,
         margin=dict(l=left_margin, r=60, t=60, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_ratio_tab = st.plotly_chart(fig, use_container_width=True, key="billing_ratio_bar", on_select="rerun")
+    handle_chart_click(_ev_ratio_tab, plot_df, brand_col="brand", field="y")
 
     # Summary stats
     n_outliers = int((wdf["comm_ratio"] >= upper_fence).sum())
@@ -2559,7 +2586,8 @@ def _per_m2_tab(df: pd.DataFrame) -> None:
         showlegend=False,
         margin=dict(l=left_margin, r=60, t=60, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    _ev_pm2 = st.plotly_chart(fig, use_container_width=True, key="billing_perm2_bar", on_select="rerun")
+    handle_chart_click(_ev_pm2, plot_df, brand_col="brand", field="y")
 
     # Summary metrics
     n_high = int((wdf[pm2_col] >= upper_fence).sum())

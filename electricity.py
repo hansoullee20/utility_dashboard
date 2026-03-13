@@ -6,7 +6,7 @@ import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix, fmt_won as _fmt_won
 from filters import render_sheet_filters, brand_search_bar
-from utils_plot import render_sheet_mom_tab
+from utils_plot import render_sheet_mom_tab, handle_chart_click
 
 _USAGE_COLS = [
     ("전기01 (검침)",  "kwh_elec01",      "#4C72B0"),
@@ -400,7 +400,9 @@ def render_electricity_view(
                 ))
                 fig_d1.update_layout(title="전용 / EHP / 공용", height=360,
                                      margin=dict(l=20, r=20, t=50, b=20))
-                st.plotly_chart(fig_d1, use_container_width=True, key="elec_donut1")
+                _df_d1 = pd.DataFrame({"brand": list(_d1.keys()), "금액": list(_d1.values())})
+                _ev_d1 = st.plotly_chart(fig_d1, use_container_width=True, key="elec_donut1", on_select="rerun")
+                handle_chart_click(_ev_d1, _df_d1, brand_col="brand", field="label")
 
             with _gc2:
                 # Fee component breakdown (base / energy / climate / fund)
@@ -417,7 +419,9 @@ def render_electricity_view(
                 ))
                 fig_d2.update_layout(title="요금 항목별 구성", height=360,
                                      margin=dict(l=20, r=20, t=50, b=20))
-                st.plotly_chart(fig_d2, use_container_width=True, key="elec_donut2")
+                _df_d2 = pd.DataFrame({"brand": list(_d2.keys()), "금액": list(_d2.values())})
+                _ev_d2 = st.plotly_chart(fig_d2, use_container_width=True, key="elec_donut2", on_select="rerun")
+                handle_chart_click(_ev_d2, _df_d2, brand_col="brand", field="label")
 
             _tot_fee = df["grand_total"].sum()
             _tbl = pd.DataFrame({

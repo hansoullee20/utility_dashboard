@@ -136,7 +136,7 @@ def _render_ehp(cur_df: pd.DataFrame, ehp_annual: pd.DataFrame,
                         font=dict(size=9)),
             hovermode="x unified",
         )
-        st.plotly_chart(fig_trend, use_container_width=True, key="eff_ehp_trend")
+        _ev_trend = st.plotly_chart(fig_trend, use_container_width=True, key="eff_ehp_trend", on_select="rerun")
 
         with st.expander("📋 연간 추세 데이터", expanded=False):
             trend_view = top_brands.reset_index()
@@ -264,6 +264,7 @@ def render_efficiency_tab(
     yoy_df: pd.DataFrame | None = None,
     billing_period: str | None = None,
     yoy_billing_period: str | None = None,
+    sheet_names: list[str] | None = None,
 ) -> None:
     """Rank brands by per-area current usage to evaluate energy efficiency."""
     avail = {p: f"{p}_usage_per_m2" for p in present if f"{p}_usage_per_m2" in cur_df.columns}

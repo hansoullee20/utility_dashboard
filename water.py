@@ -6,7 +6,7 @@ import streamlit as st
 
 from utils import BLD_COLOR as _BLD_COLOR, iqr_upper as _iqr_upper, flag_prefix as _flag_prefix, fmt_won as _fmt_won
 from filters import render_sheet_filters, brand_search_bar
-from utils_plot import render_sheet_mom_tab
+from utils_plot import render_sheet_mom_tab, handle_chart_click
 
 _COMP_COLS = [
     ("상수도 전용",  "water_excl",  "#4C72B0"),
@@ -236,7 +236,9 @@ def render_water_view(
                 textinfo="label+percent", textfont=dict(size=12),
             ))
             fig_d.update_layout(height=420, margin=dict(l=20, r=20, t=40, b=20))
-            st.plotly_chart(fig_d, use_container_width=True, key="water_comp_donut")
+            _ev_donut = st.plotly_chart(fig_d, use_container_width=True, key="water_comp_donut", on_select="rerun")
+            _donut_df = pd.DataFrame({"항목": list(_dvals.keys()), "금액": list(_dvals.values())})
+            handle_chart_click(_ev_donut, _donut_df, brand_col="항목", field="label")
             _tot_all = df["total"].sum()
             st.dataframe(pd.DataFrame({
                 "항목": list(_dvals.keys()),

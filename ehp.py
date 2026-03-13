@@ -11,6 +11,7 @@ from data import (
     read_billing_sheet, BILLING_SHEET_NAME,
 )
 from viz import plot_hist_with_tails
+from utils_plot import handle_chart_click
 
 _PALETTE = [
     "#4C72B0", "#DD8A00", "#C44E52", "#55A868",
@@ -124,7 +125,7 @@ def _tab_yearly(pivot: pd.DataFrame, key: str = "ehp_yearly") -> None:
         margin=dict(l=60, r=20, t=70, b=50),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True, key=key)
+    _ev = st.plotly_chart(fig, use_container_width=True, key=key, on_select="rerun")
 
     summary = pd.DataFrame({"Year": years, "Total kWh": [f"{v:,.0f}" for v in values]})
     st.dataframe(summary.iloc[::-1].reset_index(drop=True), hide_index=True, use_container_width=True)
@@ -166,7 +167,7 @@ def _tab_monthly_total(pivot: pd.DataFrame, key: str = "ehp_monthly_total") -> N
         margin=dict(l=60, r=20, t=70, b=50),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True, key=key)
+    _ev = st.plotly_chart(fig, use_container_width=True, key=key, on_select="rerun")
 
     summary = pd.DataFrame({
         "Month": available,
@@ -214,7 +215,7 @@ def _tab_compare(pivot: pd.DataFrame) -> None:
                     font=dict(size=13, color="#111111")),
         margin=dict(l=60, r=90, t=65, b=50),
     )
-    st.plotly_chart(fig, use_container_width=True, key="ehp_compare_chart")
+    _ev = st.plotly_chart(fig, use_container_width=True, key="ehp_compare_chart", on_select="rerun")
 
     tbl = pd.DataFrame({
         "Month": months,
@@ -251,7 +252,7 @@ def _tab_month(pivot: pd.DataFrame, key: str = "ehp_month_sel") -> None:
         margin=dict(l=60, r=20, t=70, b=50),
         showlegend=False,
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"ehp_month_chart_{key}")
+    _ev = st.plotly_chart(fig, use_container_width=True, key=f"ehp_month_chart_{key}", on_select="rerun")
 
     tbl = pd.DataFrame({"Year": years, "kWh": [f"{v:,.0f}" if pd.notna(v) else "" for v in values]})
     st.dataframe(tbl, hide_index=True, use_container_width=True)
@@ -327,7 +328,7 @@ def _tab_anomaly(pivot: pd.DataFrame) -> None:
         yaxis=dict(title="Month", tickfont=dict(color="#111111")),
         margin=dict(l=60, r=40, t=60, b=50),
     )
-    st.plotly_chart(fig_heat, use_container_width=True, key="ehp_anomaly_heatmap")
+    _ev = st.plotly_chart(fig_heat, use_container_width=True, key="ehp_anomaly_heatmap", on_select="rerun")
 
     if records:
         anom_df = pd.DataFrame(records).sort_values(["Month", "Year"])
@@ -405,7 +406,7 @@ def _tab_panel_trend(name: str, data: bytes, sheet: str) -> None:
                     font=dict(size=10, color="#111111")),
         margin=dict(l=60, r=160, t=60, b=80),
     )
-    st.plotly_chart(fig, use_container_width=True, key="ehp_panel_trend_chart")
+    _ev = st.plotly_chart(fig, use_container_width=True, key="ehp_panel_trend_chart", on_select="rerun")
 
     yearly: dict = {}
     for panel in sel_panels:
@@ -482,7 +483,8 @@ def _tab_hvac_billing(name: str, data: bytes) -> pd.DataFrame | None:
         legend=dict(orientation="h", x=0.5, xanchor="center", y=1.08),
         margin=dict(l=60, r=20, t=80, b=50),
     )
-    st.plotly_chart(fig_bldg, use_container_width=True, key="ehp_hvac_bldg_chart")
+    _ev_bldg = st.plotly_chart(fig_bldg, use_container_width=True, key="ehp_hvac_bldg_chart", on_select="rerun")
+    handle_chart_click(_ev_bldg, bldg, brand_col="building", field="x")
 
     # ── Top brands by hvac_excl ───────────────────────────────────────────
     top_n = 20
@@ -509,7 +511,8 @@ def _tab_hvac_billing(name: str, data: bytes) -> pd.DataFrame | None:
         margin=dict(l=60, r=20, t=70, b=100),
         showlegend=False,
     )
-    st.plotly_chart(fig_brand, use_container_width=True, key="ehp_hvac_brand_chart")
+    _ev_brand = st.plotly_chart(fig_brand, use_container_width=True, key="ehp_hvac_brand_chart", on_select="rerun")
+    handle_chart_click(_ev_brand, brand_grp, brand_col="brand", field="x")
 
     # ── Building summary table ────────────────────────────────────────────
     tbl = bill.groupby("building").agg(
@@ -740,7 +743,8 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                         margin=dict(l=60, r=20, t=70, b=80),
                         showlegend=False,
                     )
-                    st.plotly_chart(fig, use_container_width=True, key=f"ehp_ded_bar_{_key}")
+                    _ev = st.plotly_chart(fig, use_container_width=True, key=f"ehp_ded_bar_{_key}", on_select="rerun")
+                    handle_chart_click(_ev, grouped, brand_col=grouped.columns[0], field="x")
                     st.dataframe(grouped, hide_index=True, use_container_width=True)
 
                 total_val = _ts[metric_sel].sum(min_count=1)
@@ -748,17 +752,25 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
 
                 if _graph_sel == "히스토그램":
                     _bins = st.session_state.get("bins", 50)
-                    _tail = st.session_state.get("tail", 20)
+                    _ehp_iqr_k = st.slider("IQR 배수 (k)", min_value=0.5, max_value=3.0, value=1.5, step=0.25,
+                                           key=f"ehp_iqr_k_{metric_sel}",
+                                           help="이상치 기준: Q1 − k×IQR  /  Q3 + k×IQR")
                     _s    = _ts[metric_sel]
                     _v    = _s.dropna()
                     if not _v.empty:
-                        _lo = float(np.percentile(_v, _tail))
-                        _hi = float(np.percentile(_v, 100 - _tail))
+                        _eq1 = float(_v.quantile(0.25))
+                        _eq3 = float(_v.quantile(0.75))
+                        _eiqr = _eq3 - _eq1
+                        _lo = _eq1 - _ehp_iqr_k * _eiqr
+                        _hi = _eq3 + _ehp_iqr_k * _eiqr
+                        st.markdown(
+                            f"$$Q_1 = {_eq1:,.0f},\\quad Q_3 = {_eq3:,.0f},\\quad IQR = {_eiqr:,.0f}$$\n\n"
+                            f"$$\\text{{Lower}} = {_lo:,.0f},\\quad \\text{{Upper}} = {_hi:,.0f}$$"
+                        )
                         _display_cols = [c for c in [_col0, "판넬명", "장비번호", "상호", metric_sel] if c in _ts.columns]
                         plot_hist_with_tails(
                             _s, _bins, _lo, _hi,
                             title=metric_sel,
-                            tail_pct=_tail,
                             key=f"ehp_hist_{metric_sel}",
                             source_df=_ts,
                             val_col=metric_sel,
@@ -849,7 +861,7 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                             font=dict(size=10, color="#333333")),
                 margin=dict(l=60, r=160, t=60, b=50),
             )
-            st.plotly_chart(_sc_fig, use_container_width=True, key="ehp_ded_scatter")
+            _ev_sc = st.plotly_chart(_sc_fig, use_container_width=True, key="ehp_ded_scatter", on_select="rerun")
 
             if _trend_stats:
                 _sl  = _trend_stats["slope"]

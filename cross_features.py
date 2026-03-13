@@ -163,3 +163,70 @@ def build_elec_breakdown(
         agg["hvac_intensity"] = (agg["kwh_hvac"] / size).round(2)
 
     return agg.reset_index(drop=True)
+
+
+def build_water_breakdown(
+    water_df: pd.DataFrame,
+    meter_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Compute water fee category breakdown per brand.
+
+    Parameters
+    ----------
+    water_df : output of read_water_sheet — amounts in raw ₩
+    meter_df : optional; used only for size_m2 join (water_intensity)
+
+    Returns
+    -------
+    DataFrame with one row per (brand, building):
+        usage_m3, water_fee (water_excl+comm), sewage_fee (sewage_excl+comm),
+        levy_fee (levy_excl+comm), pipe_fee_comm, total,
+        water_pct, sewage_pct, levy_pct, pipe_pct,
+        avg_unit_price, water_intensity (m³/m²) if meter_df supplied
+    """
+    fee_cols = [
+        "usage_m3", "pipe_fee_comm",
+        "water_excl", "water_comm",
+        "sewage_excl", "sewage_comm",
+        "levy_excl", "levy_comm",
+        "total_excl", "total_comm", "total",
+        "avg_unit_price",
+    ]
+    agg = _agg_sum(water_df, fee_cols)
+    _to_num(agg, fee_cols)
+
+    # Combined fee categories
+    for dst, parts in [
+        ("water_fee",  ["water_excl", "water_comm"]),
+        ("sewage_fee", ["sewage_excl", "sewage_comm"]),
+        ("levy_fee",   ["levy_excl", "levy_comm"]),
+    ]:
+        present = [c for c in parts if c in agg.columns]
+        if present:
+            agg[dst] = agg[present].sum(axis=1)
+
+    # Percentages of total
+    total = agg["total"].replace(0, np.nan) if "total" in agg.columns else None
+    if total is not None:
+        for src, pct_col in [
+            ("water_fee",    "water_pct"),
+            ("sewage_fee",   "sewage_pct"),
+            ("levy_fee",     "levy_pct"),
+            ("pipe_fee_comm", "pipe_pct"),
+        ]:
+            if src in agg.columns:
+                agg[pct_col] = (agg[src] / total * 100).round(1)
+
+    # Water intensity (m³/m²)
+    if meter_df is not None and "size_m2" in meter_df.columns and "usage_m3" in agg.columns:
+        join_on = ["brand", "building"] if "building" in agg.columns else ["brand"]
+        size_side = (
+            meter_df[join_on + ["size_m2"]]
+            .groupby(join_on, as_index=False)["size_m2"]
+            .first()
+        )
+        agg = agg.merge(size_side, on=join_on, how="left")
+        size = to_numeric_series(agg["size_m2"]).replace(0, np.nan)
+        agg["water_intensity"] = (to_numeric_series(agg["usage_m3"]) / size).round(4)
+
+    return agg.reset_index(drop=True)
