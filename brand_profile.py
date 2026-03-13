@@ -292,9 +292,22 @@ def _render_single_brand_profile(
         if prev_billing_period and billing_period else billing_period or "—"
     )
 
-    st.markdown(f"## {selected}")
+    # Brand header card
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#4C72B010,#4C72B005);'
+        f'border:1px solid #4C72B025;border-radius:12px;padding:16px 20px;margin-bottom:16px">'
+        f'<div style="font-size:1.5rem;font-weight:800;color:#333;margin-bottom:8px">'
+        f'{selected}</div>'
+        f'<div style="display:flex;gap:24px;font-size:0.88rem;color:#555">'
+        f'<span>🏢 <b>{bldg}</b></span>'
+        f'<span>📍 <b>{floor}</b></span>'
+        f'<span>📐 <b>{size_str}</b></span>'
+        f'<span>📅 <b>{period_str}</b></span>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    # ── Debug: brand name matching across sheets ──────────────────────────────
+    # Debug: brand name matching across sheets
     _sheet_dfs = {
         "수도광열비": billing_df,
         "수도": water_df,
@@ -306,20 +319,13 @@ def _render_single_brand_profile(
         if df is not None and not df.empty and _filter_brand(df, selected).empty
     ]
     if _missing:
-        with st.expander("⚠️ 일부 시트에서 브랜드를 찾을 수 없음 (클릭하여 확인)"):
+        with st.expander("⚠️ 일부 시트에서 브랜드를 찾을 수 없음"):
             st.caption(f"선택된 브랜드: **{selected}**")
             for name, df in _sheet_dfs.items():
                 if df is not None and not df.empty and name in _missing:
                     similar = [b for b in df["brand"].astype(str).str.strip().unique()
                                if selected.strip().lower()[:3] in b.lower()]
                     st.caption(f"**{name}** 시트 유사 브랜드: {similar[:10] or '없음'}")
-
-    hc = st.columns(4)
-    hc[0].metric("건물", bldg)
-    hc[1].metric("층", floor)
-    hc[2].metric("면적", size_str if size_str != "—" else "정보 없음")
-    hc[3].metric("기준월", period_str)
-    st.divider()
 
     # ── Compute quadrant thresholds ───────────────────────────────────────────
     thresholds: dict[str, tuple] = {}
@@ -360,6 +366,63 @@ def _render_single_brand_profile(
         })
     if usage_rows:
         st.dataframe(pd.DataFrame(usage_rows), hide_index=True, use_container_width=True)
+
+    # ── Radar chart: brand vs peers (percentile) ─────────────────────────────
+    _radar_cats, _radar_brand, _radar_peer = [], [], []
+    for p in present:
+        col_c = f"{p}_current"
+        if col_c not in cur_df.columns:
+            continue
+        s = to_numeric_series(cur_df[col_c]).dropna()
+        bv = _v(row, col_c)
+        if s.empty or pd.isna(bv):
+            continue
+        pctile = float((s < bv).sum()) / len(s) * 100
+        _radar_cats.append(_LABEL.get(p, p))
+        _radar_brand.append(round(pctile, 1))
+        _radar_peer.append(50.0)
+    if len(_radar_cats) >= 3:
+        _rc1, _rc2 = st.columns([2, 1])
+        with _rc1:
+            _radar_cats_loop = _radar_cats + [_radar_cats[0]]
+            fig_radar = go.Figure()
+            fig_radar.add_trace(go.Scatterpolar(
+                r=_radar_brand + [_radar_brand[0]],
+                theta=_radar_cats_loop,
+                name=selected[:20],
+                fill="toself",
+                fillcolor="rgba(76,114,176,0.15)",
+                line=dict(color=_C_CURR, width=2.5),
+            ))
+            fig_radar.add_trace(go.Scatterpolar(
+                r=_radar_peer + [_radar_peer[0]],
+                theta=_radar_cats_loop,
+                name="중위 (50%)",
+                line=dict(color="#999", dash="dot", width=1.5),
+            ))
+            fig_radar.update_layout(
+                polar=dict(
+                    radialaxis=dict(range=[0, 100], tickvals=[25, 50, 75, 100],
+                                    ticktext=["25%", "50%", "75%", "100%"],
+                                    gridcolor="rgba(0,0,0,0.08)"),
+                    angularaxis=dict(gridcolor="rgba(0,0,0,0.08)"),
+                ),
+                title=dict(text="사용량 백분위 — 동종 대비 위치", font_size=13),
+                height=320, margin=dict(t=50, b=20, l=60, r=60),
+                legend=dict(orientation="h", y=-0.05),
+                showlegend=True,
+            )
+            st.plotly_chart(fig_radar, use_container_width=True, key="profile_radar")
+        with _rc2:
+            for cat, pctl in zip(_radar_cats, _radar_brand):
+                _clr = "#C44E52" if pctl >= 80 else "#DD8A00" if pctl >= 60 else "#2ca02c"
+                st.markdown(
+                    f'<div style="margin:6px 0;padding:6px 10px;border-left:3px solid {_clr};'
+                    f'border-radius:4px;font-size:0.85rem">'
+                    f'<b>{cat}</b> <span style="color:{_clr};font-weight:700">'
+                    f'상위 {100-pctl:.0f}%</span></div>',
+                    unsafe_allow_html=True,
+                )
 
     # ── Peer ranking ──────────────────────────────────────────────────────────
     peer_lines = []

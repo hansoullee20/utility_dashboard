@@ -125,6 +125,10 @@ def _render_trend_section(
     period_order = [p for p, _ in period_dfs]
     pivot = pivot.reindex([p for p in period_order if p in pivot.index])
 
+    # Moving average option
+    _show_ma = st.checkbox("3기간 이동평균 표시", key="trend_show_ma",
+                           help="3개월 이동평균선을 추가하여 추세 방향을 파악합니다.") if len(period_dfs) >= 3 else False
+
     # Plot
     fig = go.Figure()
     for brand in pivot.columns:
@@ -135,6 +139,18 @@ def _render_trend_section(
             name=str(brand)[:20],
             hovertemplate=f"<b>{brand}</b><br>%{{x}}: %{{y:,.1f}} {unit}<extra></extra>",
         ))
+        if _show_ma and len(pivot) >= 3:
+            ma = pivot[brand].rolling(3, min_periods=2).mean()
+            fig.add_trace(go.Scatter(
+                x=pivot.index,
+                y=ma,
+                mode="lines",
+                name=f"{str(brand)[:16]} MA3",
+                line=dict(dash="dot", width=1.5),
+                opacity=0.6,
+                showlegend=False,
+                hovertemplate=f"<b>{brand} MA3</b><br>%{{x}}: %{{y:,.1f}} {unit}<extra></extra>",
+            ))
     fig.update_layout(
         title=f"{_UTIL_META[_sel]['label']} 사용량 추이 — 상위 {_n_show}개 브랜드 ({unit})",
         height=450,

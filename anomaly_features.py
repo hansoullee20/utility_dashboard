@@ -294,33 +294,20 @@ def _add_consistency_signals(
     water_df: pd.DataFrame | None,
     hotwater_df: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Count zero-usage utilities per brand across meter + optional sheets."""
+    """Count zero-usage utilities per brand from meter readings only.
+
+    Previously also counted zeros from water/hotwater billing sheets, but
+    those are billing data (not usage), so comparing them to meter readings
+    was invalid and caused double-counting.
+    """
     out = df.copy()
     zero_cnt = pd.Series(0, index=df.index, dtype=int)
 
-    # Zero detection from meter current-usage columns
+    # Zero detection from meter current-usage columns only
     for pfx in _UTIL_PREFIXES:
         cur = f"{pfx}_current"
         if cur in out.columns:
             zero_cnt += (to_numeric_series(out[cur]).fillna(0) == 0).astype(int)
-
-    # Zero detection from water sheet
-    if water_df is not None and not water_df.empty and "usage_m3" in water_df.columns:
-        join_cols = [c for c in ["brand", "building"] if c in water_df.columns]
-        w_agg = (water_df.groupby(join_cols)["usage_m3"].sum()
-                 .reset_index().rename(columns={"usage_m3": "_w_m3"}))
-        tmp = out.merge(w_agg, on=join_cols, how="left")
-        zero_cnt += (tmp["_w_m3"].fillna(0) == 0).astype(int).values
-        out["water_sheet_m3"] = tmp["_w_m3"].values
-
-    # Zero detection from hot water sheet
-    if hotwater_df is not None and not hotwater_df.empty and "usage_m3" in hotwater_df.columns:
-        join_cols = [c for c in ["brand", "building"] if c in hotwater_df.columns]
-        hw_agg = (hotwater_df.groupby(join_cols)["usage_m3"].sum()
-                  .reset_index().rename(columns={"usage_m3": "_hw_m3"}))
-        tmp = out.merge(hw_agg, on=join_cols, how="left")
-        zero_cnt += (tmp["_hw_m3"].fillna(0) == 0).astype(int).values
-        out["hotwater_sheet_m3"] = tmp["_hw_m3"].values
 
     out["n_zero_utilities"]  = zero_cnt.values
     out["consistency_score"] = _normalize(zero_cnt.astype(float))
@@ -344,22 +331,23 @@ def _build_reason_flags(df: pd.DataFrame) -> pd.Series:
             if pr is not None and not pd.isna(pr) and pr >= 2.0:
                 s += f" vs건물 {pr:.1f}x"
             parts.append(s)
-        # 2. Worst unit cost Z ≥ 1.5
+        # 2. Worst unit cost Z ≥ 1.5 — shown as business-friendly grade
+        from utils import z_to_grade as _ztg
         _Z = [("수도단가", r.get("water_unit_z")),
               ("전기단가", r.get("elect_unit_z")),
               ("총비용/m²", r.get("total_cost_per_m2_z"))]
         _Z = [(l, float(v)) for l, v in _Z if v is not None and not pd.isna(v) and abs(v) >= 1.5]
         if _Z:
             l, v = max(_Z, key=lambda x: abs(x[1]))
-            parts.append(f"{l} Z{v:+.1f}")
+            parts.append(f"{l} {_ztg(v)}")
         # 3. HH quadrants
         hh = [lbl for pfx, lbl in _UTIL_LABELS.items() if r.get(f"{pfx}_quadrant") == "HH"]
         if hh:
             parts.append(f"HH({','.join(hh)})")
-        # 4. HVAC Z ≥ 2
+        # 4. HVAC intensity ≥ 2σ
         hz = r.get("hvac_intensity_z")
         if hz is not None and not pd.isna(hz) and abs(hz) >= 2.0:
-            parts.append(f"HVAC Z{hz:+.1f}")
+            parts.append(f"HVAC {_ztg(hz)}")
         # 5. Zero-usage ≥ 2
         nz = r.get("n_zero_utilities", 0) or 0
         if nz >= 2:

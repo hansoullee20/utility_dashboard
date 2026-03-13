@@ -532,11 +532,11 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
         cost_cols, col_labels = [], []
         for col, label in [
             ("water_unit_cost", "수도 단가(₩/m³)"),
-            ("water_unit_z",    "수도 Z"),
+            ("water_unit_z",    "수도 등급"),
             ("elect_unit_cost", "전기 단가(₩/kWh)"),
-            ("elect_unit_z",    "전기 Z"),
+            ("elect_unit_z",    "전기 등급"),
             ("total_cost_per_m2", "총비용(만₩/m²)"),
-            ("total_cost_per_m2_z", "총비용 Z"),
+            ("total_cost_per_m2_z", "총비용 등급"),
         ]:
             if col in unit_df.columns:
                 cost_cols.append(col)
@@ -549,9 +549,11 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
                 for _, r in flags.iterrows():
                     brand = str(r.get("brand", ""))
                     z_val = float(r.get(col, 0)) if not pd.isna(r.get(col)) else 0
+                    from utils import z_to_grade as _ztg
                     direction = "고비용" if z_val > 0 else "저비용"
-                    anom_brands.append((brand, label.replace(" Z", ""), z_val, direction))
-                    anom_rows.append([brand, label.replace(" Z", ""), _f(r.get(col), 2)])
+                    grade = _ztg(z_val)
+                    anom_brands.append((brand, label.replace(" 등급", ""), z_val, direction))
+                    anom_rows.append([brand, label.replace(" 등급", ""), grade])
 
         if anom_rows:
             story.append(_section_bar(f"비용 이상 브랜드 ({len(anom_rows)}건)", T, W))

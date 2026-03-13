@@ -135,7 +135,7 @@ def _prepare_billing_by_brand(billing_df: pd.DataFrame) -> pd.DataFrame:
 def _render_unit_costs(billing_df: pd.DataFrame, split_by_building: bool = True,
                        selected_util: dict | None = None) -> None:
     st.subheader("💰 단가 분석")
-    st.caption("유틸리티별 비용 분석. **Z-점수**는 그룹 평균으로부터의 편차 (|Z| ≥ 2 = 이상치)")
+    st.caption("유틸리티별 비용 분석. 또래 평균 대비 등급: 매우높음 / 높음 / 보통 / 낮음 / 매우낮음")
 
     bill_agg = _prepare_billing_by_brand(billing_df)
 
@@ -197,12 +197,16 @@ def _render_unit_costs(billing_df: pd.DataFrame, split_by_building: bool = True,
         st.markdown(stats_md)
     with _c_anom:
         if not anomalies.empty:
-            st.markdown(f"**⚠️ 이상치 {len(anomalies)}개** — |Z| ≥ {_Z_THRESH:.0f}")
+            from utils import z_col_to_badge as _z2b
+            st.markdown(f"**⚠️ 이상치 {len(anomalies)}개**")
             _anom_cols = [c for c in ["brand", "building", val_col, z_col] if c in anomalies.columns]
+            _anom_disp = anomalies[_anom_cols].copy()
+            if z_col in _anom_disp.columns:
+                _anom_disp[z_col] = _z2b(_anom_disp[z_col])
             _ren = {"brand": "브랜드", "building": "건물",
-                    val_col: f"비용 ({unit})", z_col: "Z-점수"}
+                    val_col: f"비용 ({unit})", z_col: "등급"}
             st.dataframe(
-                anomalies[_anom_cols].rename(columns=_ren).reset_index(drop=True),
+                _anom_disp.rename(columns=_ren).reset_index(drop=True),
                 hide_index=True, use_container_width=True,
             )
         else:
@@ -347,6 +351,7 @@ def _render_building_comparison(billing_df: pd.DataFrame, selected_util: dict) -
             color_col="building",
             key=f"cross_bldg_{val_col}",
             height=320,
+            show_logy=False,
         )
     with _bc2:
         disp = bldg_agg.copy()

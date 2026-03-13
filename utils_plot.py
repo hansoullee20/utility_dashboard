@@ -36,21 +36,24 @@ def bar_chart(
     color_col: str | None = "building",
     key: str | None = None,
     height: int = 420,
+    show_logy: bool = True,
 ) -> None:
     """Plotly bar chart with building-colour support and click-to-show row."""
+    _key = key or f"bar_{title[:30].replace(' ', '_')}"
+    _logy = st.checkbox("Log 스케일", key=f"{_key}_logy") if show_logy else False
     fig = px.bar(
         df, x=x, y=y,
         color=color_col if color_col and color_col in df.columns else None,
         title=title,
         labels={y: y_label, x: "Brand"},
         color_discrete_map=_BLDG_COLOR,
+        log_y=_logy,
     )
     fig.update_layout(
         height=height, xaxis_tickangle=-45, showlegend=True,
         margin=dict(t=50, b=80),
     )
     fig.update_traces(marker_line_width=0.5, marker_line_color="white")
-    _key = key or f"bar_{title[:30].replace(' ', '_')}"
     _ev = st.plotly_chart(fig, use_container_width=True, key=_key, on_select="rerun")
     _pts = _ev.selection.points if _ev and hasattr(_ev, "selection") else []
     if _pts:

@@ -252,6 +252,70 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
     )
 
 
+def _generate_excel_export(file_name, file_map, sheet_map, all_sheet_keys, prev_file):
+    """Generate a unified Excel workbook with analysis results across all modules."""
+    import io
+    import pandas as pd
+
+    cur_df, present = _load_meter_data_silent(
+        file_name, file_map, sheet_map, all_sheet_keys, prev_file)
+    sheets = _load_all_sheets(file_name, file_map[file_name], all_sheet_keys)
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # 1. Anomaly results
+        if cur_df is not None:
+            try:
+                from anomaly_features import build_anomaly_df
+                adf = build_anomaly_df(
+                    meter_df=cur_df,
+                    billing_df=sheets.get(BILLING_SHEET_NAME),
+                    elec_df=sheets.get(ELECTRICITY_SHEET_NAME),
+                    water_df=sheets.get(WATER_SHEET_NAME),
+                    hotwater_df=sheets.get(HOTWATER_SHEET_NAME),
+                )
+                if adf is not None and not adf.empty:
+                    adf.to_excel(writer, sheet_name="이상감지", index=False)
+            except Exception:
+                pass
+
+        # 2. Unit cost analysis
+        billing_df = sheets.get(BILLING_SHEET_NAME)
+        if billing_df is not None and cur_df is not None:
+            try:
+                from cross_features import build_unit_costs
+                udf = build_unit_costs(cur_df, billing_df)
+                if udf is not None and not udf.empty:
+                    udf.to_excel(writer, sheet_name="단가분석", index=False)
+            except Exception:
+                pass
+
+        # 3. Electricity breakdown
+        elec_df = sheets.get(ELECTRICITY_SHEET_NAME)
+        if elec_df is not None:
+            try:
+                from cross_features import build_elec_breakdown
+                ebr = build_elec_breakdown(elec_df, meter_df=cur_df)
+                if ebr is not None and not ebr.empty:
+                    ebr.to_excel(writer, sheet_name="전기분류", index=False)
+            except Exception:
+                pass
+
+        # 4. Meter data (검침 내역)
+        if cur_df is not None:
+            cur_df.to_excel(writer, sheet_name="검침내역", index=False)
+
+        # 5. Raw sheets
+        for label, key in [("수도", WATER_SHEET_NAME), ("온수", HOTWATER_SHEET_NAME),
+                           ("전기", ELECTRICITY_SHEET_NAME), ("청구", BILLING_SHEET_NAME)]:
+            df = sheets.get(key)
+            if df is not None and not df.empty:
+                df.to_excel(writer, sheet_name=label, index=False)
+
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ── Tier renderers ───────────────────────────────────────────────────────────
 
 def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
@@ -265,13 +329,26 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
         file_name, file_map, sheet_map, all_sheet_keys, prev_file,
         key_prefix="t1",
     )
-    from filters import brand_search_bar
+    from filters import brand_search_bar, render_active_filters
     brand_search_bar("t1")
+    render_active_filters("t1")
 
     # Anomaly detection — single page, no sub-tabs
+    prev_data = file_map.get(prev_file) if prev_file else None
+    prev_sheets = sheet_map.get(prev_file, []) if prev_file else None
+    prev_lbl = file_periods.get(prev_file) if prev_file else None
+    yoy_data = file_map.get(yoy_file) if yoy_file else None
+    yoy_sheets = sheet_map.get(yoy_file, []) if yoy_file else None
+    yoy_lbl = file_periods.get(yoy_file) if yoy_file else None
     render_anomaly_tab(
         cur_df, file_name, file_map[file_name], all_sheet_keys,
         split_by_building=split_bldg,
+        prev_file_data=prev_data,
+        prev_sheet_keys=prev_sheets,
+        prev_label=prev_lbl,
+        yoy_file_data=yoy_data,
+        yoy_sheet_keys=yoy_sheets,
+        yoy_label=yoy_lbl,
     )
 
 
@@ -292,11 +369,13 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
     present = []
     split_bldg = False
     ehp_sheet = None
+    from filters import render_active_filters as _raf
     if has_meter:
         cur_df, present, split_bldg, ref_df, ehp_sheet = _load_meter_data(
             file_name, file_map, sheet_map, all_sheet_keys, prev_file,
             key_prefix="t2",
         )
+        _raf("t2")
     elif has_util:
         # No meter sheet — render standalone filters for utility summary
         import pandas as _pd_u
@@ -600,30 +679,95 @@ def main():
     st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide")
     st.markdown("""
 <style>
-/* ── reduce top padding ── */
-.block-container { padding-top: 1rem !important; }
+/* ── Layout ── */
+.block-container { padding-top: 0.8rem !important; }
 header[data-testid="stHeader"] { height: 0; }
-/* ── st.tabs: larger, bolder tab labels ── */
-.stTabs [data-baseweb="tab-list"] { gap: 6px; }
+
+/* ── Tabs: premium look ── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+    background: linear-gradient(180deg, rgba(76,114,176,0.06) 0%, transparent 100%);
+    border-radius: 8px 8px 0 0;
+    padding: 4px 4px 0;
+}
 .stTabs [data-baseweb="tab"] {
-    font-size: 15px !important;
+    font-size: 14px !important;
     font-weight: 600 !important;
-    padding: 10px 22px !important;
-    border-radius: 6px 6px 0 0;
+    padding: 10px 20px !important;
+    border-radius: 8px 8px 0 0;
+    transition: all 0.2s ease;
 }
 .stTabs [aria-selected="true"] {
-    font-size: 15px !important;
+    font-size: 14px !important;
     font-weight: 700 !important;
+    background: white !important;
+    box-shadow: 0 -2px 6px rgba(0,0,0,0.06);
 }
-/* ── st.metric: smaller fonts to prevent overflow ── */
+
+/* ── Metrics: compact + polished ── */
 [data-testid="stMetricValue"] {
     font-size: 1.15rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.02em;
 }
 [data-testid="stMetricDelta"] {
-    font-size: 0.78rem !important;
+    font-size: 0.76rem !important;
+    font-weight: 500 !important;
 }
 [data-testid="stMetricLabel"] {
     font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    opacity: 0.85;
+}
+
+/* ── Container borders: subtle shadow ── */
+[data-testid="stExpander"],
+div[data-testid="stVerticalBlock"] > div[style*="border"] {
+    border-radius: 10px !important;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+
+/* ── DataFrames: tighter row height ── */
+.stDataFrame [data-testid="stDataFrameResizable"] {
+    font-size: 0.85rem !important;
+}
+
+/* ── Sidebar: clean dividers ── */
+section[data-testid="stSidebar"] hr {
+    margin: 0.5rem 0 !important;
+    border-color: rgba(0,0,0,0.08);
+}
+section[data-testid="stSidebar"] .stSubheader {
+    font-size: 0.9rem !important;
+}
+
+/* ── Chart containers: subtle lift ── */
+[data-testid="stPlotlyChart"] {
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* ── Download buttons: full-width style ── */
+.stDownloadButton button {
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    transition: transform 0.15s ease;
+}
+.stDownloadButton button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+
+/* ── Selectbox/multiselect: rounded ── */
+[data-baseweb="select"] > div {
+    border-radius: 8px !important;
+}
+
+/* ── Caption styling ── */
+.stCaption {
+    opacity: 0.75;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -698,20 +842,47 @@ header[data-testid="stHeader"] { height: 0; }
         st.warning(t("no_sheets_warn"))
         st.stop()
 
-    # ── Three-tier navigation ────────────────────────────────────────────────
+    # ── Quick risk count for nav badge ─────────────────────────────────────
+    _risk_badge = ""
+    if "검침 내역" in all_sheet_keys:
+        _cache_key = f"_risk_cnt_{file_name}"
+        if _cache_key not in st.session_state:
+            _qdf, _qpresent = _load_meter_data_silent(
+                file_name, file_map, sheet_map, all_sheet_keys, prev_file)
+            if _qdf is not None:
+                try:
+                    from anomaly_features import build_anomaly_df as _q_build
+                    _q_sheets = _load_all_sheets(file_name, file_map[file_name], all_sheet_keys)
+                    _q_adf = _q_build(meter_df=_qdf,
+                                      billing_df=_q_sheets.get(BILLING_SHEET_NAME),
+                                      elec_df=_q_sheets.get(ELECTRICITY_SHEET_NAME),
+                                      water_df=_q_sheets.get(WATER_SHEET_NAME),
+                                      hotwater_df=_q_sheets.get(HOTWATER_SHEET_NAME))
+                    _n_risk = int((_q_adf["risk_level"].isin(["🔴 위험", "🟠 주의"])).sum())
+                    st.session_state[_cache_key] = _n_risk
+                except Exception:
+                    st.session_state[_cache_key] = 0
+        _n_risk = st.session_state.get(_cache_key, 0)
+        _risk_badge = f" ({_n_risk})" if _n_risk else ""
+
+    # ── Handle brand→profile navigation ────────────────────────────────────
     _NAV_ANOMALY = t("nav_anomaly")
     _NAV_INSIGHT = t("nav_insight")
     _NAV_PROFILE = t("nav_profile")
     _NAV_DETAIL  = t("nav_detail")
+    _NAV_ANOMALY_BADGE = f"{_NAV_ANOMALY}{_risk_badge}"
 
     import streamlit_antd_components as sac
     _nav_key = f"nav_{file_name}"
-    _valid_labels = {_NAV_ANOMALY, _NAV_INSIGHT, _NAV_PROFILE, _NAV_DETAIL}
-    if st.session_state.get(_nav_key) not in _valid_labels:
-        st.session_state[_nav_key] = _NAV_ANOMALY
+    _valid_labels = {_NAV_ANOMALY_BADGE, _NAV_INSIGHT, _NAV_PROFILE, _NAV_DETAIL}
+    # If brand was clicked in anomaly tab, switch to profile
+    if st.session_state.get("_goto_profile_brand"):
+        st.session_state[_nav_key] = _NAV_PROFILE
+    elif st.session_state.get(_nav_key) not in _valid_labels:
+        st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
     with st.sidebar:
         nav_mode = sac.tabs(
-            [sac.TabsItem(label=_NAV_ANOMALY),
+            [sac.TabsItem(label=_NAV_ANOMALY_BADGE),
              sac.TabsItem(label=_NAV_INSIGHT),
              sac.TabsItem(label=_NAV_PROFILE),
              sac.TabsItem(label=_NAV_DETAIL)],
@@ -756,13 +927,36 @@ header[data-testid="stHeader"] { height: 0; }
                 use_container_width=True,
             )
 
+        # ── Excel export ────────────────────────────────────────────────
+        st.subheader("📊 데이터 내보내기")
+        _xl_key = f"sidebar_xl_{file_name}"
+        if st.button("📊 Excel 내보내기", key="gen_xl_sidebar", use_container_width=True):
+            with st.spinner("Excel 생성 중…"):
+                try:
+                    _xl = _generate_excel_export(
+                        file_name, file_map, sheet_map, all_sheet_keys, prev_file,
+                    )
+                    st.session_state[_xl_key] = _xl
+                    st.success("생성 완료!")
+                except Exception as _e:
+                    st.error(f"Excel 생성 실패: {_e}")
+        if _xl_key in st.session_state:
+            st.download_button(
+                "⬇️ Excel 다운로드",
+                st.session_state[_xl_key],
+                file_name="유틸리티_분석.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_xl_sidebar",
+                use_container_width=True,
+            )
+
         st.divider()
         debug = st.checkbox(t("debug"), value=False)
 
     # ── Route to tier ────────────────────────────────────────────────────────
     yoy_file = _find_yoy_file(file_name)
 
-    if nav_mode == _NAV_ANOMALY:
+    if nav_mode == _NAV_ANOMALY_BADGE:
         _render_tier1_anomaly(
             file_name, file_map, sheet_map, all_sheet_keys,
             prev_file, file_periods, meter_files, yoy_file=yoy_file,
@@ -776,6 +970,10 @@ header[data-testid="stHeader"] { height: 0; }
         )
 
     elif nav_mode == _NAV_PROFILE:
+        # Handle brand navigation from anomaly tab
+        _goto = st.session_state.pop("_goto_profile_brand", None)
+        if _goto:
+            st.session_state["profile_brand_select"] = _goto
         if "검침 내역" not in all_sheet_keys:
             st.info("브랜드 프로필을 위해 검침 내역 시트가 필요합니다.")
         else:

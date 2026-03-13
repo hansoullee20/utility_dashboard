@@ -199,3 +199,31 @@ def brand_search_bar(key_prefix: str = "") -> None:
     """
     skey = f"{key_prefix}_brand_search"
     st.text_input("🔍 브랜드 검색", placeholder="브랜드명 입력...", key=skey)
+
+
+def render_active_filters(key_prefix: str = "") -> None:
+    """Show compact pills for active filters (building/floor/vacancy/search)."""
+    bldg = st.session_state.get(f"{key_prefix}_building", ["All"])
+    floor = st.session_state.get(f"{key_prefix}_floor", ["All"])
+    gong = st.session_state.get(f"{key_prefix}_gongshil", "All")
+    search = st.session_state.get(f"{key_prefix}_brand_search", "").strip()
+
+    pills: list[str] = []
+    if bldg and "All" not in bldg:
+        pills.append(f"건물: {','.join(bldg)}")
+    if floor and "All" not in floor:
+        pills.append(f"층: {','.join(floor[:5])}{'…' if len(floor) > 5 else ''}")
+    if gong == "Exclude Vacancy":
+        pills.append("공실 제외")
+    elif gong == "Vacancy Only":
+        pills.append("공실만")
+    if search:
+        pills.append(f"검색: {search}")
+
+    if pills:
+        _html = " ".join(
+            f'<span style="background:#4C72B0;color:#fff;padding:2px 8px;'
+            f'border-radius:12px;font-size:0.8em;margin-right:4px">{p}</span>'
+            for p in pills
+        )
+        st.markdown(f"🔖 {_html}", unsafe_allow_html=True)

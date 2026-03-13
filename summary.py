@@ -138,10 +138,22 @@ def render_summary_view(
     else:
         _ht = pd.DataFrame(columns=["brand","heat_total"])
 
-    merged = _w.merge(_hw, on="brand", how="outer").merge(_el, on="brand", how="outer").merge(_ht, on="brand", how="outer")
+    # Heat volume (m³) from meter data
+    if meter_df is not None and not meter_df.empty and "heat_current" in meter_df.columns:
+        from data import to_numeric_series as _tns
+        _hm = meter_df.copy()
+        _hm["heat_m3"] = _tns(_hm["heat_current"])
+        _hm = _hm.groupby("brand").agg(heat_m3=("heat_m3", "sum")).reset_index()
+    else:
+        _hm = pd.DataFrame(columns=["brand", "heat_m3"])
+
+    merged = (_w.merge(_hw, on="brand", how="outer")
+                .merge(_el, on="brand", how="outer")
+                .merge(_ht, on="brand", how="outer")
+                .merge(_hm, on="brand", how="outer"))
     # Fill missing utilities with 0
     for col in ["water_total","hw_total","elec_total","heat_total","kwh_total","kwh_hvac","size_m2",
-                "water_m3","hw_m3"]:
+                "water_m3","hw_m3","heat_m3"]:
         if col in merged.columns:
             merged[col] = merged[col].fillna(0)
         else:
@@ -241,6 +253,27 @@ def render_summary_view(
             mc[3].metric("온수", f"{_fmt_won(merged['hw_total'].sum())} ({merged['hw_total'].sum()/_util_sum*100:.0f}%)")
             mc[4].metric("전기", f"{_fmt_won(merged['elec_total'].sum())} ({merged['elec_total'].sum()/_util_sum*100:.0f}%)")
             mc[5].metric("난방", f"{_fmt_won(merged['heat_total'].sum())} ({merged['heat_total'].sum()/_util_sum*100:.0f}%)")
+
+    # Mini composition bar
+    _w_p = merged["water_total"].sum() / _util_sum * 100 if _util_sum else 0
+    _hw_p = merged["hw_total"].sum() / _util_sum * 100 if _util_sum else 0
+    _el_p = merged["elec_total"].sum() / _util_sum * 100 if _util_sum else 0
+    _ht_p = merged["heat_total"].sum() / _util_sum * 100 if _util_sum else 0
+    st.markdown(
+        f'<div style="display:flex;height:8px;border-radius:4px;overflow:hidden;margin:4px 0 8px">'
+        f'<div style="width:{_w_p}%;background:#4C72B0" title="수도 {_w_p:.0f}%"></div>'
+        f'<div style="width:{_hw_p}%;background:#C44E52" title="온수 {_hw_p:.0f}%"></div>'
+        f'<div style="width:{_el_p}%;background:#DD8A00" title="전기 {_el_p:.0f}%"></div>'
+        f'<div style="width:{_ht_p}%;background:#E377C2" title="난방 {_ht_p:.0f}%"></div>'
+        f'</div>'
+        f'<div style="display:flex;gap:16px;font-size:0.72rem;color:#666;margin-bottom:4px">'
+        f'<span>■ 수도 {_w_p:.0f}%</span>'
+        f'<span style="color:#C44E52">■ 온수 {_hw_p:.0f}%</span>'
+        f'<span style="color:#DD8A00">■ 전기 {_el_p:.0f}%</span>'
+        f'<span style="color:#E377C2">■ 난방 {_ht_p:.0f}%</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     _has_yoy = any(d is not None for d in [yoy_water_df, yoy_hotwater_df, yoy_elec_df, yoy_billing_df])
 
@@ -537,16 +570,37 @@ def render_summary_view(
             ("🌡️ 온수", "hw_m3",     "#C44E52", "온수 (m³)"),
             ("⚡ 전기",  "kwh_total", "#DD8A00", "전기 (kWh)"),
         ]
+        # Per-m² columns for area normalization toggle
+        _sz = merged["size_m2"].replace(0, float("nan"))
+        for _uc, _pm2c in [("water_m3", "water_m3_pm2"),
+                            ("hw_m3", "hw_m3_pm2"),
+                            ("kwh_total", "kwh_total_pm2")]:
+            if _uc in merged.columns:
+                merged[_pm2c] = (merged[_uc] / _sz).round(4)
+
         _avail_cats = [label for label, col, _, _ in _CAT_META if merged[col].sum() > 0]
         if not _avail_cats:
             st.info("사용량 데이터가 없습니다.")
         else:
-            _cat_sel = st.radio("분석 기준", _avail_cats, horizontal=True, key="sum_rank_cat")
-            _sel_col  = next(col for label, col, _, _ in _CAT_META if label == _cat_sel)
+            _fc1, _fc2 = st.columns([3, 1])
+            with _fc1:
+                _cat_sel = st.radio("분석 기준", _avail_cats, horizontal=True, key="sum_rank_cat")
+            with _fc2:
+                _per_m2 = st.checkbox("m²당", key="sum_rank_per_m2",
+                                      help="면적당 사용량으로 정규화하여 대형 매장 편향 제거")
+
+            _raw_col  = next(col for label, col, _, _ in _CAT_META if label == _cat_sel)
             _sel_clr  = next(clr for label, col, clr, _ in _CAT_META if label == _cat_sel)
-            _sel_label = next(lbl for label, col, clr, lbl in _CAT_META if label == _cat_sel)
-        _sel_series = merged[_sel_col]
-        _UNIT_MAP = {"water_m3": "m³", "hw_m3": "m³", "kwh_total": "kWh"}
+            _raw_label = next(lbl for label, col, clr, lbl in _CAT_META if label == _cat_sel)
+            if _per_m2 and f"{_raw_col}_pm2" in merged.columns:
+                _sel_col = f"{_raw_col}_pm2"
+                _sel_label = _raw_label.replace("(", "(/m² ").replace(")", ")")
+            else:
+                _sel_col = _raw_col
+                _sel_label = _raw_label
+        _sel_series = merged[_sel_col].dropna()
+        _UNIT_MAP = {"water_m3": "m³", "hw_m3": "m³", "kwh_total": "kWh",
+                     "water_m3_pm2": "m³/m²", "hw_m3_pm2": "m³/m²", "kwh_total_pm2": "kWh/m²"}
         _sel_unit = _UNIT_MAP.get(_sel_col, "")
 
         # Derived stats for selected series
@@ -564,50 +618,6 @@ def render_summary_view(
         )
 
         _n_brands = len(merged)
-
-        def _usage_summary(col: str, label: str, icon: str, unit: str) -> str:
-            s = merged[col]
-            if s.sum() == 0:
-                return ""
-            _pos = s[s > 0]
-            _up  = _iqr_upper(_pos) if len(_pos) >= 4 else float("inf")
-            _n_out = int((s > _up).sum())
-            _top  = merged.loc[s.idxmax()]
-            _med  = s.median()
-            _avg  = s.mean()
-            _skew = "⚠️ 평균>중앙값 (고사용 브랜드 견인)" if _avg > _med * 1.1 else "✅ 분포 균등"
-            lines = [
-                f"#### {icon} {label}",
-                f"- 합계 **{s.sum():,.1f} {unit}** | 평균 {_avg:,.1f} | 중앙값 {_med:,.1f} — {_skew}",
-                f"- 1위: **{_top['brand']}** {_top[col]:,.1f} {unit} (중앙값의 {_top[col]/_med:.1f}배)" if _med > 0 else f"- 1위: **{_top['brand']}** {_top[col]:,.1f} {unit}",
-                f"- 상위 이상치: **{_n_out}개**" + (" — 계량기 점검 및 누수 여부 확인 권장" if _n_out > 0 else " — 없음"),
-            ]
-            return "\n".join(lines)
-
-        with st.expander("이 탭 설명"):
-            st.markdown("""
-**어떤 브랜드가 유틸리티를 가장 많이 사용하고 있나요?**
-
-수도(m³)·온수(m³)·전기(kWh) 사용량을 항목별로 나눠 브랜드 순위를 매기는 탭입니다.
-
-- **분석 기준**: 수도·온수·전기 개별 항목 선택
-- **순위 차트**: 상위 N개 브랜드 사용량 비교.
-- **박스플롯**: 선택 기준의 통계 분포 및 이상치 브랜드 테이블.
-- **히스토그램**: 사용량 분포의 전체 형태. 주황색 구간은 테일(이상치 영역).
-
-> **이상치 판별 기준 (IQR 방식)**
-> **상위 이상치**: Q3 + 1.5×IQR 초과 — 비정상적으로 높은 사용량.
-> **하위 이상치**: Q1 − 1.5×IQR 미만 — 비정상적으로 낮은 사용량(미계량·공실 의심).
-""")
-        with st.expander("현재 데이터 해석"):
-            for _col, _lbl, _ico, _u in [
-                ("water_m3", "수도", "💧", "m³"),
-                ("hw_m3", "온수", "🌡️", "m³"),
-                ("kwh_total", "전기", "⚡", "kWh"),
-            ]:
-                _s = _usage_summary(_col, _lbl, _ico, _u)
-                if _s:
-                    st.markdown(_s)
 
         # ── Metrics row ──────────────────────────────────────────────────────
         with st.container(border=True):
@@ -661,7 +671,11 @@ def render_summary_view(
         )
 
         if _rank_view == "순위 차트":
-            _n = st.slider("상위 N개", 1, len(merged), min(20, len(merged)), key="sum_rank_n")
+            _rc1, _rc2 = st.columns([3, 1])
+            with _rc1:
+                _n = st.slider("상위 N개", 1, len(merged), min(20, len(merged)), key="sum_rank_n")
+            with _rc2:
+                _rank_logy = st.checkbox("Log 스케일", key="sum_rank_logy")
             _top = merged.nlargest(_n, _sel_col).sort_values(_sel_col, ascending=True)
             _xv = _top[_sel_col].values
             fig_r = go.Figure()
@@ -682,10 +696,13 @@ def render_summary_view(
                     font=dict(size=11, color="#8B2BE2"),
                     bgcolor="rgba(255,255,255,0.6)", bordercolor="#8B2BE2", borderwidth=1,
                 )
+            _xaxis_cfg = dict(griddash="dot")
+            if _rank_logy:
+                _xaxis_cfg["type"] = "log"
             fig_r.update_layout(
                 barmode="relative", height=max(480, _n * 22 + 80),
                 xaxis_title=f"{_sel_label} ({_sel_unit})",
-                xaxis=dict(griddash="dot"),
+                xaxis=_xaxis_cfg,
                 legend=dict(x=1.02, y=0.5, xanchor="left", yanchor="middle"),
                 margin=dict(l=10, r=100, t=30, b=40),
             )
@@ -760,6 +777,107 @@ def render_summary_view(
             except Exception as _e:
                 st.warning(f"수도 분류 로드 실패: {_e}")
 
+        # ── Building comparison dashboard ─────────────────────────────────
+        if "building" in merged.columns and merged["building"].nunique() > 1:
+            st.divider()
+            st.markdown("#### 🏢 건물별 비교")
+            _bld_agg_cols = dict(
+                brands=("brand", "count"),
+                area=("size_m2", "sum"),
+                water_m3=("water_m3", "sum"),
+                hw_m3=("hw_m3", "sum"),
+                kwh_total=("kwh_total", "sum"),
+            )
+            if "heat_m3" in merged.columns and merged["heat_m3"].sum() > 0:
+                _bld_agg_cols["heat_m3"] = ("heat_m3", "sum")
+            _bld_agg = merged.groupby("building").agg(**_bld_agg_cols
+            ).reindex(["A", "B", "C", "D"]).dropna(how="all")
+            _bld_area = _bld_agg["area"].replace(0, float("nan"))
+            _bld_agg["water_pm2"] = (_bld_agg["water_m3"] / _bld_area).round(3)
+            _bld_agg["hw_pm2"] = (_bld_agg["hw_m3"] / _bld_area).round(3)
+            _bld_agg["kwh_pm2"] = (_bld_agg["kwh_total"] / _bld_area).round(2)
+            _has_heat_vol = "heat_m3" in _bld_agg.columns and _bld_agg["heat_m3"].sum() > 0
+            if _has_heat_vol:
+                _bld_agg["heat_pm2"] = (_bld_agg["heat_m3"] / _bld_area).round(3)
+
+            from plotly.subplots import make_subplots as _make_sub
+
+            _bc1, _bc2 = st.columns(2)
+            with _bc1:
+                # Dual-axis bar: m³ (left) + kWh (right) per building
+                _fig_bld = _make_sub(specs=[[{"secondary_y": True}]])
+                _buildings = _bld_agg.index.tolist()
+                _fig_bld.add_trace(go.Bar(
+                    x=_buildings, y=_bld_agg["water_m3"], name="수도 (m³)",
+                    marker_color="#4C72B0", offsetgroup=0,
+                ), secondary_y=False)
+                _fig_bld.add_trace(go.Bar(
+                    x=_buildings, y=_bld_agg["hw_m3"], name="온수 (m³)",
+                    marker_color="#C44E52", offsetgroup=1,
+                ), secondary_y=False)
+                if _has_heat_vol:
+                    _fig_bld.add_trace(go.Bar(
+                        x=_buildings, y=_bld_agg["heat_m3"], name="난방 (m³)",
+                        marker_color="#E377C2", offsetgroup=2,
+                    ), secondary_y=False)
+                _fig_bld.add_trace(go.Bar(
+                    x=_buildings, y=_bld_agg["kwh_total"], name="전기 (kWh)",
+                    marker_color="#DD8A00", offsetgroup=3,
+                ), secondary_y=True)
+                _fig_bld.update_layout(
+                    title="건물별 총 사용량", barmode="group", height=380,
+                    margin=dict(t=45, b=30),
+                    legend=dict(orientation="h", yanchor="top", y=-0.12,
+                                xanchor="center", x=0.5, font=dict(size=10)),
+                )
+                _fig_bld.update_yaxes(title_text="m³", secondary_y=False)
+                _fig_bld.update_yaxes(title_text="kWh", secondary_y=True)
+                st.plotly_chart(_fig_bld, use_container_width=True, key="sum_bld_abs")
+
+            with _bc2:
+                # Dual-axis bar: per-m² usage per building
+                _fig_pm2 = _make_sub(specs=[[{"secondary_y": True}]])
+                _fig_pm2.add_trace(go.Bar(
+                    x=_buildings, y=_bld_agg["water_pm2"], name="수도 (m³/m²)",
+                    marker_color="#4C72B0", offsetgroup=0,
+                ), secondary_y=False)
+                _fig_pm2.add_trace(go.Bar(
+                    x=_buildings, y=_bld_agg["hw_pm2"], name="온수 (m³/m²)",
+                    marker_color="#C44E52", offsetgroup=1,
+                ), secondary_y=False)
+                if _has_heat_vol:
+                    _fig_pm2.add_trace(go.Bar(
+                        x=_buildings, y=_bld_agg["heat_pm2"], name="난방 (m³/m²)",
+                        marker_color="#E377C2", offsetgroup=2,
+                    ), secondary_y=False)
+                _fig_pm2.add_trace(go.Bar(
+                    x=_buildings, y=_bld_agg["kwh_pm2"], name="전기 (kWh/m²)",
+                    marker_color="#DD8A00", offsetgroup=3,
+                ), secondary_y=True)
+                _fig_pm2.update_layout(
+                    title="건물별 면적당 사용량", barmode="group", height=380,
+                    margin=dict(t=45, b=30),
+                    legend=dict(orientation="h", yanchor="top", y=-0.12,
+                                xanchor="center", x=0.5, font=dict(size=10)),
+                )
+                _fig_pm2.update_yaxes(title_text="m³/m²", secondary_y=False)
+                _fig_pm2.update_yaxes(title_text="kWh/m²", secondary_y=True)
+                st.plotly_chart(_fig_pm2, use_container_width=True, key="sum_bld_pm2")
+
+            # Summary table
+            _bld_disp = _bld_agg.copy()
+            _bld_disp.index.name = "건물"
+            _rename_map = {
+                "brands": "브랜드수", "area": "면적(m²)",
+                "water_m3": "수도 (m³)", "hw_m3": "온수 (m³)", "kwh_total": "전기 (kWh)",
+                "water_pm2": "수도/m²", "hw_pm2": "온수/m²", "kwh_pm2": "전기/m²",
+            }
+            if _has_heat_vol:
+                _rename_map["heat_m3"] = "난방 (m³)"
+                _rename_map["heat_pm2"] = "난방/m²"
+            _bld_disp = _bld_disp.rename(columns=_rename_map)
+            st.dataframe(_bld_disp.reset_index(), hide_index=True, use_container_width=True)
+
     # ═══════════════════════════ 유틸리티 구성 ════════════════════════════════
     with tab_mix:
         _mix_total = merged["util_total"].sum()
@@ -771,34 +889,11 @@ def render_summary_view(
         _elec_heavy = merged[merged["util_total"] > 0].copy()
         _elec_heavy["_ep"] = _elec_heavy["elec_total"] / _elec_heavy["util_total"]
         _top_elec = _elec_heavy.loc[_elec_heavy["_ep"].idxmax()]
-        with st.expander("이 탭 설명"):
-            st.markdown("""
-**유틸리티 비용이 수도·온수·전기·난방 중 어디에 집중되어 있나요?**
-
-전체 및 브랜드별 유틸리티 항목 구성 비율을 분석하는 탭입니다.
-
-- **도넛 차트**: 건물 전체 기준으로 수도·온수·전기·난방이 총비용에서 차지하는 비중을 보여줍니다. 특정 항목이 지나치게 높다면 해당 설비 점검이 필요할 수 있습니다.
-- **버블 스캐터**: 브랜드별 수도 비중(X)과 전기 비중(Y)을 동시에 비교합니다. 버블 크기는 총비용에 비례합니다. 우상단에 위치할수록 수도·전기 모두 높은 고비용 브랜드입니다.
-- **요약 테이블**: 비용 상위 20개 브랜드의 항목별 청구 금액을 한눈에 확인할 수 있습니다.
-""")
-        with st.expander("현재 데이터 해석"):
-            _mix_water_dom = _mix_w_pct > 40
-            _mix_elec_dom  = _mix_el_pct > 50
-            _mix_hw_dom    = _mix_hw_pct > 40
-            st.markdown(f"""
-#### 항목별 비중
-- **{_mix_dom[0]}** 이 전체 유틸리티 비용의 가장 큰 비중을 차지합니다 ({_mix_dom[1]:.1f}%)
-- 수도 **{_mix_w_pct:.1f}%** · 온수 **{_mix_hw_pct:.1f}%** · 전기 **{_mix_el_pct:.1f}%** · 난방 **{_mix_ht_pct:.1f}%**
-
-#### 설비 관리 포인트
-{"- ⚠️ **전기 비중 과다** — 냉난방 설비 효율 점검 또는 전력 집약 업종 현황 확인 권장" if _mix_elec_dom else "- ✅ 전기 비중 정상 범위"}
-{"- ⚠️ **수도 비중 과다** — 누수·고사용 업종(식음료 등) 집중 여부 확인 권장" if _mix_water_dom else "- ✅ 수도 비중 정상 범위"}
-{"- ⚠️ **온수 비중 과다** — 난방·급탕 사용 패턴 점검 권장" if _mix_hw_dom else ""}
-
-#### 브랜드별 의존도
-- **전기 의존도 최고**: {_top_elec['brand']} — 유틸리티 비용의 **{_top_elec['_ep']*100:.1f}%** 가 전기요금
-  {"→ 단독 전기 다소비 가능성, 계량기 점검 권장" if _top_elec['_ep'] > 0.7 else "→ 업종 특성상 일반적인 수준일 수 있음"}
-""")
+        st.caption(
+            f"비중: 수도 {_mix_w_pct:.0f}% · 온수 {_mix_hw_pct:.0f}% · "
+            f"전기 {_mix_el_pct:.0f}% · 난방 {_mix_ht_pct:.0f}% — "
+            f"지배 항목: **{_mix_dom[0]}**"
+        )
         _mv1, _mv2 = st.columns(2)
         with _mv1:
             # Overall donut
@@ -904,18 +999,6 @@ def render_summary_view(
     with tab_mgmt:
         st.subheader("수익성 분석 — 경영 보고")
         st.caption("미청구 손실 추정, 이상 징후 브랜드, 비용 집중도를 종합한 경영용 보고서입니다.")
-        with st.expander("이 탭 설명"):
-            st.markdown("""
-**유틸리티 관리에서 즉시 조치가 필요한 사안은 무엇인가요?**
-
-경영진이 빠르게 의사결정을 내릴 수 있도록 핵심 리스크를 정리한 탭입니다.
-
-- **미계량 브랜드**: 수도·온수·전기 중 하나 이상의 사용량이 0으로 기록된 브랜드입니다. 업종 특성상 정상일 수 있으나, 전 항목이 0인 경우 미터 설치 또는 계약 상태를 반드시 확인하세요.
-- **이상 징후 브랜드**: 총 유틸리티 비용이 통계적 정상 범위(IQR 상한)를 초과한 브랜드입니다. 누수·설비 과부하·계량 오류 가능성이 있습니다.
-- **우선 조치 테이블**: 이상치·전체 미계량·저납부 여부를 종합한 우선순위 점수로 정렬됩니다. 🔴 즉시 → 🟠 검토 → 🟡 관찰 → 🟢 정상 순서로 관리하세요.
-- **비용 집중도(Pareto)**: 상위 몇 개 브랜드가 전체 유틸리티 비용의 대부분을 차지하는지 보여줍니다. 80% 기준선을 참고해 집중 관리 대상을 선정하세요.
-""")
-
         # ── Leakage computation per sheet ──────────────────────────────────────
         _w_per_brand,  _w_total_leak  = _leakage_for(water_df,    "usage_m3",  "total")    if water_df    is not None else ({}, 0.0)
         _hw_per_brand, _hw_total_leak = _leakage_for(hotwater_df, "usage_m3",  "total")    if hotwater_df is not None else ({}, 0.0)
@@ -1092,13 +1175,7 @@ def render_summary_view(
         _vacancy_df = merged[merged["brand"].astype(str).str.contains("공실", na=False)].copy()
         if not _vacancy_df.empty:
             st.markdown(f"#### 🏚 공실 유틸리티 이상 소비 분석 ({len(_vacancy_df)}개 공실)")
-            st.markdown("""
-| 등급 | 기준 | 의심 원인 | 권고 조치 |
-|------|------|-----------|-----------|
-| 🔴 고의심 | 합계 ≥ 전체 중앙값 × 30% | 무단점거 · 대형 누수 | 즉시 현장 확인 |
-| 🟠 주의   | 합계 > 0, 중앙값 × 30% 미만 | 소규모 누수 · 계량기 오류 · 배관 역류 | 점검 권장 |
-| 🟢 정상   | 합계 = 0 | — | 이상 없음 |
-""")
+            st.caption("🔴 고의심: 중앙값 30%↑ · 🟠 주의: 소량 소비 · 🟢 정상: 소비 없음")
             _global_med = merged["util_total"].median()
             _vac_rows = []
             for _, vrow in _vacancy_df.iterrows():
@@ -1152,17 +1229,8 @@ def render_summary_view(
 
         # ── Priority action table ──────────────────────────────────────────────
         st.markdown("#### 우선 조치 브랜드")
-        st.markdown("""
-| 등급 | 점수 | 구성 조건 | 의미 | 권고 조치 |
-|------|------|-----------|------|-----------|
-| 🔴 즉시 | 4점 이상 | 이상치 + 전체미계량 등 복합 | 복수의 심각한 이상 징후 동시 발생 | 즉시 현장 점검 및 계약 검토 |
-| 🟠 검토 | 2–3점 | 이상치(3점) 또는 전체미계량(2점) | 단일 고위험 이상 징후 | 1개월 내 점검 예약 |
-| 🟡 관찰 | 1점 | 저납부(1점) — 동일 건물 중앙값의 40% 미만 | 미계량·업종 특성 가능성, 저사용 의심 | 업종 확인 후 필요 시 점검 |
-| 🟢 정상 | 0점 | 해당 없음 | 통계적 정상 범위 | 정기 모니터링 유지 |
-
-> **점수 산식**: 이상치(IQR 상한 초과) ×3 · 전체미계량(수도·온수·전기 모두 0) ×2 · 저납부(동 건물 중앙값의 40% 미만) ×1
-> 미계량은 업종 특성상 정상일 수 있으므로 단독으로 해석하지 마세요.
-""")
+        st.caption("🔴 즉시(≥4점) · 🟠 검토(2–3점) · 🟡 관찰(1점) · 🟢 정상(0점) — "
+                   "이상치 ×3 + 전체미계량 ×2 + 저납부 ×1")
 
         _action_rows = []
         for _, row in merged.iterrows():
@@ -1267,7 +1335,11 @@ def render_summary_view(
         _sorted["누적 비중 (%)"] = (_sorted["util_total"].cumsum() / _total_spend * 100).round(1)
         _sorted["순위"] = _sorted.index + 1
 
-        _pareto_n = st.slider("표시 브랜드 수", 5, min(50, len(_sorted)), min(20, len(_sorted)), key="sum_pareto_n")
+        _pc1, _pc2 = st.columns([3, 1])
+        with _pc1:
+            _pareto_n = st.slider("표시 브랜드 수", 5, min(50, len(_sorted)), min(20, len(_sorted)), key="sum_pareto_n")
+        with _pc2:
+            _pareto_logy = st.checkbox("Log 스케일", key="sum_pareto_logy")
         _pareto = _sorted.head(_pareto_n)
 
         fig_p = go.Figure()
@@ -1289,9 +1361,12 @@ def render_summary_view(
             yaxis="y2", line=dict(color="#C44E52", width=2),
             marker=dict(size=5),
         ))
+        _y1_cfg = dict(title="원", gridcolor="#DDDDDD", griddash="dot")
+        if _pareto_logy:
+            _y1_cfg["type"] = "log"
         fig_p.update_layout(
             height=400, plot_bgcolor="white",
-            yaxis=dict(title="원", gridcolor="#DDDDDD", griddash="dot"),
+            yaxis=_y1_cfg,
             yaxis2=dict(title="누적 비중 (%)", overlaying="y", side="right",
                         range=[0, 105], showgrid=False),
             xaxis=dict(tickangle=-40),

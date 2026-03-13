@@ -112,23 +112,36 @@ def _render_analysis(
                      delta=f"-{n_vacant_filled}" if n_vacant_filled else None,
                      delta_color="inverse")
 
-        if n_vacant_new or n_vacant_filled:
-            _vac_ren = {"brand": "브랜드", "building": "건물", "floor": "층"}
-            _vc1, _vc2 = st.columns(2)
-            _vac_cols = [c for c in ["brand", "building", "floor"] if c in left_only.columns]
-            with _vc1:
-                if n_vacant_new:
-                    st.caption(f"📉 신규 공실 — {prev_label} 입점 → {curr_label} 공실")
-                    disp = vacant_new[_vac_cols].copy()
-                    disp.columns = [_vac_ren.get(c, c) for c in disp.columns]
-                    st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
-            with _vc2:
-                if n_vacant_filled:
-                    st.caption(f"📈 공실 해소 — {prev_label} 공실 → {curr_label} 입점")
-                    _rcols = [c for c in ["brand", "building", "floor_prev"] if c in right_only.columns]
-                    disp = vacant_filled[_rcols].copy()
-                    disp.columns = [_vac_ren.get(c, c) if c != "floor_prev" else "층" for c in disp.columns]
-                    st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+        _vac_ren = {"brand": "브랜드", "building": "건물", "floor": "층"}
+        _vac_cols = [c for c in ["brand", "building", "floor"] if c in left_only.columns]
+
+        _vc1, _vc2, _vc3 = st.columns(3)
+        with _vc1:
+            st.caption(f"🏚️ 공실 유지 ({n_vacant_both}개)")
+            if n_vacant_both:
+                _both_cols = [c for c in ["brand", "building", "floor"] if c in vacant_both.columns]
+                disp = vacant_both[_both_cols].copy()
+                disp.columns = [_vac_ren.get(c, c) for c in disp.columns]
+                st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+            else:
+                st.info("없음")
+        with _vc2:
+            st.caption(f"📉 신규 공실 ({n_vacant_new}개)")
+            if n_vacant_new:
+                disp = vacant_new[_vac_cols].copy()
+                disp.columns = [_vac_ren.get(c, c) for c in disp.columns]
+                st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+            else:
+                st.info("없음")
+        with _vc3:
+            st.caption(f"📈 공실 해소 ({n_vacant_filled}개)")
+            if n_vacant_filled:
+                _rcols = [c for c in ["brand", "building", "floor_prev"] if c in right_only.columns]
+                disp = vacant_filled[_rcols].copy()
+                disp.columns = [_vac_ren.get(c, c) if c != "floor_prev" else "층" for c in disp.columns]
+                st.dataframe(disp.reset_index(drop=True), hide_index=True, use_container_width=True)
+            else:
+                st.info("없음")
 
     # ── Tenant turnover ───────────────────────────────────────────────────
     if has_turnover:

@@ -6,7 +6,7 @@ Focused investigation view:
   3. Visual ranking      — composite bar chart + heatmap
   4. Detail tabs:
        📈 급등 감지   — MoM spike detection with peer context (unique)
-       🔍 일관성 검사 — zero-usage / sheet cross-check (unique)
+       🔍 일관성 검사 — zero-usage + 집계/부과 brand reconciliation
   5. Reference           — PDF, scoring method, raw data
 
 Cost / HVAC / consumption detail → Tier 2 인사이트 (no duplication).
@@ -47,6 +47,223 @@ _SCORE_CSCALE = [
     [0.60, "#DD8A00"],
     [1.00, "#C44E52"],
 ]
+
+
+# ── Insight summary ──────────────────────────────────────────────────────────
+
+def _render_insight_summary(anomaly_df: pd.DataFrame, sheets: dict) -> None:
+    """Compact insight summary from cross-analysis at the top of 점검대상."""
+    from utils import z_to_grade as _ztg
+
+    with st.container(border=True):
+        st.markdown(
+            '<p style="margin:0 0 8px;font-size:0.95rem;font-weight:700;'
+            'letter-spacing:0.02em;color:#4C72B0">'
+            '핵심 인사이트 요약</p>',
+            unsafe_allow_html=True,
+        )
+
+        insights: list[str] = []
+
+        # 1. Risk distribution
+        risk_counts = anomaly_df["risk_level"].value_counts()
+        n_danger = risk_counts.get("🔴 위험", 0)
+        n_caution = risk_counts.get("🟠 주의", 0)
+        if n_danger:
+            insights.append(f"🔴 **즉시 조사 필요** {n_danger}개 브랜드")
+        if n_caution:
+            insights.append(f"🟠 **모니터링 권장** {n_caution}개 브랜드")
+
+        # 2. Top spike brands
+        if "spike_max_pct" in anomaly_df.columns:
+            spike_df = anomaly_df[anomaly_df["spike_max_pct"] >= _SPIKE_HIGH].nlargest(3, "spike_max_pct")
+            if not spike_df.empty:
+                spike_parts = [
+                    f"{r['brand']}(+{r['spike_max_pct']:.0f}%)"
+                    for _, r in spike_df.iterrows()
+                ]
+                insights.append(f"📈 **급등**: {', '.join(spike_parts)}")
+
+        # 3. Cost outliers (unit cost Z-scores)
+        for z_col, label in [("water_unit_z", "수도단가"), ("elect_unit_z", "전기단가"),
+                             ("total_cost_per_m2_z", "총비용/m²")]:
+            if z_col in anomaly_df.columns:
+                extreme = anomaly_df[anomaly_df[z_col].abs() >= 2.0]
+                if not extreme.empty:
+                    top = extreme.nlargest(2, z_col, keep="first")
+                    parts = [f"{r['brand']}({_ztg(r[z_col])})" for _, r in top.iterrows()]
+                    insights.append(f"💰 **{label} 이상**: {', '.join(parts)}")
+
+        # 4. Zero-usage count
+        if "n_zero_utilities" in anomaly_df.columns:
+            n_zero = int((anomaly_df["n_zero_utilities"] > 0).sum())
+            if n_zero:
+                insights.append(f"⚠️ **미계량** {n_zero}개 브랜드")
+
+        # 5. Cross-sheet issues
+        if BILLING_SHEET_NAME in sheets:
+            insights.append("✅ 비용 시트 연계 완료")
+
+        if not insights:
+            st.info("특이 사항 없음")
+        else:
+            st.markdown(" · ".join(insights))
+
+
+# ── Zero-usage change detection (vs prev/yoy) ────────────────────────────────
+
+def _build_zero_set(file_data: bytes, sheet_keys: list[str]) -> dict[str, set[str]]:
+    """Build per-utility set of zero-usage brands from a period file.
+
+    Returns {utility_prefix: {brand_name, ...}} for brands with current==0.
+    """
+    from data import read_sheet
+    from features import apply_header_rows, build_from_two_files, create_change_columns, aggregate_by_brand
+    from data import to_numeric_series
+
+    meter_key = next((k for k in sheet_keys if k.strip() == "검침 내역"), None)
+    if not meter_key:
+        return {}
+    try:
+        raw = read_sheet("__zero__.xlsx", file_data, meter_key)
+        df_cur = apply_header_rows(raw)
+        df_cur["building"] = df_cur["building"].astype(str).str.strip()
+        df_cur = df_cur[df_cur["building"].isin({"A", "B", "C", "D"})].copy()
+        df = build_from_two_files(df_cur, None)
+        raw_df = create_change_columns(df)
+        agg = aggregate_by_brand(raw_df)
+    except Exception:
+        return {}
+
+    result: dict[str, set[str]] = {}
+    for pfx in _UTIL_PREFIXES:
+        col = f"{pfx}_current"
+        if col in agg.columns:
+            zeros = set(agg.loc[to_numeric_series(agg[col]).fillna(0) == 0, "brand"].astype(str))
+            if zeros:
+                result[pfx] = zeros
+    return result
+
+
+def _render_zero_change(
+    cur_df: pd.DataFrame,
+    prev_file_data: bytes | None,
+    prev_sheet_keys: list[str] | None,
+    prev_label: str | None,
+    yoy_file_data: bytes | None,
+    yoy_sheet_keys: list[str] | None,
+    yoy_label: str | None,
+) -> None:
+    """Compare zero-usage brands between current and previous/yoy periods."""
+    from data import to_numeric_series
+
+    # Current zero-usage sets
+    cur_zeros: dict[str, set[str]] = {}
+    for pfx in _UTIL_PREFIXES:
+        col = f"{pfx}_current"
+        if col in cur_df.columns:
+            zeros = set(cur_df.loc[to_numeric_series(cur_df[col]).fillna(0) == 0, "brand"].astype(str))
+            if zeros:
+                cur_zeros[pfx] = zeros
+
+    comparisons: list[tuple[str, dict[str, set[str]]]] = []
+    if prev_file_data and prev_sheet_keys:
+        prev_zeros = _build_zero_set(prev_file_data, prev_sheet_keys)
+        if prev_zeros:
+            comparisons.append((prev_label or "전월", prev_zeros))
+    if yoy_file_data and yoy_sheet_keys:
+        yoy_zeros = _build_zero_set(yoy_file_data, yoy_sheet_keys)
+        if yoy_zeros:
+            comparisons.append((yoy_label or "전년", yoy_zeros))
+
+    if not comparisons:
+        return
+
+    st.divider()
+    st.markdown("##### 미계량 변화 감지")
+    st.caption("이전 기간 대비 미계량 상태가 변한 브랜드를 표시합니다.")
+
+    for period_lbl, prev_zeros in comparisons:
+        rows: list[dict] = []
+        all_utils = sorted(set(cur_zeros.keys()) | set(prev_zeros.keys()))
+        for pfx in all_utils:
+            label = _UTIL_LABELS_UI.get(pfx, pfx)
+            cur_set = cur_zeros.get(pfx, set())
+            prev_set = prev_zeros.get(pfx, set())
+            # Newly zero (was metered, now zero)
+            for b in sorted(cur_set - prev_set):
+                rows.append({"브랜드": b, "유틸리티": label, "변화": "🔴 새로 미계량",
+                             "설명": f"{period_lbl}에는 계량 → 현재 미계량"})
+            # Recovered (was zero, now metered)
+            for b in sorted(prev_set - cur_set):
+                rows.append({"브랜드": b, "유틸리티": label, "변화": "🟢 계량 복구",
+                             "설명": f"{period_lbl}에는 미계량 → 현재 계량"})
+
+        if rows:
+            change_df = pd.DataFrame(rows)
+            n_new = sum(1 for r in rows if "새로" in r["변화"])
+            n_rec = sum(1 for r in rows if "복구" in r["변화"])
+            st.markdown(f"**vs {period_lbl}**: 🔴 새로 미계량 {n_new}건 · 🟢 계량 복구 {n_rec}건")
+            st.dataframe(change_df, hide_index=True, use_container_width=True)
+        else:
+            st.success(f"vs {period_lbl}: 미계량 변화 없음")
+
+
+# ── Period spike detection (prev/yoy) ────────────────────────────────────────
+
+def _render_period_spike(
+    file_data: bytes,
+    sheet_keys: list[str],
+    period_label: str,
+    split_by_building: bool,
+    key_suffix: str = "",
+) -> None:
+    """Load meter data from a different period file and render spike detection."""
+    from data import read_sheet
+    from features import (
+        apply_header_rows, build_from_two_files,
+        create_change_columns, aggregate_by_brand,
+    )
+
+    meter_key = next((k for k in sheet_keys if k.strip() == "검침 내역"), None)
+    if not meter_key:
+        st.info(f"{period_label}: 검침 내역 시트를 찾을 수 없습니다.")
+        return
+
+    _tmp_name = f"__period_{period_label}__.xlsx"
+
+    try:
+        raw = read_sheet(_tmp_name, file_data, meter_key)
+        df_cur = apply_header_rows(raw)
+        df_cur["building"] = df_cur["building"].astype(str).str.strip()
+        df_cur = df_cur[df_cur["building"].isin({"A", "B", "C", "D"})].copy()
+        df = build_from_two_files(df_cur, None)
+        raw_df = create_change_columns(df)
+        agg_df = aggregate_by_brand(raw_df)
+    except Exception as e:
+        st.warning(f"{period_label} 데이터 로드 실패: {e}")
+        return
+
+    # Load supporting sheets and build anomaly df
+    sheets = _load_sheets(_tmp_name, file_data, sheet_keys)
+    try:
+        period_anomaly = build_anomaly_df(
+            meter_df=agg_df,
+            billing_df=sheets.get(BILLING_SHEET_NAME),
+            elec_df=sheets.get(ELECTRICITY_SHEET_NAME),
+            water_df=sheets.get(WATER_SHEET_NAME),
+            hotwater_df=sheets.get(HOTWATER_SHEET_NAME),
+        )
+    except Exception as e:
+        st.warning(f"{period_label} 이상감지 분석 실패: {e}")
+        return
+
+    if period_anomaly.empty:
+        st.info(f"{period_label}: 분석 가능한 데이터가 없습니다.")
+        return
+
+    _render_spike_tab(period_anomaly, split_by_building,
+                      key_suffix=key_suffix)
 
 
 def _handle_chart_click(ev, df: pd.DataFrame, field: str = "x",
@@ -96,20 +313,38 @@ def _load_sheets(file_name: str, file_data: bytes, all_sheet_keys: list[str]) ->
 def _render_kpis(df: pd.DataFrame, has_billing: bool, has_elec: bool) -> None:
     counts = df["risk_level"].value_counts()
     sources = ["검침"] + (["청구"] if has_billing else []) + (["전기"] if has_elec else [])
-    kpi_container = st.container(border=True)
-    with kpi_container:
-        cols = st.columns(5)
-        cols[0].metric("분석 브랜드", f"{len(df)}개",
-                       help="이상감지 분석 대상 전체 브랜드 수")
-        cols[1].metric("🔴 위험", f"{counts.get('🔴 위험', 0)}개",
-                       help="복합 이상 점수 ≥ 0.65 — 즉시 조사 필요")
-        cols[2].metric("🟠 주의", f"{counts.get('🟠 주의', 0)}개",
-                       help="복합 이상 점수 ≥ 0.40 — 모니터링 권장")
-        cols[3].metric("🟡 관찰", f"{counts.get('🟡 관찰', 0)}개",
-                       help="복합 이상 점수 ≥ 0.20 — 경미한 이상 신호")
-        cols[4].metric("🟢 정상", f"{counts.get('🟢 정상', 0)}개",
-                       help="복합 이상 점수 < 0.20 — 정상 범위")
-        st.caption(f"📂 분석 데이터: **{' · '.join(sources)}**")
+    n_total = len(df)
+    n_danger = counts.get("🔴 위험", 0)
+    n_caution = counts.get("🟠 주의", 0)
+    n_watch = counts.get("🟡 관찰", 0)
+    n_normal = counts.get("🟢 정상", 0)
+
+    # Risk gauge summary
+    _pct_risk = (n_danger + n_caution) / n_total * 100 if n_total else 0
+    _gauge_color = "#C44E52" if _pct_risk >= 30 else "#DD8A00" if _pct_risk >= 15 else "#2ca02c"
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,{_gauge_color}10,{_gauge_color}03);'
+        f'border-left:4px solid {_gauge_color};border-radius:8px;padding:12px 16px;margin-bottom:12px">'
+        f'<span style="font-size:1.3rem;font-weight:800;color:{_gauge_color}">'
+        f'{n_danger + n_caution}</span>'
+        f'<span style="font-size:0.9rem;color:#555"> / {n_total} 브랜드 조사 필요 '
+        f'({_pct_risk:.0f}%)</span>'
+        f'<span style="float:right;font-size:0.8rem;color:#888">📂 {" · ".join(sources)}</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    cols = st.columns(5)
+    cols[0].metric("분석 브랜드", f"{n_total}개",
+                   help="이상감지 분석 대상 전체 브랜드 수")
+    cols[1].metric("🔴 위험", f"{n_danger}개",
+                   help="복합 이상 점수 ≥ 0.65 — 즉시 조사 필요")
+    cols[2].metric("🟠 주의", f"{n_caution}개",
+                   help="복합 이상 점수 ≥ 0.40 — 모니터링 권장")
+    cols[3].metric("🟡 관찰", f"{n_watch}개",
+                   help="복합 이상 점수 ≥ 0.20 — 경미한 이상 신호")
+    cols[4].metric("🟢 정상", f"{n_normal}개",
+                   help="복합 이상 점수 < 0.20 — 정상 범위")
 
 
 # ── Section: Composite ranked bar chart ───────────────────────────────────────
@@ -159,10 +394,10 @@ def _render_heatmap(df: pd.DataFrame, n: int) -> None:
             col_labels.append(f"{label}\n사분면")
 
     for col, label in [
-        ("water_unit_z",        "수도\n단가Z"),
-        ("elect_unit_z",        "전기\n단가Z"),
-        ("total_cost_per_m2_z", "총비용\n/m²Z"),
-        ("hvac_intensity_z",    "HVAC\n강도Z"),
+        ("water_unit_z",        "수도\n단가등급"),
+        ("elect_unit_z",        "전기\n단가등급"),
+        ("total_cost_per_m2_z", "총비용\n/m²등급"),
+        ("hvac_intensity_z",    "HVAC\n강도등급"),
         ("n_zero_utilities",    "미계량\n항목수"),
     ]:
         if col in top.columns:
@@ -209,7 +444,9 @@ def _render_heatmap(df: pd.DataFrame, n: int) -> None:
 
 # ── Tab: 급등 감지 (MoM Spike Detection) ─────────────────────────────────────
 
-def _render_spike_tab(df: pd.DataFrame, split_by_building: bool) -> None:
+def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
+                      key_suffix: str = "") -> None:
+    sfx = key_suffix
     st.subheader("📈 전월 대비 급등 감지 — 상세 분석")
     st.caption(
         f"전월 대비 사용량 증가율이 🔴 {_SPIKE_CRITICAL:.0f}% 이상 / "
@@ -225,7 +462,7 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool) -> None:
     # ── Threshold selector ────────────────────────────────────────────────────
     thresh = st.slider(
         "급등 기준 (전월 대비 증가율 %)", 10, 300, int(_SPIKE_HIGH), step=10,
-        key="spike_thresh",
+        key=f"spike_thresh{sfx}",
         help="선택한 % 이상 증가한 브랜드만 표시합니다.",
     )
 
@@ -276,7 +513,7 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool) -> None:
         "유틸리티별 전월 대비 증가율",
         [p for p in _UTIL_PREFIXES if f"{p}_spike_pct" in df.columns],
         format_func=lambda p: _UTIL_LABELS_UI.get(p, p),
-        key="spike_util_sel",
+        key=f"spike_util_sel{sfx}",
     )
     pct_col = f"{util_sel}_spike_pct"
     flag_col = f"{util_sel}_spike_flag"
@@ -284,12 +521,14 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool) -> None:
     chart_df = df[["brand"] + [c for c in ["building", pct_col, flag_col] if c in df.columns]].copy()
     chart_df = chart_df[chart_df[pct_col].notna()].sort_values(pct_col, ascending=False).head(50)
 
+    _logy = st.checkbox("Log 스케일", key=f"spike_logy{sfx}")
     color_col = "building" if split_by_building and "building" in chart_df.columns else None
     fig = px.bar(
         chart_df, x="brand", y=pct_col,
         color=color_col, color_discrete_map=_BLDG_COLOR,
         title=f"{_UTIL_LABELS_UI.get(util_sel, util_sel)} 전월 대비 증가율 (%) — 상위 50개",
         labels={pct_col: "증가율 (%)", "brand": "브랜드"},
+        log_y=_logy,
     )
     for lvl, color, label in [
         (_SPIKE_CRITICAL, "#C44E52", f"급등 {_SPIKE_CRITICAL:.0f}%"),
@@ -309,64 +548,400 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool) -> None:
         height=420, xaxis_tickangle=-45,
         plot_bgcolor="white", margin=dict(t=55, b=90),
     )
-    ev = st.plotly_chart(fig, use_container_width=True, key="anom_spike_bar", on_select="rerun")
+    ev = st.plotly_chart(fig, use_container_width=True, key=f"anom_spike_bar{sfx}", on_select="rerun")
     _handle_chart_click(ev, chart_df, field="x")
 
 
 # ── Tab: 일관성 검사 ──────────────────────────────────────────────────────────
 
-def _render_consistency_tab(df: pd.DataFrame) -> None:
-    st.subheader("일관성 검사 — 미계량 유틸리티")
+def _render_consistency_tab(
+    df: pd.DataFrame,
+    file_name: str | None = None,
+    file_data: bytes | None = None,
+    all_sheet_keys: list[str] | None = None,
+    prev_file_data: bytes | None = None,
+    prev_sheet_keys: list[str] | None = None,
+    prev_label: str | None = None,
+    yoy_file_data: bytes | None = None,
+    yoy_sheet_keys: list[str] | None = None,
+    yoy_label: str | None = None,
+) -> None:
+    st.subheader("일관성 검사 — 미계량 + 시트 간 교차검증")
+
+    # ── Section 1: Zero-usage detection ────────────────────────────────────
     st.caption("사용량=0으로 기록된 유틸리티 항목 수. 계량기 미설치 또는 입력 누락 가능성.")
 
     if "n_zero_utilities" not in df.columns:
-        st.info("데이터 없음")
+        st.info("미계량 데이터 없음")
+    else:
+        zero_df = (df[df["n_zero_utilities"] > 0]
+                   [[c for c in ["brand", "building", "floor", "n_zero_utilities",
+                                 "risk_level", "composite_score"] if c in df.columns]]
+                   .sort_values("n_zero_utilities", ascending=False))
+
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            total_zero = int((df["n_zero_utilities"] > 0).sum())
+            st.metric("미계량 브랜드", f"{total_zero}개")
+            st.metric("전 유틸리티 미계량",
+                      f"{int((df['n_zero_utilities'] >= len([p for p in _UTIL_PREFIXES if f'{p}_current' in df.columns])).sum())}개")
+
+        with c2:
+            hist_df = df["n_zero_utilities"].value_counts().sort_index().reset_index()
+            hist_df.columns = ["미계량 항목 수", "브랜드 수"]
+            fig = px.bar(hist_df, x="미계량 항목 수", y="브랜드 수",
+                         title="미계량 항목 수 분포",
+                         color_discrete_sequence=["#DD8A00"])
+            fig.update_layout(height=280, plot_bgcolor="white", margin=dict(t=45, b=30))
+            st.plotly_chart(fig, use_container_width=True, key="anom_zero_dist_bar")
+
+        if zero_df.empty:
+            st.success("미계량 브랜드 없음 — 모든 유틸리티 정상 계량")
+        else:
+            st.dataframe(zero_df, hide_index=True, use_container_width=True)
+
+    # ── Section 1b: Zero-usage CHANGE detection (vs prev/yoy) ──────────
+    _render_zero_change(df, prev_file_data, prev_sheet_keys, prev_label,
+                        yoy_file_data, yoy_sheet_keys, yoy_label)
+
+    # ── Section 2: Cross-sheet brand reconciliation ────────────────────────
+    _render_sheet_reconciliation(
+        file_name, file_data, all_sheet_keys,
+        prev_file_data=prev_file_data,
+        prev_sheet_keys=prev_sheet_keys,
+        prev_label=prev_label,
+        yoy_file_data=yoy_file_data,
+        yoy_sheet_keys=yoy_sheet_keys,
+        yoy_label=yoy_label,
+    )
+
+
+def _render_sheet_reconciliation(
+    file_name: str | None,
+    file_data: bytes | None,
+    all_sheet_keys: list[str] | None,
+    prev_file_data: bytes | None = None,
+    prev_sheet_keys: list[str] | None = None,
+    prev_label: str | None = None,
+    yoy_file_data: bytes | None = None,
+    yoy_sheet_keys: list[str] | None = None,
+    yoy_label: str | None = None,
+) -> None:
+    """Cross-sheet brand reconciliation: name consistency + amount verification."""
+    if not file_data or not all_sheet_keys:
         return
 
-    zero_df = (df[df["n_zero_utilities"] > 0]
-               [[c for c in ["brand", "building", "floor", "n_zero_utilities",
-                             "risk_level", "composite_score"] if c in df.columns]]
-               .sort_values("n_zero_utilities", ascending=False))
+    SH_A = "브랜드별 집계 내역"
+    SH_B_match = next((s for s in all_sheet_keys
+                       if s.strip() == "수도광열비 부과 내역"), None)
+    if SH_A not in all_sheet_keys or SH_B_match is None:
+        return
+    SH_B = SH_B_match.strip()
 
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        total_zero = int((df["n_zero_utilities"] > 0).sum())
-        st.metric("미계량 브랜드", f"{total_zero}개")
-        st.metric("전 유틸리티 미계량",
-                  f"{int((df['n_zero_utilities'] >= len([p for p in _UTIL_PREFIXES if f'{p}_current' in df.columns])).sum())}개")
+    st.divider()
 
-    with c2:
-        hist_df = df["n_zero_utilities"].value_counts().sort_index().reset_index()
-        hist_df.columns = ["미계량 항목 수", "브랜드 수"]
-        fig = px.bar(hist_df, x="미계량 항목 수", y="브랜드 수",
-                     title="미계량 항목 수 분포",
-                     color_discrete_sequence=["#DD8A00"])
-        fig.update_layout(height=280, plot_bgcolor="white", margin=dict(t=45, b=30))
-        st.plotly_chart(fig, use_container_width=True, key="anom_zero_dist_bar")
+    # Show tabs for each available period
+    file_pairs = [("📋 현재 파일", file_data, all_sheet_keys)]
+    for extra_data, extra_sheets, extra_label, default_lbl in [
+        (prev_file_data, prev_sheet_keys, prev_label, "전월"),
+        (yoy_file_data, yoy_sheet_keys, yoy_label, "전년"),
+    ]:
+        if extra_data and extra_sheets:
+            sh_b = next((s for s in extra_sheets
+                         if s.strip() == "수도광열비 부과 내역"), None)
+            if sh_b and SH_A in extra_sheets:
+                lbl = extra_label or default_lbl
+                file_pairs.append((f"📅 {lbl}", extra_data, extra_sheets))
 
-    if zero_df.empty:
-        st.success("미계량 브랜드 없음 — 모든 유틸리티 정상 계량")
+    if len(file_pairs) > 1:
+        recon_tabs = st.tabs([fp[0] for fp in file_pairs])
     else:
-        st.dataframe(zero_df, hide_index=True, use_container_width=True)
+        recon_tabs = [st.container()]
 
-    # Cross-check: water/hotwater sheet vs meter
-    for sheet_col, label in [("water_sheet_m3", "💧 수도 시트 vs 검침"),
-                              ("hotwater_sheet_m3", "🌡 온수 시트 vs 검침")]:
-        if sheet_col not in df.columns:
+    import io
+    from brand_normalize import (
+        reconcile_sheets, find_name_inconsistencies,
+        normalize_brand, load_synonyms, save_synonyms,
+    )
+    synonyms = load_synonyms()
+    n_saved = len(synonyms)
+
+    for tab_idx, (tab_label, fdata, sheet_keys) in enumerate(file_pairs):
+        with recon_tabs[tab_idx]:
+            sh_b_match = next((s for s in sheet_keys
+                               if s.strip() == "수도광열비 부과 내역"), None)
+            if not sh_b_match:
+                st.warning("수도광열비 부과 내역 시트를 찾을 수 없습니다.")
+                continue
+
+            st.subheader(f"시트 간 교차검증 — {SH_A} vs {SH_B}")
+
+            a_raw = pd.read_excel(io.BytesIO(fdata), sheet_name=SH_A,
+                                  header=None, engine="calamine")
+            b_raw = pd.read_excel(io.BytesIO(fdata), sheet_name=sh_b_match,
+                                  header=None, engine="calamine")
+
+            result = reconcile_sheets(
+                a_raw, b_raw,
+                a_brand_col=10, b_brand_col=9,
+                a_unit_col=4, b_unit_col=4,
+                a_totals={"전용": 13, "공용": 14, "합계": 15},
+                b_totals={"전용": 21, "공용": 22, "합계": 23},
+                synonyms=synonyms,
+            )
+            s = result["summary"]
+
+            _render_reconciliation_body(
+                result, s, fdata, sheet_keys, synonyms, n_saved,
+                SH_A, SH_B, tab_idx,
+            )
+
+
+def _render_reconciliation_body(
+    result: dict, s: dict,
+    file_data: bytes, all_sheet_keys: list[str],
+    synonyms: dict, n_saved: int,
+    SH_A: str, SH_B: str,
+    tab_idx: int = 0,
+) -> None:
+    """Render reconciliation KPIs, inconsistencies, mapping UI, and mismatches."""
+    from brand_normalize import (
+        find_name_inconsistencies, normalize_brand, load_synonyms, save_synonyms,
+    )
+    sfx = f"_{tab_idx}" if tab_idx else ""
+
+    # KPI row
+    kc = st.columns(6)
+    kc[0].metric(SH_A, f"{s['a_total']}개")
+    kc[1].metric(SH_B, f"{s['b_total']}개")
+    kc[2].metric("정확 매칭", f"{s['exact_match']}개")
+    kc[3].metric("유사 매칭", f"{s['fuzzy_match']}개",
+                 help="이름 정규화 후 매칭 (이전 상호 괄호 제거, 공백 통일 등)")
+    kc[4].metric("추정 매칭", f"{s['fuzzy_suggested']}건",
+                 help="유사도 기반 추정 매칭 (typo, 축약 등)",
+                 delta=f"⚠ {s['fuzzy_suggested']}" if s['fuzzy_suggested'] else None,
+                 delta_color="off")
+    kc[5].metric("금액 불일치", f"{s['amount_mismatches']}건",
+                 delta=f"{s['amount_mismatches']}" if s['amount_mismatches'] else None,
+                 delta_color="inverse")
+
+    # Name inconsistencies across all sheets (정규화 + 표기 + 사용 시트)
+    inconsistencies = find_name_inconsistencies(file_data, all_sheet_keys, synonyms=synonyms)
+    if inconsistencies:
+        with st.expander(f"시트 간 명칭 불일치 ({len(inconsistencies)}건)", expanded=True):
+            st.caption("동일 브랜드가 시트별로 다른 이름으로 기록된 항목")
+            _SHEET_COLORS = {
+                "브랜드별 집계 내역": "#4C72B0",
+                "수도광열비 부과 내역": "#C44E52",
+                "수도 사용 내역": "#55A868",
+                "온수 사용 내역": "#DD8A00",
+                "전체 전기 사용내역": "#8172B2",
+            }
+            def _badge(sheet: str) -> str:
+                bg = _SHEET_COLORS.get(sheet, "#888")
+                return (f'<span style="background:{bg};color:#fff;padding:2px 7px;'
+                        f'border-radius:10px;font-size:0.82em;white-space:nowrap">'
+                        f'{sheet}</span>')
+
+            trs = []
+            for item in inconsistencies:
+                by_variant: dict[str, list[str]] = {}
+                for sheet, raw in item["variants"].items():
+                    by_variant.setdefault(raw, []).append(sheet)
+                parts = [
+                    f'{variant} {" ".join(_badge(sh) for sh in sheets)}'
+                    for variant, sheets in by_variant.items()
+                ]
+                detail = "<br>".join(parts)
+                trs.append(
+                    f'<tr style="border-bottom:1px solid #eee">'
+                    f'<td style="padding:5px;vertical-align:top">{item["normalized"]}</td>'
+                    f'<td style="padding:5px">{detail}</td></tr>'
+                )
+            html = (
+                '<table style="width:100%;border-collapse:collapse;font-size:0.9em">'
+                '<thead><tr style="border-bottom:2px solid #ccc;text-align:left">'
+                '<th style="padding:6px">정규화</th>'
+                '<th style="padding:6px">표기 · 사용 시트</th>'
+                '</tr></thead><tbody>'
+                + "".join(trs)
+                + "</tbody></table>"
+            )
+            st.markdown(html, unsafe_allow_html=True)
+
+    # ── Interactive brand mapping UI ─────────────────────────────────────
+    # Combine fuzzy_suggested + unmatched pairs for unified editing
+    all_candidates = []
+    for fs in result.get("fuzzy_suggested", []):
+        all_candidates.append({
+            "집계": fs["brand_a"], "부과": fs["brand_b"],
+            "건물": fs["building"], "유사도": fs["similarity"],
+            "norm_a": fs["norm_a"], "norm_b": fs["norm_b"],
+            "source": "fuzzy",
+        })
+    # Add unmatched pairs that share same building+unit
+    for a_item in result.get("only_a", []):
+        if a_item["brand"] in ("계약손실",) or "사무실" in a_item["brand"]:
             continue
-        meter_col = ("water_current" if "water" in sheet_col else "hwater_current")
-        if meter_col not in df.columns:
-            continue
-        st.caption(f"**{label}** — 시트 사용량 vs 검침 현재값 비교")
-        cross = df[["brand", "building", sheet_col, meter_col]].copy()
-        cross["차이"] = (cross[sheet_col] - cross[meter_col]).round(2)
-        cross["불일치"] = (cross["차이"].abs() > cross[meter_col].abs() * 0.05) & cross["차이"].notna()
-        mismatch = cross[cross["불일치"]].sort_values("차이", key=abs, ascending=False)
-        if not mismatch.empty:
-            st.warning(f"**{len(mismatch)}개** 브랜드 — 시트/검침 5% 이상 불일치")
-            st.dataframe(mismatch.drop(columns=["불일치"]), hide_index=True, use_container_width=True)
-        else:
-            st.success("시트/검침 불일치 없음")
+        for b_item in result.get("only_b", []):
+            if a_item["building"] == b_item["building"]:
+                all_candidates.append({
+                    "집계": a_item["brand"], "부과": b_item["brand"],
+                    "건물": a_item["building"], "유사도": 0,
+                    "norm_a": normalize_brand(a_item["brand"]),
+                    "norm_b": normalize_brand(b_item["brand"]),
+                    "source": "unmatched",
+                })
+
+    if all_candidates:
+        import streamlit_antd_components as _sac_m
+        with st.expander(
+            f"🔧 브랜드 매칭 교정 (저장: {n_saved}건, 후보: {len(all_candidates)}건)",
+            expanded=bool(result.get("fuzzy_suggested")),
+        ):
+            if n_saved:
+                st.caption(f"현재 {n_saved}건의 동의어 매핑이 저장되어 자동 적용 중")
+
+            # ─ Step 1: Select which candidates to process ────────────
+            labels = [
+                f"{c['집계']} ↔ {c['부과']} ({c['건물']}동"
+                + (f" · {c['유사도']}%" if c['유사도'] else "") + ")"
+                for c in all_candidates
+            ]
+            mode = _sac_m.segmented(
+                [_sac_m.SegmentedItem(label="전체"),
+                 _sac_m.SegmentedItem(label="선택"),
+                 _sac_m.SegmentedItem(label="제외")],
+                key=f"brand_map_mode{sfx}", use_container_width=True,
+            )
+
+            if mode == "전체":
+                selected_idx = set(range(len(all_candidates)))
+            elif mode == "선택":
+                picks = st.multiselect(
+                    "매칭할 브랜드", labels, default=labels,
+                    key=f"brand_pick{sfx}",
+                )
+                selected_idx = {i for i, l in enumerate(labels) if l in picks}
+            else:  # 제외
+                excludes = st.multiselect(
+                    "제외할 브랜드", labels, default=[],
+                    key=f"brand_excl{sfx}",
+                )
+                excluded = {i for i, l in enumerate(labels) if l in excludes}
+                selected_idx = set(range(len(all_candidates))) - excluded
+
+            selected = [all_candidates[i] for i in sorted(selected_idx)]
+
+            if not selected:
+                st.info("선택된 항목이 없습니다.")
+            else:
+                # ─ Step 2: Name format ───────────────────────────────
+                fmt = st.radio(
+                    "대표 이름 형식",
+                    ["정규화 (표준)", "집계 이름 기준", "부과 이름 기준", "직접 입력"],
+                    horizontal=True, key=f"name_fmt{sfx}",
+                )
+
+                pending: dict[str, str] = {}
+
+                if fmt == "직접 입력":
+                    st.caption("각 브랜드별 대표 이름을 입력하세요")
+                    for i, c in enumerate(selected):
+                        _c1, _c2 = st.columns([5, 5])
+                        with _c1:
+                            st.text(f"{c['집계']} ↔ {c['부과']}")
+                        with _c2:
+                            custom = st.text_input(
+                                "이름", value=c["norm_a"],
+                                key=f"custom_name_{i}{sfx}",
+                                label_visibility="collapsed",
+                            )
+                        cn = normalize_brand(custom) if custom else ""
+                        if cn:
+                            if c["norm_a"] != cn:
+                                pending[c["norm_a"]] = cn
+                            if c["norm_b"] != cn:
+                                pending[c["norm_b"]] = cn
+                else:
+                    # Preview table
+                    preview_rows = []
+                    for c in selected:
+                        if fmt == "정규화 (표준)":
+                            canon = c["norm_a"]  # normalized form
+                        elif fmt == "집계 이름 기준":
+                            canon = normalize_brand(c["집계"])
+                        else:
+                            canon = normalize_brand(c["부과"])
+
+                        preview_rows.append({
+                            "집계": c["집계"], "부과": c["부과"],
+                            "건물": c["건물"], "→ 대표": canon,
+                        })
+                        if c["norm_a"] != canon:
+                            pending[c["norm_a"]] = canon
+                        if c["norm_b"] != canon:
+                            pending[c["norm_b"]] = canon
+
+                    st.dataframe(
+                        pd.DataFrame(preview_rows),
+                        hide_index=True, use_container_width=True,
+                    )
+
+                # ─ Step 3: Save ──────────────────────────────────────
+                _s1, _s2 = st.columns(2)
+                with _s1:
+                    if st.button("💾 저장", type="primary",
+                                 disabled=not pending, key=f"save_synonyms{sfx}"):
+                        merged = {**synonyms, **pending}
+                        save_synonyms(merged)
+                        st.success(f"{len(pending)}건 저장 (총 {len(merged)}건)")
+                        st.rerun()
+                with _s2:
+                    if n_saved and st.button("🗑️ 초기화", key=f"reset_synonyms{sfx}"):
+                        save_synonyms({})
+                        st.success("초기화 완료")
+                        st.rerun()
+
+    # Unmatched brands (remaining after synonym + fuzzy)
+    _col_ren = {"brand": "브랜드", "building": "건물", "unit": "호수"}
+    if result["only_a"] or result["only_b"]:
+        _ua, _ub = st.columns(2)
+        for col, label, data in [(_ua, SH_A, result["only_a"]),
+                                  (_ub, SH_B, result["only_b"])]:
+            with col:
+                st.caption(f"[{label}]에만 존재 ({len(data)}개)")
+                if data:
+                    st.dataframe(
+                        pd.DataFrame(data).rename(columns=_col_ren),
+                        hide_index=True, use_container_width=True)
+                else:
+                    st.success("없음")
+
+    # Amount mismatches — vertical layout: 브랜드+동 on first row, rest below
+    if result["amount_mismatches"]:
+        st.warning(f"금액 불일치: {s['amount_mismatches']}건")
+        am_raw = result["amount_mismatches"]
+        # Group by (brand, building), preserve field order
+        from collections import OrderedDict
+        groups: OrderedDict[tuple, list] = OrderedDict()
+        for m in am_raw:
+            key = (m["brand_a"], m["building"])
+            groups.setdefault(key, []).append(m)
+        rows = []
+        for (brand, bldg), items in groups.items():
+            for idx, m in enumerate(items):
+                rows.append({
+                    "브랜드": brand if idx == 0 else "",
+                    "동": bldg if idx == 0 else "",
+                    "항목": m["field"],
+                    "집계": f"{m['a_value']:,.0f}",
+                    "부과": f"{m['b_value']:,.0f}",
+                    "차이": f"{m['a_value'] - m['b_value']:+,.0f}",
+                })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    elif s["exact_match"] + s["fuzzy_match"] > 0:
+        st.success("매칭된 모든 브랜드의 전용/공용/합계 금액 일치")
 
 
 # ── Public render ─────────────────────────────────────────────────────────────
@@ -377,6 +952,12 @@ def render_anomaly_tab(
     file_data: bytes,
     all_sheet_keys: list[str],
     split_by_building: bool = True,
+    prev_file_data: bytes | None = None,
+    prev_sheet_keys: list[str] | None = None,
+    prev_label: str | None = None,
+    yoy_file_data: bytes | None = None,
+    yoy_sheet_keys: list[str] | None = None,
+    yoy_label: str | None = None,
 ) -> None:
     """Render the 이상감지 분석 view — loads immediately (no lazy-load button)."""
 
@@ -400,6 +981,9 @@ def render_anomaly_tab(
 
     has_billing = BILLING_SHEET_NAME in sheets
     has_elec    = ELECTRICITY_SHEET_NAME in sheets
+
+    # ── 0. Key insight summary — quick overview from cross-analysis ──────────
+    _render_insight_summary(anomaly_df, sheets)
 
     # ── 1. KPI row — "How many problems?" ────────────────────────────────────
     _render_kpis(anomaly_df, has_billing, has_elec)
@@ -444,18 +1028,60 @@ def render_anomaly_tab(
     )
     download_df_as_excel(master_view, filename="anomaly_investigation.xlsx", sheet_name="조사대상")
 
+    # ── Brand → profile shortcut ──────────────────────────────────────────
+    _brand_list = anomaly_df["brand"].tolist()
+    _pc1, _pc2 = st.columns([3, 1])
+    with _pc1:
+        _sel_brand = st.selectbox(
+            "🏢 브랜드 프로필 보기",
+            [""] + _brand_list,
+            key="anom_goto_brand",
+            label_visibility="collapsed",
+            placeholder="브랜드를 선택하면 프로필로 이동합니다…",
+        )
+    with _pc2:
+        if st.button("🏢 프로필 이동", disabled=not _sel_brand,
+                     key="anom_goto_btn"):
+            st.session_state["_goto_profile_brand"] = _sel_brand
+            st.rerun()
+
     st.divider()
 
     # ── 4. Detail deep-dives — unique signals only ────────────────────────────
-    # Spike detection (unique to anomaly) + consistency check (unique data quality)
-    # Cost / HVAC / consumption detail → Tier 2 인사이트 tabs
+    # Build period file list for comparison tabs
+    _period_files = [("📋 현재", file_data, all_sheet_keys, file_name)]
+    if prev_file_data and prev_sheet_keys:
+        _period_files.append((f"📈 {prev_label or '전월'}", prev_file_data, prev_sheet_keys, None))
+    if yoy_file_data and yoy_sheet_keys:
+        _period_files.append((f"📅 {yoy_label or '전년'}", yoy_file_data, yoy_sheet_keys, None))
+
     tab_spike, tab_chk = st.tabs(["📈 급등 감지", "🔍 일관성 검사"])
 
     with tab_spike:
-        _render_spike_tab(anomaly_df, split_by_building)
+        if len(_period_files) > 1:
+            spike_tabs = st.tabs([pf[0] for pf in _period_files])
+        else:
+            spike_tabs = [st.container()]
+        for pi, (plabel, pdata, psheets, pfname) in enumerate(_period_files):
+            with spike_tabs[pi]:
+                if pi == 0:
+                    _render_spike_tab(anomaly_df, split_by_building,
+                                      key_suffix="_p0")
+                else:
+                    _render_period_spike(pdata, psheets, plabel,
+                                         split_by_building,
+                                         key_suffix=f"_p{pi}")
 
     with tab_chk:
-        _render_consistency_tab(anomaly_df)
+        _render_consistency_tab(
+            anomaly_df, file_name, file_data, all_sheet_keys,
+            prev_file_data=prev_file_data,
+            prev_sheet_keys=prev_sheet_keys,
+            prev_label=prev_label,
+            yoy_file_data=yoy_file_data,
+            yoy_sheet_keys=yoy_sheet_keys,
+            yoy_label=yoy_label,
+        )
 
     st.divider()
 
@@ -482,7 +1108,7 @@ def render_anomaly_tab(
 | **소비** | 유틸리티별 사분면 점수 합산 정규화 (HH=4, HL=3, LH=2, Normal=1, LL=0) | 검침내역 |
 | **비용** | 수도 ₩/m³, 전기 ₩/kWh, 총비용 만원/m² Z-점수의 최댓값 정규화 | 수도광열비 부과 내역 |
 | **HVAC** | HVAC 강도 (kWh/m²) IQR-보정 정규화 | 전체 전기 사용내역 |
-| **일관성** | 사용량=0 유틸리티 항목 수 정규화 | 검침내역 + 수도/온수 시트 |
+| **일관성** | 사용량=0 유틸리티 항목 수 정규화 | 검침내역 |
 
 **위험 등급**: 🔴 위험 ≥ 0.65 · 🟠 주의 ≥ 0.40 · 🟡 관찰 ≥ 0.20 · 🟢 정상 < 0.20
 

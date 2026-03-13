@@ -240,8 +240,8 @@ def _chart_anomaly_heatmap(pivot: pd.DataFrame) -> io.BytesIO:
                 ax.text(j, i, f"{z:+.1f}", ha="center", va="center",
                         fontsize=7, color="white" if abs(z) > 1.5 else "#333333")
 
-    plt.colorbar(im, ax=ax, label="Z-score", shrink=0.75, pad=0.02)
-    ax.set_title("월별 사용량 이상 탐지 — Z-score (빨강=급증, 초록=급감)",
+    plt.colorbar(im, ax=ax, label="이상도", shrink=0.75, pad=0.02)
+    ax.set_title("월별 사용량 이상 탐지 (빨강=급증, 초록=급감)",
                  fontsize=10, fontweight="bold", color="#1B2A3B", pad=8)
     fig.tight_layout(pad=0.8)
     return _png(fig)

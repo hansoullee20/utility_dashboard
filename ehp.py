@@ -316,12 +316,12 @@ def _tab_anomaly(pivot: pd.DataFrame) -> None:
         textfont=dict(size=10),
         colorscale="RdYlGn_r",
         zmid=0,
-        colorbar=dict(title="Z-score"),
-        hovertemplate="<b>%{y} %{x}</b><br>Usage: %{text} kWh<br>Z: %{z:.2f}<extra></extra>",
+        colorbar=dict(title="이상도"),
+        hovertemplate="<b>%{y} %{x}</b><br>사용량: %{text} kWh<br>이상도: %{z:.2f}<extra></extra>",
     ))
     fig_heat.update_layout(
         **_BASE_LAYOUT,
-        title=dict(text="<b>월별 사용량 이상 탐지 — Z-score (red = high spike)</b>",
+        title=dict(text="<b>월별 사용량 이상 탐지 (빨강=급증, 초록=급감)</b>",
                    font=dict(size=13, color="#111111"), x=0),
         height=max(380, len(month_labels) * 28 + 100),
         xaxis=dict(title="Year", tickfont=dict(color="#111111")),
