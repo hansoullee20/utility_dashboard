@@ -695,33 +695,19 @@ h1 { font-weight: 800 !important; letter-spacing: -0.03em !important; font-size:
 h2 { font-weight: 700 !important; letter-spacing: -0.02em !important; font-size: 1.2rem !important; }
 h3 { font-weight: 700 !important; font-size: 1.05rem !important; }
 
-/* ── Tabs: premium glass look ── */
+/* ── Tabs ── */
 .stTabs [data-baseweb="tab-list"] {
     gap: 2px;
-    background: linear-gradient(180deg, rgba(76,114,176,0.05) 0%, transparent 100%);
-    border-radius: 10px 10px 0 0;
-    padding: 6px 6px 0;
-    border-bottom: 1px solid rgba(128,128,128,0.12);
+    border-bottom: 1px solid rgba(128,128,128,0.15);
 }
 .stTabs [data-baseweb="tab"] {
     font-size: 13px !important;
     font-weight: 600 !important;
     padding: 10px 22px !important;
-    border-radius: 10px 10px 0 0;
-    transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
-    opacity: 0.55;
-}
-.stTabs [data-baseweb="tab"]:hover {
-    background: rgba(76,114,176,0.06) !important;
-    opacity: 0.8;
 }
 .stTabs [aria-selected="true"] {
-    font-size: 13px !important;
     font-weight: 700 !important;
-    color: #4C72B0 !important;
-    opacity: 1;
-    box-shadow: 0 -2px 8px rgba(76,114,176,0.08);
-    border-bottom: 2px solid #4C72B0 !important;
+    border-bottom: 2.5px solid #4C72B0 !important;
 }
 
 /* ── Metrics: refined + compact ── */
