@@ -84,20 +84,8 @@ def _load_meter_data(file_name, file_map, sheet_map, all_sheet_keys,
     )
 
     # Per-area columns (needed by efficiency + anomaly)
-    size_m2 = _to_num(cur_df["size_m2"]).replace(0, float("nan")) if "size_m2" in cur_df.columns else None
-    size_py = _to_num(cur_df["size_py"]).replace(0, float("nan")) if "size_py" in cur_df.columns else None
-    for uc, (pm2, ppy) in {
-        "water_current":  ("water_usage_per_m2",  "water_usage_per_py"),
-        "hwater_current": ("hwater_usage_per_m2", "hwater_usage_per_py"),
-        "elect_current":  ("elect_usage_per_m2",  "elect_usage_per_py"),
-        "heat_current":   ("heat_usage_per_m2",   "heat_usage_per_py"),
-    }.items():
-        if uc in cur_df.columns:
-            u = _to_num(cur_df[uc])
-            if size_m2 is not None:
-                cur_df[pm2] = (u / size_m2).round(4)
-            if size_py is not None:
-                cur_df[ppy] = (u / size_py).round(4)
+    from utils import add_per_area_cols
+    add_per_area_cols(cur_df)
 
     present = [p for p in ["water", "hwater", "elect", "heat"]
                if f"{p}_change" in cur_df.columns]
@@ -137,20 +125,8 @@ def _load_meter_data_silent(file_name, file_map, sheet_map, all_sheet_keys, prev
         return None, []
 
     # Per-area columns
-    size_m2 = _to_num(cur_df["size_m2"]).replace(0, float("nan")) if "size_m2" in cur_df.columns else None
-    size_py = _to_num(cur_df["size_py"]).replace(0, float("nan")) if "size_py" in cur_df.columns else None
-    for uc, (pm2, ppy) in {
-        "water_current":  ("water_usage_per_m2",  "water_usage_per_py"),
-        "hwater_current": ("hwater_usage_per_m2", "hwater_usage_per_py"),
-        "elect_current":  ("elect_usage_per_m2",  "elect_usage_per_py"),
-        "heat_current":   ("heat_usage_per_m2",   "heat_usage_per_py"),
-    }.items():
-        if uc in cur_df.columns:
-            u = _to_num(cur_df[uc])
-            if size_m2 is not None:
-                cur_df[pm2] = (u / size_m2).round(4)
-            if size_py is not None:
-                cur_df[ppy] = (u / size_py).round(4)
+    from utils import add_per_area_cols
+    add_per_area_cols(cur_df)
 
     present = [p for p in ["water", "hwater", "elect", "heat"]
                if f"{p}_change" in cur_df.columns]
@@ -159,22 +135,8 @@ def _load_meter_data_silent(file_name, file_map, sheet_map, all_sheet_keys, prev
 
 def _load_all_sheets(file_name, file_data, all_sheet_keys):
     """Load billing/electricity/water/hotwater sheets silently."""
-    loaders = {
-        BILLING_SHEET_NAME:     read_billing_sheet,
-        ELECTRICITY_SHEET_NAME: read_electricity_sheet,
-        WATER_SHEET_NAME:       read_water_sheet,
-        HOTWATER_SHEET_NAME:    read_hotwater_sheet,
-    }
-    results = {}
-    for const, loader in loaders.items():
-        key = _find_sheet(all_sheet_keys, const)
-        if key is None:
-            continue
-        try:
-            results[const] = loader(file_name, file_data, key)
-        except Exception:
-            pass
-    return results
+    from utils import load_all_sheets
+    return load_all_sheets(file_name, file_data, all_sheet_keys, silent=True)
 
 
 def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,

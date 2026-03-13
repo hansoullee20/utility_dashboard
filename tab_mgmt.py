@@ -175,7 +175,8 @@ def render_mgmt_report(
 
     # ── Top-5 cost concentration ──────────────────────────────────────────────
     _total_spend = merged["util_total"].sum()
-    _top5_pct = merged.nlargest(5, "util_total")["util_total"].sum() / _total_spend * 100 if _total_spend else 0
+    _mgmt_top5 = merged.nlargest(5, "util_total")
+    _top5_pct = _mgmt_top5["util_total"].sum() / _total_spend * 100 if _total_spend else 0
 
     # ── Unmetered summary ─────────────────────────────────────────────────────
     _all_unmet_brands = set(_w_per_brand) | set(_hw_per_brand) | set(_el_per_brand)
@@ -184,8 +185,7 @@ def render_mgmt_report(
     # ── Data insight expander ─────────────────────────────────────────────────
     _mgmt_top1_brand = merged.loc[merged["util_total"].idxmax(), "brand"]
     _mgmt_top1_val   = merged["util_total"].max()
-    _mgmt_top5       = merged.nlargest(5, "util_total")
-    _mgmt_top5_share = _mgmt_top5["util_total"].sum() / _total_spend * 100 if _total_spend else 0
+    _mgmt_top5_share = _top5_pct
     with st.expander("현재 데이터 해석"):
         st.markdown(f"""
 #### 즉각 조치
@@ -393,6 +393,12 @@ def render_mgmt_report(
     st.caption("🔴 즉시(≥4점) · 🟠 검토(2–3점) · 🟡 관찰(1점) · 🟢 정상(0점) — "
                "이상치 ×3 + 전체미계량 ×2 + 저납부 ×1")
 
+    # Precompute building medians (avoid N+1 recomputation per row)
+    _bld_med_cache = (
+        (merged["util_total"] / merged["size_m2"].replace(0, np.nan))
+        .groupby(merged["building"]).median()
+    )
+
     _action_rows = []
     for _, row in merged.iterrows():
         b = str(row["brand"])
@@ -405,11 +411,7 @@ def render_mgmt_report(
         _score = (_is_anom * 3) + (_all3 * 2)
 
         _bld = str(row.get("building", ""))
-        _bld_sub = merged[merged["building"] == _bld]
-        _bld_med_pm2 = (
-            (_bld_sub["util_total"] / _bld_sub["size_m2"].replace(0, np.nan)).median()
-            if not _bld_sub.empty else np.nan
-        )
+        _bld_med_pm2 = _bld_med_cache.get(_bld, np.nan)
         _underpay = (pd.notna(_pm2) and pd.notna(_bld_med_pm2) and _bld_med_pm2 > 0
                      and _pm2 < _bld_med_pm2 * 0.4)
         if _underpay:

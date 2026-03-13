@@ -44,7 +44,10 @@ def _quad(cv, pv, lo_c, hi_c, lo_p, hi_p) -> str:
 
 def _v(row, col):
     val = row.get(col)
-    return to_numeric_series(pd.Series([val]))[0]
+    try:
+        return float(pd.to_numeric(val, errors="coerce"))
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def _fmt(v, decimals=2, sign=False):

@@ -32,13 +32,7 @@ from features import add_display_index, download_df_as_excel
 from biz_report import render_pdf_buttons, generate_anomaly_pdf
 from tab_mgmt import render_mgmt_report
 
-_BLDG_COLOR = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
-_RISK_COLOR = {
-    "🔴 위험": "#C44E52",
-    "🟠 주의": "#DD8A00",
-    "🟡 관찰": "#F0C040",
-    "🟢 정상": "#2ca02c",
-}
+from utils import BLD_COLOR as _BLDG_COLOR, RISK_COLOR as _RISK_COLOR
 _UTIL_LABELS_UI = {"water": "💧 수도", "hwater": "🌡 온수",
                    "elect": "⚡ 전기",  "heat":   "🔥 난방"}
 
@@ -341,44 +335,16 @@ def _build_cross_file_anomaly(
 
 def _handle_chart_click(ev, df: pd.DataFrame, field: str = "x",
                          match: str = "exact", trunc: int = 0) -> None:
-    """Show selected brand detail from a plotly chart click event."""
-    pts = ev.selection.points if ev and hasattr(ev, "selection") else []
-    if not pts:
-        return
-    pt = pts[0]
-    brand = pt.get(field) or ""
-    if isinstance(brand, (list, tuple)):
-        brand = brand[0]
-    if not brand:
-        return
-    if match == "contains" and trunc:
-        fdf = df[df["brand"].str.contains(str(brand)[:trunc], regex=False)]
-    else:
-        fdf = df[df["brand"] == brand]
-    if not fdf.empty:
-        st.caption(f"선택됨: **{brand}**")
-        st.dataframe(fdf.reset_index(drop=True), hide_index=True, use_container_width=True)
+    """Delegate to shared handler in utils_plot."""
+    from utils_plot import handle_chart_click
+    handle_chart_click(ev, df, field=field, trunc=trunc)
 
 
 # ── Sheet loader ──────────────────────────────────────────────────────────────
 
 def _load_sheets(file_name: str, file_data: bytes, all_sheet_keys: list[str]) -> dict:
-    loaders = {
-        BILLING_SHEET_NAME:     read_billing_sheet,
-        ELECTRICITY_SHEET_NAME: read_electricity_sheet,
-        WATER_SHEET_NAME:       read_water_sheet,
-        HOTWATER_SHEET_NAME:    read_hotwater_sheet,
-    }
-    results = {}
-    for const, loader in loaders.items():
-        key = next((k for k in all_sheet_keys if k.strip() == const), None)
-        if key is None:
-            continue
-        try:
-            results[const] = loader(file_name, file_data, key)
-        except Exception as e:
-            st.warning(f"⚠️ {const} 로드 실패: {e}")
-    return results
+    from utils import load_all_sheets
+    return load_all_sheets(file_name, file_data, all_sheet_keys, silent=False)
 
 
 # ── Section: KPI row ──────────────────────────────────────────────────────────
