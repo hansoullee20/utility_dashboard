@@ -18,8 +18,8 @@ _PALETTE = [
     "#8172B2", "#937860", "#DA8BC3", "#8C8C8C",
 ]
 _BASE_LAYOUT = dict(
-    plot_bgcolor="white",
-    paper_bgcolor="white",
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
     font=dict(family="Arial Black, Arial, sans-serif", color="#111111"),
 )
 
@@ -397,10 +397,10 @@ def _tab_panel_trend(name: str, data: bytes, sheet: str) -> None:
         height=420,
         xaxis=dict(title=dict(text="Year-Month", font=dict(color="#111111")),
                    tickangle=-45, tickfont=dict(size=9, color="#111111"),
-                   showgrid=True, gridcolor="#DDDDDD",
+                   showgrid=True, gridcolor="rgba(128,128,128,0.2)",
                    type="category", categoryorder="array", categoryarray=time_axis),
         yaxis=dict(title=dict(text="kWh", font=dict(color="#111111")),
-                   showgrid=True, gridcolor="#DDDDDD", zeroline=False,
+                   showgrid=True, gridcolor="rgba(128,128,128,0.2)", zeroline=False,
                    tickfont=dict(color="#111111")),
         legend=dict(orientation="v", x=1.01, xanchor="left", y=1, yanchor="top",
                     font=dict(size=10, color="#111111")),
@@ -852,10 +852,10 @@ def _render_ehp_dedicated(name: str, data: bytes, sheet: str) -> None:
                            font=dict(size=14, color="#000000"), x=0),
                 height=440,
                 xaxis=dict(title=dict(text="가동시간 (hr)", font=dict(color="#000000")),
-                           showgrid=True, gridcolor="#DDDDDD",
+                           showgrid=True, gridcolor="rgba(128,128,128,0.2)",
                            zeroline=True, zerolinecolor="#AAAAAA", rangemode="tozero", tickfont=dict(color="#111111")),
                 yaxis=dict(title=dict(text="전기 사용량 (kWh)", font=dict(color="#000000")),
-                           showgrid=True, gridcolor="#DDDDDD",
+                           showgrid=True, gridcolor="rgba(128,128,128,0.2)",
                            zeroline=True, zerolinecolor="#AAAAAA", rangemode="tozero", tickfont=dict(color="#111111")),
                 legend=dict(orientation="v", x=1.01, xanchor="left", y=1,
                             font=dict(size=10, color="#333333")),

@@ -28,8 +28,8 @@ _UTIL_COLS = [
 ]
 
 _BASE_LAYOUT = dict(
-    plot_bgcolor="white",
-    paper_bgcolor="white",
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
     font=dict(family="Arial, sans-serif", color="#333333"),
 )
 
@@ -140,15 +140,15 @@ def render_hvac_view(df: pd.DataFrame) -> None:
 
 
 _LAYOUT_BASE = dict(
-    plot_bgcolor="white",
-    paper_bgcolor="white",
+    plot_bgcolor="rgba(0,0,0,0)",
+    paper_bgcolor="rgba(0,0,0,0)",
     font=dict(color="#000000"),
 )
 
 def _axis(grid: bool = False, **kwargs) -> dict:
     d = dict(tickfont=dict(color="#000000"), title_font=dict(color="#000000"))
     if grid:
-        d.update(gridcolor="#DDDDDD", gridwidth=1)
+        d.update(gridcolor="rgba(128,128,128,0.2)", gridwidth=1)
     d.update(kwargs)
     return d
 
@@ -358,15 +358,15 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
             ),
             height=380, bargap=0,
             margin=dict(l=50, r=20, t=55, b=45),
-            plot_bgcolor="white", paper_bgcolor="white",
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             xaxis=dict(
-                title=xlab, showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                title=xlab, showgrid=True, gridcolor="rgba(128,128,128,0.2)", gridwidth=1, griddash="dot",
                 zeroline=False, showline=True, linecolor="#AAAAAA", linewidth=1,
                 tickfont=dict(size=11, color="#222222"),
             ),
             yaxis=dict(
                 title=dict(text="업체 수", font=dict(size=11, color="#222222")),
-                showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                showgrid=True, gridcolor="rgba(128,128,128,0.2)", gridwidth=1, griddash="dot",
                 zeroline=True, zerolinecolor="#AAAAAA", zerolinewidth=1,
                 showline=True, linecolor="#AAAAAA", linewidth=1,
                 rangemode="tozero", tickfont=dict(size=11, color="#222222"),
@@ -1265,15 +1265,15 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                         ),
                         height=380, bargap=0,
                         margin=dict(l=50, r=20, t=55, b=45),
-                        plot_bgcolor="white", paper_bgcolor="white",
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                         xaxis=dict(
-                            title=unit, showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                            title=unit, showgrid=True, gridcolor="rgba(128,128,128,0.2)", gridwidth=1, griddash="dot",
                             zeroline=False, showline=True, linecolor="#AAAAAA", linewidth=1,
                             tickfont=dict(size=11, color="#222222"),
                         ),
                         yaxis=dict(
                             title=dict(text="업체 수", font=dict(size=11, color="#222222")),
-                            showgrid=True, gridcolor="#DDDDDD", gridwidth=1, griddash="dot",
+                            showgrid=True, gridcolor="rgba(128,128,128,0.2)", gridwidth=1, griddash="dot",
                             zeroline=True, zerolinecolor="#AAAAAA", zerolinewidth=1,
                             showline=True, linecolor="#AAAAAA", linewidth=1,
                             rangemode="tozero", tickfont=dict(size=11, color="#222222"),
@@ -1532,16 +1532,16 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                     _sfig.update_layout(
                         height=520,
                         margin=dict(l=80, r=200, t=40, b=80),
-                        plot_bgcolor="white", paper_bgcolor="white",
+                        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                         xaxis=dict(
                             title=dict(text=_x_col, font=dict(size=14, color="#222222")),
-                            showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                            showgrid=True, gridcolor="rgba(128,128,128,0.2)", griddash="dot",
                             zeroline=False, showline=True, linecolor="#AAAAAA",
                             tickfont=dict(size=12, color="#222222"),
                         ),
                         yaxis=dict(
                             title=dict(text=_y_col, font=dict(size=14, color="#222222")),
-                            showgrid=True, gridcolor="#DDDDDD", griddash="dot",
+                            showgrid=True, gridcolor="rgba(128,128,128,0.2)", griddash="dot",
                             zeroline=False, showline=True, linecolor="#AAAAAA",
                             tickfont=dict(size=12, color="#222222"),
                         ),
@@ -1611,7 +1611,7 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
                 title=dict(text="플래그 매트릭스 — 빨강=이상 감지, 회색=정상", font=dict(size=12)),
                 xaxis=dict(side="top", tickfont=dict(size=11), tickangle=-20),
                 yaxis=dict(autorange="reversed", tickfont=dict(size=9)),
-                plot_bgcolor="white", paper_bgcolor="white",
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
             _ev_anom_hm = st.plotly_chart(_hm_fig, use_container_width=True, key="hvac_anom_heatmap", theme=None, on_select="rerun")
             handle_chart_click(_ev_anom_hm, pd.DataFrame({"brand": _hm_brands}), brand_col="brand", field="y")

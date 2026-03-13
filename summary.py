@@ -1,6 +1,4 @@
 """summary.py — Cross-sheet utility summary: water + hotwater + electricity + heating."""
-import io
-
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -266,8 +264,8 @@ def render_summary_view(
         f'<div style="width:{_el_p}%;background:#DD8A00" title="전기 {_el_p:.0f}%"></div>'
         f'<div style="width:{_ht_p}%;background:#E377C2" title="난방 {_ht_p:.0f}%"></div>'
         f'</div>'
-        f'<div style="display:flex;gap:16px;font-size:0.72rem;color:#666;margin-bottom:4px">'
-        f'<span>■ 수도 {_w_p:.0f}%</span>'
+        f'<div style="display:flex;gap:20px;font-size:0.92rem;font-weight:600;color:#444;margin-bottom:6px">'
+        f'<span style="color:#4C72B0">■ 수도 {_w_p:.0f}%</span>'
         f'<span style="color:#C44E52">■ 온수 {_hw_p:.0f}%</span>'
         f'<span style="color:#DD8A00">■ 전기 {_el_p:.0f}%</span>'
         f'<span style="color:#E377C2">■ 난방 {_ht_p:.0f}%</span>'
@@ -275,10 +273,65 @@ def render_summary_view(
         unsafe_allow_html=True,
     )
 
+    # ── Business Insight Summary ────────────────────────────────────────────
+    _insights: list[str] = []
+    # Dominant utility
+    _dom_name, _dom_pct = max(
+        [("수도", _w_p), ("온수", _hw_p), ("전기", _el_p), ("난방", _ht_p)],
+        key=lambda x: x[1],
+    )
+    _insights.append(
+        f"전체 비용의 **{_dom_pct:.0f}%**가 {_dom_name}에 집중 → "
+        f"{_dom_name} 절감이 전체 비용 절감에 가장 효과적입니다"
+    )
+    # Top spender
+    if not merged.empty:
+        _top_brand = merged.iloc[0]
+        _top_pct = _top_brand["util_total"] / _util_sum * 100 if _util_sum else 0
+        _insights.append(
+            f"**{_top_brand['brand']}**가 전체의 {_top_pct:.1f}% 차지 "
+            f"({_fmt_won(_top_brand['util_total'])}) → "
+            f"이 업체의 사용 패턴을 우선 점검하면 비용 관리 효과가 큽니다"
+        )
+    # Concentration
+    _n10 = max(1, len(merged) // 10)
+    _top10_sum = merged.head(_n10)["util_total"].sum()
+    _top10_pct = _top10_sum / _util_sum * 100 if _util_sum else 0
+    if _top10_pct >= 50:
+        _insights.append(
+            f"상위 {_n10}개 업체가 전체 비용의 **{_top10_pct:.0f}%** 차지 → "
+            f"소수 업체에 비용이 편중되어 있어, 해당 업체 집중 관리가 필요합니다"
+        )
+    else:
+        _insights.append(
+            f"상위 {_n10}개 업체가 전체의 **{_top10_pct:.0f}%** → "
+            f"비용이 비교적 균등하게 분산되어 있어, 전체적인 절감 정책이 효과적입니다"
+        )
+    # MoM change
+    if _has_prev:
+        _util_prev_s = merged["util_prev"].sum()
+        _chg_pct = (_util_sum - _util_prev_s) / _util_prev_s * 100 if _util_prev_s else 0
+        if abs(_chg_pct) >= 5:
+            _dir = "증가" if _chg_pct > 0 else "감소"
+            _reason = "계절 요인 또는 특정 업체의 사용량 변동을 확인하세요" if _chg_pct > 0 else "절감 노력의 성과일 수 있으나, 공실 증가 여부도 확인 필요"
+            _insights.append(
+                f"전월 대비 **{abs(_chg_pct):.1f}% {_dir}** → {_reason}"
+            )
+        else:
+            _insights.append(f"전월 대비 변동 {abs(_chg_pct):.1f}% → 안정적인 사용 패턴을 유지하고 있습니다")
+
+    with st.container(border=True):
+        st.markdown(
+            '<p style="margin:0 0 6px;font-size:0.9rem;font-weight:700;color:#4C72B0">'
+            '비즈니스 인사이트</p>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("  \n".join(f"- {i}" for i in _insights))
+
     _has_yoy = any(d is not None for d in [yoy_water_df, yoy_hotwater_df, yoy_elec_df, yoy_billing_df])
 
     _has_compare = _has_prev or _has_yoy
-    _tab_labels = ["사용 분석", "유틸리티 구성", "📋 경영 보고"]
+    _tab_labels = ["사용 분석", "유틸리티 구성"]
     if _has_compare:
         _tab_labels.insert(1, "📈 기간 비교")
     _tabs = st.tabs(_tab_labels)
@@ -288,7 +341,6 @@ def render_summary_view(
     tab_rank = next(_ti)
     tab_compare = next(_ti) if _has_compare else None
     tab_mix = next(_ti)
-    tab_mgmt = next(_ti)
 
     def _boxplot_with_labels(s: pd.Series, label_s: pd.Series,
                              x_title: str, key: str,
@@ -995,389 +1047,4 @@ def render_summary_view(
         )
 
 
-    # ═══════════════════════════ 경영 보고 ════════════════════════════════════
-    with tab_mgmt:
-        st.subheader("수익성 분석 — 경영 보고")
-        st.caption("미청구 손실 추정, 이상 징후 브랜드, 비용 집중도를 종합한 경영용 보고서입니다.")
-        # ── Leakage computation per sheet ──────────────────────────────────────
-        _w_per_brand,  _w_total_leak  = _leakage_for(water_df,    "usage_m3",  "total")    if water_df    is not None else ({}, 0.0)
-        _hw_per_brand, _hw_total_leak = _leakage_for(hotwater_df, "usage_m3",  "total")    if hotwater_df is not None else ({}, 0.0)
-        _el_per_brand, _el_total_leak = _leakage_for(elec_df,     "kwh_total", "grand_total") if elec_df     is not None else ({}, 0.0)
-        _total_leakage = _w_total_leak + _hw_total_leak + _el_total_leak
-
-        # ── IQR anomaly count ──────────────────────────────────────────────────
-        _util_up = _iqr_upper(merged["util_total"])
-        _n_anomaly = int((merged["util_total"] > _util_up).sum())
-
-        # ── Top-5 cost concentration ───────────────────────────────────────────
-        _total_spend = merged["util_total"].sum()
-        _top5_pct = merged.nlargest(5, "util_total")["util_total"].sum() / _total_spend * 100 if _total_spend else 0
-
-        # ── Unmetered summary ──────────────────────────────────────────────────
-        _all_unmet_brands = set(_w_per_brand) | set(_hw_per_brand) | set(_el_per_brand)
-        # Brands unmetered across ALL three sheets are the most suspicious
-        _all3_unmet = set(_w_per_brand) & set(_hw_per_brand) & set(_el_per_brand)
-
-        # ── Data insight expander ──────────────────────────────────────────────
-        _mgmt_top1_brand = merged.loc[merged["util_total"].idxmax(), "brand"]
-        _mgmt_top1_val   = merged["util_total"].max()
-        _mgmt_top5       = merged.nlargest(5, "util_total")
-        _mgmt_top5_share = _mgmt_top5["util_total"].sum() / _total_spend * 100 if _total_spend else 0
-        with st.expander("현재 데이터 해석"):
-            st.markdown(f"""
-#### 즉각 조치
-- **고비용 이상치**: {"없음 — 현재 정상 범위 내 ✅" if _n_anomaly == 0 else f"⚠️ **{_n_anomaly}개** 브랜드가 IQR 상한({_util_up/1e4:,.0f}만 원) 초과 → 누수·설비 과부하·계량 오류 여부 점검"}
-- **전 항목 미계량**: {"없음 ✅" if not _all3_unmet else f"⚠️ **{len(_all3_unmet)}개** 브랜드 수도·온수·전기 모두 미계량 ({', '.join(sorted(_all3_unmet)[:5])}{'…' if len(_all3_unmet)>5 else ''}) → 계약 및 미터 설치 즉시 확인"}
-
-#### 비용 집중도 & 리스크
-- 상위 5개 브랜드가 전체의 **{_mgmt_top5_share:.1f}%** 차지 ({', '.join(_mgmt_top5['brand'].astype(str).str[:10].tolist())})
-{"- ⚠️ 집중도 과다 — 해당 브랜드 이탈 시 수익 구조에 큰 영향. 계약 조건 재검토 권장" if _mgmt_top5_share > 50 else "- ✅ 비용 집중도 분산 — 특정 브랜드 의존도 낮음"}
-- **최고 비용 브랜드**: {_mgmt_top1_brand} — {_mgmt_top1_val/1e4:,.0f}만 원 (전체의 **{_mgmt_top1_val/_total_spend*100:.1f}%**)
-
-#### 운영 효율
-- 전체 브랜드 수: {len(merged)}개 · 총 유틸리티 지출: {_fmt_won(_total_spend)}
-- 브랜드당 평균: {_fmt_won(_total_spend/len(merged))} · 미계량 포함 브랜드: {len(_all_unmet_brands)}개
-""")
-
-        # ── Cross-tab synthesis ─────────────────────────────────────────────────
-        _es_util_total  = merged["util_total"].sum()
-        _es_n           = len(merged)
-        _es_avg         = _es_util_total / _es_n
-        _es_med         = merged["util_total"].median()
-        _es_top3_share  = merged.nlargest(3, "util_total")["util_total"].sum() / _es_util_total * 100
-        _es_top10p_n    = max(1, int(_es_n * 0.1))
-        _es_top10p_share = merged.nlargest(_es_top10p_n, "util_total")["util_total"].sum() / _es_util_total * 100
-        _es_outlier_burden = merged[merged["util_total"] > _util_up]["util_total"].sum() / _es_util_total * 100 if _n_anomaly > 0 else 0.0
-        _es_skew        = _es_avg > _es_med * 1.1
-
-        # Area efficiency (recompute safe)
-        _es_adf = merged[merged["size_m2"] > 0].copy()
-        _es_adf["pm2"] = _es_adf["util_total"] / _es_adf["size_m2"]
-        _es_a_iqr_up   = _iqr_upper(_es_adf["pm2"])
-        _es_n_area_over = int((_es_adf["pm2"] > _es_a_iqr_up).sum())
-        _es_area_top1  = _es_adf.loc[_es_adf["pm2"].idxmax()] if not _es_adf.empty else None
-
-        # Building
-        _es_bld = merged.groupby("building").agg(
-            util=("util_total","sum"), cnt=("brand","count"), area=("size_m2","sum")
-        ).reindex(["A","B","C","D"]).dropna(how="all")
-        _es_bld["pm2"] = _es_bld["util"] / _es_bld["area"].replace(0, float("nan"))
-        _es_bld_max    = _es_bld["util"].idxmax() if not _es_bld.empty else "-"
-        _es_bld_eff    = _es_bld["pm2"].idxmin() if _es_bld["pm2"].notna().any() else "-"
-        _es_bld_ratio  = _es_bld["util"].max() / _es_bld["util"].min() if _es_bld["util"].min() > 0 else 1
-
-        # Utility mix
-        _es_w_pct  = merged["water_total"].sum() / _es_util_total * 100
-        _es_hw_pct = merged["hw_total"].sum()    / _es_util_total * 100
-        _es_el_pct = merged["elec_total"].sum()  / _es_util_total * 100
-        _es_ht_pct = merged["heat_total"].sum()  / _es_util_total * 100
-        _es_dom    = max([("수도", _es_w_pct), ("온수", _es_hw_pct), ("전기", _es_el_pct), ("난방", _es_ht_pct)], key=lambda x: x[1])
-
-        # Build prioritized findings
-        _findings, _actions, _strategy = [], [], []
-
-        if _n_anomaly > 0:
-            _findings.append(f"고비용 이상치 **{_n_anomaly}개** 브랜드가 전체 유틸리티 비용의 **{_es_outlier_burden:.1f}%** 를 점유합니다.")
-            _actions.append(f"🔴 **즉시** — 이상치 {_n_anomaly}개 브랜드 계량기·누수·설비 과부하 현장 점검")
-        if _all3_unmet:
-            _findings.append(f"수도·온수·전기 **전부** 미계량 브랜드가 **{len(_all3_unmet)}개** 있습니다. 미터 미설치 또는 계약 누락 가능성이 있습니다.")
-            _actions.append(f"🔴 **즉시** — 전 항목 미계량 {len(_all3_unmet)}개 브랜드 계약서·미터 설치 현황 확인")
-        if _es_n_area_over > 0:
-            _top_pm2_brand = _es_area_top1["brand"] if _es_area_top1 is not None else "-"
-            _findings.append(f"면적당 비용 이상 고점 **{_es_n_area_over}개** 브랜드 — 대표: {_top_pm2_brand} ({_es_area_top1['pm2']:,.0f} 원/㎡). 동일 면적 대비 과소비 수준입니다.")
-            _actions.append(f"🟠 **검토** — 면적당 비용 상위 이상치 {_es_n_area_over}개 브랜드 사용 패턴 및 설비 상태 점검")
-        if len(_all_unmet_brands) > 0:
-            _findings.append(f"부분 미계량(수도·온수·전기 중 일부 누락) 브랜드가 **{len(_all_unmet_brands)}개** 있습니다. 업종 특성일 수 있으나 확인이 필요합니다.")
-            _actions.append(f"🟡 **관찰** — 부분 미계량 {len(_all_unmet_brands)}개 브랜드 업종 특성 검토 후 계량 불필요 여부 판단")
-        if _es_top10p_share > 50:
-            _findings.append(f"상위 10% ({_es_top10p_n}개 브랜드)가 전체 비용의 **{_es_top10p_share:.1f}%** 를 차지합니다. 소수 브랜드 의존도가 높습니다.")
-            _strategy.append(f"비용 집중 브랜드의 임대 계약 갱신 조건 재검토 — 이탈 시 수익 구조 충격 최소화 방안 마련")
-        if _es_el_pct > 50:
-            _findings.append(f"전기 비중이 **{_es_el_pct:.1f}%** 로 절반 이상을 차지합니다. 냉난방 설비 효율이 핵심 관리 포인트입니다.")
-            _strategy.append("전력 다소비 구간 피크 저감 프로그램 도입 또는 LED·인버터 설비 교체 검토")
-        if _es_skew:
-            _findings.append(f"평균({_fmt_won(_es_avg)})이 중앙값({_fmt_won(_es_med)})보다 높아 소수 고비용 브랜드가 전체 평균을 왜곡하고 있습니다.")
-        if _es_bld_ratio > 2.5:
-            _findings.append(f"건물별 비용 격차가 크며({_es_bld_max}동 최고), **{_es_bld_eff}동** 이 면적당 비용 최저로 효율 벤치마크가 됩니다.")
-            _strategy.append(f"{_es_bld_eff}동 운영 방식을 타 건물에 벤치마킹하여 면적당 비용 절감 목표 수립 권장")
-
-        if not _findings:
-            _findings.append("현재 데이터 기준으로 즉각 조치가 필요한 이상 징후는 발견되지 않았습니다.")
-
-        st.markdown("### 📋 종합 경영 요약")
-        st.markdown(f"분석 대상 **{_es_n}개 브랜드** · 총 유틸리티 지출 **{_fmt_won(_es_util_total)}** · 지배 항목 **{_es_dom[0]} ({_es_dom[1]:.0f}%)**")
-        st.divider()
-
-        fc1, fc2 = st.columns([1, 1])
-        with fc1:
-            st.markdown("#### 🔍 주요 발견사항")
-            for i, f in enumerate(_findings, 1):
-                st.markdown(f"{i}. {f}")
-
-        with fc2:
-            st.markdown("#### ✅ 조치 항목 (우선순위순)")
-            if _actions:
-                for a in _actions:
-                    st.markdown(f"- {a}")
-            else:
-                st.markdown("- 즉각 조치 항목 없음")
-            if _strategy:
-                st.markdown("#### 💡 전략적 제언")
-                for s in _strategy:
-                    st.markdown(f"- {s}")
-
-        st.divider()
-
-        # ── KPI row ────────────────────────────────────────────────────────────
-        kc = st.columns(4)
-        kc[0].metric("미계량 브랜드 (검토 필요)",
-                     f"{len(_all_unmet_brands)}개",
-                     help="수도/온수/전기 중 하나 이상 미계량. 업종 특성상 정상일 수 있습니다.")
-        kc[1].metric("전 유틸리티 미계량",
-                     f"{len(_all3_unmet)}개",
-                     help="수도·온수·전기 모두 미계량 — 계약·미터 점검 권장")
-        kc[2].metric("이상 징후 브랜드",
-                     f"{_n_anomaly}개",
-                     help="총 유틸리티 비용 IQR 상한 초과")
-        kc[3].metric("상위 5개 비중",
-                     f"{_top5_pct:.1f}%",
-                     help="전체 유틸리티 지출에서 상위 5개 브랜드 비중")
-
-        if _all3_unmet:
-            st.markdown(f"#### 전체 미계량 브랜드 ({len(_all3_unmet)}개) — 계약·미터 즉시 확인")
-            _unmet_rows = []
-            for b in sorted(_all3_unmet):
-                _row = merged[merged["brand"] == b]
-                _bld  = _row["building"].iloc[0] if not _row.empty else "-"
-                _flr  = str(_row["floor"].iloc[0]) if not _row.empty else "-"
-                _util = int(_row["util_total"].iloc[0]) if not _row.empty else 0
-                _unmet_rows.append({
-                    "브랜드":        b,
-                    "건물":          _bld,
-                    "층":            _flr,
-                    "총비용 (만원)": round(_util / 1e4, 1),
-                })
-            st.dataframe(
-                pd.DataFrame(_unmet_rows),
-                column_config={
-                    "브랜드":        st.column_config.TextColumn("브랜드"),
-                    "건물":          st.column_config.TextColumn("건물", width="small"),
-                    "층":            st.column_config.TextColumn("층",   width="small"),
-                    "총비용 (만원)": st.column_config.NumberColumn("총비용 (만원)", format="%.1f"),
-                },
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        st.divider()
-
-        # ── 공실 이상 소비 분석 ────────────────────────────────────────────────
-        _vacancy_df = merged[merged["brand"].astype(str).str.contains("공실", na=False)].copy()
-        if not _vacancy_df.empty:
-            st.markdown(f"#### 🏚 공실 유틸리티 이상 소비 분석 ({len(_vacancy_df)}개 공실)")
-            st.caption("🔴 고의심: 중앙값 30%↑ · 🟠 주의: 소량 소비 · 🟢 정상: 소비 없음")
-            _global_med = merged["util_total"].median()
-            _vac_rows = []
-            for _, vrow in _vacancy_df.iterrows():
-                _w  = float(vrow.get("water_total", 0) or 0)
-                _hw = float(vrow.get("hw_total",    0) or 0)
-                _el = float(vrow.get("elec_total",  0) or 0)
-                _ht = float(vrow.get("heat_total",  0) or 0)
-                _tot = float(vrow["util_total"])
-                _consuming = _tot > 0
-                # Classify suspicion level
-                if _tot > _global_med * 0.3:
-                    _suspicion = "🔴 고의심 — 무단점거·대형 누수 가능성"
-                elif _tot > 0:
-                    _suspicion = "🟠 주의 — 소량 소비, 누수·계량기 오류 확인 필요"
-                else:
-                    _suspicion = "🟢 정상 — 소비 없음"
-                _vac_rows.append({
-                    "공실":          str(vrow["brand"]),
-                    "건물":          str(vrow.get("building", "-")),
-                    "층":            str(vrow.get("floor", "-")),
-                    "수도 (만원)":   round(_w  / 1e4, 1),
-                    "온수 (만원)":   round(_hw / 1e4, 1),
-                    "전기 (만원)":   round(_el / 1e4, 1),
-                    "난방 (만원)":   round(_ht / 1e4, 1),
-                    "합계 (만원)":   round(_tot / 1e4, 1),
-                    "의심 수준":     _suspicion,
-                })
-            _vac_df = pd.DataFrame(_vac_rows).sort_values("합계 (만원)", ascending=False)
-            _vac_consuming = (_vac_df["합계 (만원)"] > 0).sum()
-            if _vac_consuming > 0:
-                st.warning(f"⚠️ {_vac_consuming}개 공실에서 유틸리티 소비가 감지되었습니다. 무단점거·누수·계량기 오류 여부를 즉시 확인하세요.")
-            else:
-                st.success("✅ 모든 공실의 유틸리티 소비가 0입니다.")
-            st.dataframe(
-                _vac_df,
-                column_config={
-                    "공실":        st.column_config.TextColumn("공실"),
-                    "건물":        st.column_config.TextColumn("건물", width="small"),
-                    "층":          st.column_config.TextColumn("층",   width="small"),
-                    "수도 (만원)": st.column_config.NumberColumn("수도 (만원)",  format="%.1f"),
-                    "온수 (만원)": st.column_config.NumberColumn("온수 (만원)",  format="%.1f"),
-                    "전기 (만원)": st.column_config.NumberColumn("전기 (만원)",  format="%.1f"),
-                    "난방 (만원)": st.column_config.NumberColumn("난방 (만원)",  format="%.1f"),
-                    "합계 (만원)": st.column_config.NumberColumn("합계 (만원)",  format="%.1f"),
-                    "의심 수준":   st.column_config.TextColumn("의심 수준"),
-                },
-                use_container_width=True,
-                hide_index=True,
-            )
-            st.divider()
-
-        # ── Priority action table ──────────────────────────────────────────────
-        st.markdown("#### 우선 조치 브랜드")
-        st.caption("🔴 즉시(≥4점) · 🟠 검토(2–3점) · 🟡 관찰(1점) · 🟢 정상(0점) — "
-                   "이상치 ×3 + 전체미계량 ×2 + 저납부 ×1")
-
-        _action_rows = []
-        for _, row in merged.iterrows():
-            b = str(row["brand"])
-            _is_anom = bool(row["util_total"] > _util_up)
-            _w_u  = b in _w_per_brand
-            _hw_u = b in _hw_per_brand
-            _el_u = b in _el_per_brand
-            _unmet_cnt = int(_w_u) + int(_hw_u) + int(_el_u)
-            _all3 = _w_u and _hw_u and _el_u  # missing from ALL sheets — more suspicious
-            _pm2 = row["util_total"] / row["size_m2"] if row.get("size_m2", 0) > 0 else np.nan
-            _score = (_is_anom * 3) + (_all3 * 2)
-
-            # Per-building median util/m² for underpay flag
-            _bld = str(row.get("building", ""))
-            _bld_sub = merged[merged["building"] == _bld]
-            _bld_med_pm2 = (
-                (_bld_sub["util_total"] / _bld_sub["size_m2"].replace(0, np.nan)).median()
-                if not _bld_sub.empty else np.nan
-            )
-            _underpay = (pd.notna(_pm2) and pd.notna(_bld_med_pm2) and _bld_med_pm2 > 0
-                         and _pm2 < _bld_med_pm2 * 0.4)
-            if _underpay:
-                _score += 1
-
-            # Build plain-language reason
-            _reasons = []
-            if _is_anom:
-                _mult = row["util_total"] / _util_up if _util_up > 0 else 0
-                _reasons.append(f"총비용이 IQR 상한의 {_mult:.1f}배 — 누수·설비 과부하·계량 오류 의심")
-            if _all3:
-                _reasons.append("수도·온수·전기 전부 미계량 — 계약 누락 또는 미터 미설치 가능성")
-            elif _w_u or _hw_u or _el_u:
-                _items = ("수도" if _w_u else "") + ("·온수" if _hw_u else "") + ("·전기" if _el_u else "")
-                _reasons.append(f"{_items.strip('·')} 미계량 — 업종 특성 또는 미터 오류 확인 필요")
-            if _underpay and pd.notna(_bld_med_pm2):
-                _ratio = _pm2 / _bld_med_pm2 * 100 if _bld_med_pm2 > 0 else 0
-                _reasons.append(f"동 건물 중앙값의 {_ratio:.0f}% 수준 — 미계량·장기 휴업 가능성")
-
-            _action_rows.append({
-                "브랜드":        b,
-                "건물":          _bld,
-                "층":            str(row.get("floor", "")),
-                "총비용 (만원)": round(row["util_total"] / 1e4, 1),
-                "원/m²":         round(_pm2, 0) if pd.notna(_pm2) else None,
-                "건물중앙 원/m²": round(_bld_med_pm2, 0) if pd.notna(_bld_med_pm2) else None,
-                "주의 사유":     " / ".join(_reasons) if _reasons else "-",
-                "우선순위 점수": _score,
-            })
-
-        _action_df = (
-            pd.DataFrame(_action_rows)
-            .sort_values(["우선순위 점수", "총비용 (만원)"], ascending=[False, False])
-            .reset_index(drop=True)
-        )
-        _action_df.index = _action_df.index + 1  # 1-based rank
-        _action_df.insert(0, "등급", _action_df["우선순위 점수"].map(
-            lambda s: "🔴 즉시" if s >= 4 else ("🟠 검토" if s >= 2 else ("🟡 관찰" if s == 1 else "🟢 정상"))
-        ))
-
-        st.dataframe(
-            _action_df,
-            column_config={
-                "등급":           st.column_config.TextColumn("등급", width="small"),
-                "브랜드":         st.column_config.TextColumn("브랜드"),
-                "건물":           st.column_config.TextColumn("건물", width="small"),
-                "층":             st.column_config.TextColumn("층", width="small"),
-                "총비용 (만원)":  st.column_config.NumberColumn("총비용 (만원)", format="%.1f"),
-                "원/m²":          st.column_config.NumberColumn("원/m²", format="%,.0f"),
-                "건물중앙 원/m²": st.column_config.NumberColumn("건물중앙 원/m²", format="%,.0f"),
-                "주의 사유":      st.column_config.TextColumn("주의 사유", width="large"),
-                "우선순위 점수":  st.column_config.ProgressColumn("우선순위", format="%d", min_value=0, max_value=6),
-            },
-            use_container_width=True,
-        )
-
-        # ── Download management report ─────────────────────────────────────────
-        _buf = io.BytesIO()
-        with pd.ExcelWriter(_buf, engine="openpyxl") as _xw:
-            _action_df.to_excel(_xw, sheet_name="우선조치목록", index=True)
-            # Unmetered brand detail per sheet (for manual review — not assumed leakage)
-            for _sheet_label, _per_brand in [("수도_미계량", _w_per_brand),
-                                              ("온수_미계량", _hw_per_brand),
-                                              ("전기_미계량", _el_per_brand)]:
-                if _per_brand:
-                    _detail = pd.DataFrame(
-                        [{"브랜드": k} for k in _per_brand]
-                    )
-                    _detail.to_excel(_xw, sheet_name=_sheet_label, index=False)
-        st.download_button(
-            "📥 경영 보고서 다운로드 (Excel)",
-            data=_buf.getvalue(),
-            file_name="utility_management_report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-        st.divider()
-
-        # ── Cost concentration (Pareto) ────────────────────────────────────────
-        st.markdown("#### 비용 집중도 (Pareto)")
-        _sorted = merged.sort_values("util_total", ascending=False).reset_index(drop=True)
-        _sorted["누적 비중 (%)"] = (_sorted["util_total"].cumsum() / _total_spend * 100).round(1)
-        _sorted["순위"] = _sorted.index + 1
-
-        _pc1, _pc2 = st.columns([3, 1])
-        with _pc1:
-            _pareto_n = st.slider("표시 브랜드 수", 5, len(_sorted), min(20, len(_sorted)), key="sum_pareto_n")
-        with _pc2:
-            _pareto_logy = st.checkbox("Log 스케일", key="sum_pareto_logy")
-        _pareto = _sorted.head(_pareto_n)
-
-        fig_p = go.Figure()
-        fig_p.add_trace(go.Bar(
-            x=[str(b)[:22] for b in _pareto["brand"]],
-            y=_pareto["util_total"].values,
-            marker_color=(
-                [_BLD_COLOR.get(str(b), "#888") for b in _pareto["building"]]
-                if split_by_building else "#4C72B0"
-            ),
-            text=[f"{v/1e6:.2f}M" for v in _pareto["util_total"].values],
-            textposition="outside", textfont=dict(size=9),
-            name="유틸리티 합계",
-        ))
-        fig_p.add_trace(go.Scatter(
-            x=[str(b)[:22] for b in _pareto["brand"]],
-            y=_pareto["누적 비중 (%)"].values,
-            mode="lines+markers", name="누적 비중 (%)",
-            yaxis="y2", line=dict(color="#C44E52", width=2),
-            marker=dict(size=5),
-        ))
-        _y1_cfg = dict(title="원", gridcolor="#DDDDDD", griddash="dot")
-        if _pareto_logy:
-            _y1_cfg["type"] = "log"
-        fig_p.update_layout(
-            height=400, plot_bgcolor="white",
-            yaxis=_y1_cfg,
-            yaxis2=dict(title="누적 비중 (%)", overlaying="y", side="right",
-                        range=[0, 105], showgrid=False),
-            xaxis=dict(tickangle=-40),
-            legend=dict(orientation="h", x=1, y=1, xanchor="right", yanchor="top"),
-            margin=dict(l=10, r=60, t=50, b=100),
-        )
-        _ev_pareto = st.plotly_chart(fig_p, use_container_width=True, key="sum_pareto_chart", on_select="rerun")
-        _handle_chart_click(_ev_pareto, _pareto, brand_col="brand", field="x")
-
-        _p80 = int((_sorted["누적 비중 (%)"] <= 80).sum()) + 1
-        st.caption(
-            f"상위 **{_p80}개** 브랜드가 전체 비용의 80%를 차지합니다. "
-            f"(전체 {len(merged)}개 브랜드 중 {_p80/len(merged)*100:.0f}%)"
-        )
+    # 경영 보고 moved to tab_mgmt.py (rendered in 점검대상 tab)

@@ -273,6 +273,55 @@ def render_efficiency_tab(
         st.info(t("eff_no_size"))
         return
 
+    # ── Business Insight Summary ────────────────────────────────────────────
+    _eff_insights: list[str] = []
+    _PLABEL = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "난방"}
+    from data import to_numeric_series as _tns_eff
+    for p, pm2_col in avail.items():
+        s = _tns_eff(cur_df[pm2_col]).dropna()
+        if s.empty:
+            continue
+        _worst = cur_df.loc[s.idxmax()]
+        _best = cur_df.loc[s.idxmin()]
+        _ratio = s.max() / s.min() if s.min() > 0 else float("inf")
+        if _ratio >= 3:
+            _eff_insights.append(
+                f"**{_PLABEL.get(p, p)}** m²당: "
+                f"최고 {_worst['brand']}({s.max():.2f}) vs "
+                f"최저 {_best['brand']}({s.min():.2f}) — "
+                f"**{_ratio:.1f}배** 차이 → "
+                f"{_worst['brand']}의 사용 패턴을 점검하세요. 누수·장비 이상 가능성이 있습니다"
+            )
+        else:
+            _eff_insights.append(
+                f"**{_PLABEL.get(p, p)}** m²당: "
+                f"최고 {_worst['brand']}({s.max():.2f}) vs "
+                f"최저 {_best['brand']}({s.min():.2f}) — "
+                f"**{_ratio:.1f}배** 차이"
+            )
+    if _eff_insights:
+        # Overall: how many brands are above median?
+        for p, pm2_col in avail.items():
+            s = _tns_eff(cur_df[pm2_col]).dropna()
+            if s.empty:
+                continue
+            _med = s.median()
+            _n_above = int((s > _med * 1.5).sum())
+            if _n_above:
+                _eff_insights.append(
+                    f"{_PLABEL.get(p, p)} 중위값 대비 1.5배 초과: **{_n_above}개** 브랜드 → "
+                    f"에너지 낭비 가능성이 높아 절감 조치를 우선 검토하세요"
+                )
+            break  # just show for first utility to keep it concise
+
+        with st.container(border=True):
+            st.markdown(
+                '<p style="margin:0 0 6px;font-size:0.9rem;font-weight:700;color:#4C72B0">'
+                '비즈니스 인사이트</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("  \n".join(f"- {i}" for i in _eff_insights))
+
     # ── Sections ──────────────────────────────────────────────────────────────
     if avail:
         _render_single_utility(cur_df, avail, split_by_building=split_by_building)

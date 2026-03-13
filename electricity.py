@@ -147,8 +147,8 @@ def render_electricity_view(
             xaxis_title=_unit, barmode="overlay",
             showlegend=True,
             legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
-            plot_bgcolor="white",
-            xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
             yaxis=dict(tickfont=dict(size=10), categoryorder="total ascending"),
         )
         _ev_rank = st.plotly_chart(fig_r, use_container_width=True, key="elec_rank_chart", on_select="rerun")
@@ -196,8 +196,8 @@ def render_electricity_view(
                     showlegend=False,
                 ))
             fig_bku.update_layout(
-                title="건물별 총 사용량 (KWH)", height=300, plot_bgcolor="white",
-                yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+                title="건물별 총 사용량 (KWH)", height=300, plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
                 margin=dict(l=10, r=10, t=50, b=30),
             )
             _ev_bld_kwh = st.plotly_chart(fig_bku, use_container_width=True, key="elec_bld_kwh", on_select="rerun")
@@ -221,8 +221,8 @@ def render_electricity_view(
                     showlegend=False,
                 ))
             fig_bkt.update_layout(
-                title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="white",
-                yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+                title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
                 margin=dict(l=10, r=10, t=50, b=30),
             )
             _ev_bld_total = st.plotly_chart(fig_bkt, use_container_width=True, key="elec_bld_total", on_select="rerun")
@@ -251,8 +251,8 @@ def render_electricity_view(
             ))
         fig_bsrc.update_layout(
             barmode="stack", title="건물별 사용량 구성 (KWH)", height=320,
-            plot_bgcolor="white",
-            yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+            plot_bgcolor="rgba(0,0,0,0)",
+            yaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
             legend=dict(orientation="h", y=1.12),
             margin=dict(l=10, r=10, t=70, b=30),
         )
@@ -306,8 +306,8 @@ def render_electricity_view(
             title=f"상위 {_n_show}개 브랜드 사용량 구성 (KWH)",
             height=max(420, _n_show * 22 + 80),
             margin=dict(l=10, r=20, t=60, b=40),
-            xaxis_title="KWH", plot_bgcolor="white",
-            xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+            xaxis_title="KWH", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
             legend=dict(orientation="h", y=1.06),
         )
         _ev_usage = st.plotly_chart(fig_us, use_container_width=True, key="elec_usage_stacked", on_select="rerun")
@@ -366,8 +366,8 @@ def render_electricity_view(
                                          marker_color=[clr,"#AAAAAA"],
                                          text=[_fmt_won(v) if col == "grand_total" else f"{v:,.0f}" for v in _grp["평균"]],
                                          textposition="outside"))
-                fig_cmp.update_layout(title=f"{label} 평균 비교", height=280, plot_bgcolor="white",
-                                      yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+                fig_cmp.update_layout(title=f"{label} 평균 비교", height=280, plot_bgcolor="rgba(0,0,0,0)",
+                                      yaxis=dict(gridcolor="rgba(128,128,128,0.2)",griddash="dot"),
                                       showlegend=False, margin=dict(l=10,r=10,t=50,b=30))
                 _ev_cmp = st.plotly_chart(fig_cmp, use_container_width=True, key=f"elec_ehp_cmp_{col}", on_select="rerun")
                 _sel_cmp = _ev_cmp.selection.points if _ev_cmp and hasattr(_ev_cmp, "selection") else []
@@ -457,7 +457,7 @@ def render_electricity_view(
                     fig_pf.add_vline(x=0, line_color="#888", line_width=1)
                     fig_pf.update_layout(
                         height=max(320, len(df_pf)*22+80), xaxis_title="원 (음수=할인, 양수=할증)",
-                        plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+                        plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(gridcolor="rgba(128,128,128,0.2)",griddash="dot"),
                         margin=dict(l=10,r=130,t=40,b=40),
                     )
                     _ev_pf = st.plotly_chart(fig_pf, use_container_width=True, key="elec_pfactor_chart", on_select="rerun")
@@ -498,8 +498,8 @@ def render_electricity_view(
                 barmode="stack",
                 height=max(420, _n_show2 * 22 + 80),
                 margin=dict(l=10, r=20, t=40, b=40),
-                xaxis_title="원", plot_bgcolor="white",
-                xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+                xaxis_title="원", plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
                 legend=dict(orientation="h", y=1.02),
             )
             _ev_fee = st.plotly_chart(fig_fs, use_container_width=True, key="elec_fee_stacked", on_select="rerun")
@@ -555,8 +555,8 @@ def render_electricity_view(
                             annotation_position="top left", annotation_font_size=10)
         fig_f.update_layout(
             height=max(420, len(_df_f) * 22 + 80),
-            xaxis_title=f"원/{_u}", plot_bgcolor="white",
-            xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+            xaxis_title=f"원/{_u}", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
             margin=dict(l=10, r=150, t=40, b=40),
         )
         _ev_fair = st.plotly_chart(fig_f, use_container_width=True, key="elec_fair_chart", on_select="rerun")
@@ -607,7 +607,7 @@ def render_electricity_view(
         fig_hm.update_layout(
             height=max(300, len(_hm_brands) * 22 + 80),
             margin=dict(l=10, r=20, t=40, b=40),
-            plot_bgcolor="white",
+            plot_bgcolor="rgba(0,0,0,0)",
             yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
         )
         _ev_heatmap = st.plotly_chart(fig_hm, use_container_width=True, key="elec_anom_heatmap", on_select="rerun")

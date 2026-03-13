@@ -39,9 +39,9 @@ def _scatter_with_trendline(df_sub, x_col, y_col, color_col, title, xlab, ylab, 
     fig.update_layout(
         title=title, height=480,
         xaxis_title=xlab, yaxis_title=ylab,
-        plot_bgcolor="white",
-        xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
-        yaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
+        yaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
         margin=dict(l=20, r=20, t=50, b=40),
     )
     _ev_sc = st.plotly_chart(fig, use_container_width=True, key=key, on_select="rerun")
@@ -164,7 +164,7 @@ def render_water_view(
             height=max(420, len(_df_r) * 22 + 80), margin=dict(l=10, r=130, t=40, b=40),
             xaxis_title=_unit, barmode="overlay", showlegend=True,
             legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
-            plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+            plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
             yaxis=dict(tickfont=dict(size=10), categoryorder="total ascending"),
         )
         _ev_rank = st.plotly_chart(fig_r, use_container_width=True, key="water_rank_chart", on_select="rerun")
@@ -208,7 +208,7 @@ def render_water_view(
             fig_c.update_layout(
                 barmode="stack", height=max(420, _n_show * 22 + 80),
                 margin=dict(l=10, r=20, t=40, b=40), xaxis_title="원",
-                plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+                plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
                 legend=dict(orientation="h", y=1.02),
             )
             _ev_comp = st.plotly_chart(fig_c, use_container_width=True, key="water_comp_stacked", on_select="rerun")
@@ -277,7 +277,7 @@ def render_water_view(
                             annotation_position="top left", annotation_font_size=10)
         fig_f.update_layout(
             height=max(420, len(_df_f) * 22 + 80), xaxis_title=f"원/{_u_toggle}",
-            plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD", griddash="dot"),
+            plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(gridcolor="rgba(128,128,128,0.2)", griddash="dot"),
             margin=dict(l=10, r=150, t=40, b=40),
         )
         _ev_fair = st.plotly_chart(fig_f, use_container_width=True, key="water_fair_chart", on_select="rerun")
@@ -327,8 +327,8 @@ def render_water_view(
                     text=[f"{int(row['총사용량']):,} m³"], textposition="outside",
                     textfont=dict(size=11), showlegend=False,
                 ))
-            fig_bu.update_layout(title="건물별 총 사용량 (m³)", height=300, plot_bgcolor="white",
-                                 yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+            fig_bu.update_layout(title="건물별 총 사용량 (m³)", height=300, plot_bgcolor="rgba(0,0,0,0)",
+                                 yaxis=dict(gridcolor="rgba(128,128,128,0.2)",griddash="dot"),
                                  margin=dict(l=10,r=10,t=50,b=30))
             _ev_bld_usage = st.plotly_chart(fig_bu, use_container_width=True, key="water_bld_usage", on_select="rerun")
             _sel_bld_usage = _ev_bld_usage.selection.points if _ev_bld_usage and hasattr(_ev_bld_usage, "selection") else []
@@ -348,8 +348,8 @@ def render_water_view(
                     text=[_fmt_won(row['총부과'])], textposition="outside",
                     textfont=dict(size=11), showlegend=False,
                 ))
-            fig_bt.update_layout(title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="white",
-                                 yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+            fig_bt.update_layout(title="건물별 총 부과금액 (원)", height=300, plot_bgcolor="rgba(0,0,0,0)",
+                                 yaxis=dict(gridcolor="rgba(128,128,128,0.2)",griddash="dot"),
                                  margin=dict(l=10,r=10,t=50,b=30))
             _ev_bld_total = st.plotly_chart(fig_bt, use_container_width=True, key="water_bld_total", on_select="rerun")
             _sel_bld_total = _ev_bld_total.selection.points if _ev_bld_total and hasattr(_ev_bld_total, "selection") else []
@@ -371,7 +371,7 @@ def render_water_view(
                 textposition="inside", textfont=dict(size=10, color="white"),
             ))
         fig_bcomp.update_layout(barmode="stack", title="건물별 요금 구성", height=320,
-                                plot_bgcolor="white", yaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+                                plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(gridcolor="rgba(128,128,128,0.2)",griddash="dot"),
                                 legend=dict(orientation="h",y=1.12), margin=dict(l=10,r=10,t=70,b=30))
         _ev_bld_comp = st.plotly_chart(fig_bcomp, use_container_width=True, key="water_bld_comp", on_select="rerun")
         _sel_bld_comp = _ev_bld_comp.selection.points if _ev_bld_comp and hasattr(_ev_bld_comp, "selection") else []
@@ -436,7 +436,7 @@ def render_water_view(
                                 annotation_position="top left", annotation_font_size=10)
             fig_u.update_layout(
                 height=max(420, len(_df_u)*22+80), xaxis_title="m³", barmode="overlay",
-                plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+                plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(gridcolor="rgba(128,128,128,0.2)",griddash="dot"),
                 yaxis=dict(categoryorder="total ascending"),
                 legend=dict(orientation="h",y=1.02,x=1,xanchor="right"),
                 margin=dict(l=10,r=120,t=40,b=40),
@@ -494,7 +494,7 @@ def render_water_view(
                                   annotation_position="top left", annotation_font_size=10)
             fig_cpu.update_layout(
                 height=max(420, len(_df_cpu)*22+80), xaxis_title="원/m³", barmode="overlay",
-                plot_bgcolor="white", xaxis=dict(gridcolor="#DDDDDD",griddash="dot"),
+                plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(gridcolor="rgba(128,128,128,0.2)",griddash="dot"),
                 yaxis=dict(categoryorder="total ascending"),
                 legend=dict(orientation="h",y=1.02,x=1,xanchor="right"),
                 margin=dict(l=10,r=130,t=40,b=40),
@@ -574,7 +574,7 @@ def render_water_view(
         ))
         fig_hm.update_layout(
             height=max(300, len(_hm_brands)*22+80), margin=dict(l=10,r=20,t=40,b=40),
-            plot_bgcolor="white", yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
+            plot_bgcolor="rgba(0,0,0,0)", yaxis=dict(autorange="reversed", tickfont=dict(size=10)),
         )
         _ev_heatmap = st.plotly_chart(fig_hm, use_container_width=True, key="water_anom_heatmap", on_select="rerun")
         _sel_heatmap = _ev_heatmap.selection.points if _ev_heatmap and hasattr(_ev_heatmap, "selection") else []

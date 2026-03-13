@@ -222,6 +222,39 @@ def render_mom_tab(
             delta_color="inverse",
         )
 
+    # ── Business Insight Summary ────────────────────────────────────────────
+    _mom_insights: list[str] = []
+    for p, label, unit in _kpi_specs:
+        chg_col = f"{p}_change"
+        pct_col = f"{p}_pct"
+        if chg_col not in cur_df.columns:
+            continue
+        _chg_s = to_numeric_series(cur_df[chg_col]).dropna()
+        _n_up = int((_chg_s > 0).sum())
+        _n_down = int((_chg_s < 0).sum())
+        _biggest_up = cur_df.loc[_chg_s.idxmax()] if not _chg_s.empty and _chg_s.max() > 0 else None
+        if _biggest_up is not None:
+            _bu_pct = to_numeric_series(pd.Series([_biggest_up.get(pct_col)]))[0]
+            _pct_str = f" (+{_bu_pct:.0f}%)" if not pd.isna(_bu_pct) else ""
+            _direction_msg = ""
+            if _n_up > _n_down * 2:
+                _direction_msg = " → 전체적으로 사용량이 증가 추세입니다. 계절 요인 또는 공용부 점검이 필요합니다"
+            elif _n_down > _n_up * 2:
+                _direction_msg = " → 전체적으로 사용량이 감소 추세입니다. 공실 증가 여부를 확인하세요"
+            _mom_insights.append(
+                f"{label}: {_n_up}개 증가 / {_n_down}개 감소 — "
+                f"최대 증가 **{_biggest_up['brand']}** +{_chg_s.max():,.1f}{unit}{_pct_str}"
+                f"{_direction_msg}"
+            )
+    if _mom_insights:
+        with st.container(border=True):
+            st.markdown(
+                '<p style="margin:0 0 6px;font-size:0.9rem;font-weight:700;color:#4C72B0">'
+                '비즈니스 인사이트</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("  \n".join(f"- {i}" for i in _mom_insights))
+
     st.divider()
 
     # ── Utility selector ──────────────────────────────────────────────────

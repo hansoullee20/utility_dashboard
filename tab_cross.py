@@ -724,6 +724,52 @@ def render_cross_tab(
     # ── 0. KPI overview ────────────────────────────────────────────────────
     _render_cost_kpis(billing_df)
 
+    # ── Business Insight Summary ──────────────────────────────────────────
+    _bill_insights: list[str] = []
+    _bi_agg = _prepare_billing_by_brand(billing_df)
+    if not _bi_agg.empty and "total" in _bi_agg.columns:
+        _bi_total = _bi_agg["total"].sum()
+        _bi_top = _bi_agg.nlargest(1, "total").iloc[0]
+        _bi_top_pct = _bi_top["total"] / _bi_total * 100 if _bi_total else 0
+        _bill_insights.append(
+            f"**{_bi_top['brand']}**가 총 청구액의 **{_bi_top_pct:.1f}%** 차지 "
+            f"({fmt_won(_bi_top['total'] * 10000)}) → "
+            f"이 브랜드의 비용 절감이 전체 비용에 가장 큰 영향을 줍니다"
+        )
+        # Count anomalies across cost types
+        _n_anom_total = 0
+        for _cm in _COST_META.values():
+            zc = _cm["z"]
+            if zc in _bi_agg.columns:
+                _n_anom_total += int((_bi_agg[zc].abs() >= _Z_THRESH).sum())
+        if _n_anom_total:
+            _bill_insights.append(
+                f"단가 이상치 총 **{_n_anom_total}건** 감지 → "
+                f"과금 오류나 계약 단가 이상이 있을 수 있으니 해당 브랜드를 점검하세요"
+            )
+        # Gini-like concentration
+        _sorted_t = _bi_agg["total"].sort_values(ascending=False)
+        _n20 = max(1, len(_sorted_t) // 5)
+        _top20_pct = _sorted_t.head(_n20).sum() / _bi_total * 100 if _bi_total else 0
+        if _top20_pct >= 60:
+            _bill_insights.append(
+                f"상위 20% 브랜드가 전체 비용의 **{_top20_pct:.0f}%** 차지 → "
+                f"비용이 소수 브랜드에 집중되어 있어 해당 브랜드 관리가 핵심입니다"
+            )
+        else:
+            _bill_insights.append(
+                f"상위 20% 브랜드가 전체 비용의 **{_top20_pct:.0f}%** 차지 → "
+                f"비용이 비교적 고르게 분포되어 있습니다"
+            )
+    if _bill_insights:
+        with st.container(border=True):
+            st.markdown(
+                '<p style="margin:0 0 6px;font-size:0.9rem;font-weight:700;color:#4C72B0">'
+                '비즈니스 인사이트</p>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("  \n".join(f"- {i}" for i in _bill_insights))
+
     # ── Shared utility selector ──────────────────────────────────────────
     _selected_util = None
     if billing_df is not None:
