@@ -30,7 +30,7 @@ from reportlab.platypus import (
 
 from report import (
     C_BLUE, C_CRITICAL, C_DIVIDER, C_LIGHT, C_NAVY, C_WHITE,
-    C_WATCH, C_ALERT, C_STABLE, C_NORMAL,
+    C_WATCH, C_ALERT, C_STABLE, C_NORMAL, C_ACCENT,
     _ensure_fonts, _make_numbered_canvas, _make_page_template,
     _make_styles, _section_bar,
     _FONT_REG,
@@ -136,19 +136,49 @@ def _build_doc(buf, footer_left=None):
     return doc, T
 
 
+C_COVER_BG = colors.HexColor("#F7F9FC")
+C_CALLOUT_BG = colors.HexColor("#F0F5FB")
+C_ACTION_BG = colors.HexColor("#FFF8F0")
+C_ACTION_BORDER = colors.HexColor("#F4882A")
+
+
 def _cover_items(title: str, subtitle: str, context: dict, T) -> list:
     ctx = context or {}
+    # Accent line at top of cover
+    accent_line = Table(
+        [[""]],
+        colWidths=[17 * cm],
+        style=TableStyle([
+            ("LINEBELOW", (0, 0), (-1, 0), 2.5, C_ACCENT),
+        ]),
+    )
     items = [
+        accent_line,
+        Spacer(1, 0.6 * cm),
         Paragraph(title, T["cover_title"]),
-        Spacer(1, 0.3 * cm),
+        Spacer(1, 0.2 * cm),
         Paragraph(subtitle, T["cover_sub"]),
-        Spacer(1, 0.5 * cm),
-        Paragraph(f"작성일: {ctx.get('date', str(_date.today()))}", T["note"]),
+        Spacer(1, 0.6 * cm),
     ]
+    # Meta info in a subtle box
+    meta_rows = [[Paragraph(f"<b>작성일</b>: {ctx.get('date', str(_date.today()))}", T["note"])]]
     if ctx.get("period"):
-        items.append(Paragraph(f"분석 기간: {ctx['period']}", T["note"]))
+        meta_rows.append([Paragraph(f"<b>분석 기간</b>: {ctx['period']}", T["note"])])
     if ctx.get("buildings"):
-        items.append(Paragraph(f"대상 건물: {ctx['buildings']}", T["note"]))
+        meta_rows.append([Paragraph(f"<b>대상 건물</b>: {ctx['buildings']}", T["note"])])
+    meta_table = Table(
+        meta_rows,
+        colWidths=[17 * cm],
+        style=TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), C_COVER_BG),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("ROUNDEDCORNERS", [4, 4, 4, 4]),
+            ("BOX", (0, 0), (-1, -1), 0.3, C_DIVIDER),
+        ]),
+    )
+    items.append(meta_table)
     items.append(Spacer(1, 0.8 * cm))
     return items
 
@@ -185,13 +215,50 @@ def _prose(text, T):
 
 
 def _action_box(items: list[str], T, W) -> list:
-    """Create a highlighted action-items box with flowing recommendations."""
-    flowables = [_section_bar("📋 조치 권고사항", T, W)]
+    """Create a professional highlighted action-items box."""
+    rows = []
     for i, item in enumerate(items, 1):
-        flowables.append(Paragraph(f"<b>{i}.</b> {item}", T["body"]))
-        flowables.append(Spacer(1, 0.2 * cm))
-    flowables.append(Spacer(1, 0.4 * cm))
-    return flowables
+        rows.append([Paragraph(f"<b>{i}.</b> {item}", T["callout"])])
+    action_table = Table(
+        rows,
+        colWidths=[W - 0.5 * cm],
+        style=TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), C_ACTION_BG),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.3, colors.HexColor("#F0E0D0")),
+            ("BOX", (0, 0), (-1, -1), 0, colors.transparent),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, C_ACTION_BORDER),
+            ("ROUNDEDCORNERS", [0, 4, 4, 0]),
+        ]),
+    )
+    return [
+        _section_bar("📋 조치 권고사항", T, W),
+        Spacer(1, 0.15 * cm),
+        action_table,
+        Spacer(1, 0.4 * cm),
+    ]
+
+
+def _callout_box(text: str, T, W, accent_color=None) -> list:
+    """Highlighted callout box for key findings."""
+    ac = accent_color or C_BLUE
+    t = Table(
+        [[Paragraph(text, T["callout"])]],
+        colWidths=[W - 0.5 * cm],
+        style=TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), C_CALLOUT_BG),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 14),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, ac),
+            ("ROUNDEDCORNERS", [0, 4, 4, 0]),
+        ]),
+    )
+    return [t, Spacer(1, 0.3 * cm)]
 
 
 def _divider_line(W) -> list:
@@ -232,12 +299,13 @@ def _anomaly_story(anomaly_df: pd.DataFrame, T, W) -> list:
     story += _prose(exec_text, T)
 
     if danger:
-        story += _prose(
-            f"이 중 <font color='#E63946'><b>위험 등급 {danger}개</b></font> 브랜드는 "
+        story += _callout_box(
+            f"<font color='#E63946'><b>⚠ 위험 등급 {danger}개 브랜드</b></font> — "
             f"복합 이상 점수 0.65 이상으로, 검침 오류·계량기 고장·누수 등의 가능성이 높아 "
             f"<b>즉시 현장 점검이 필요</b>합니다. "
-            f"이 브랜드들은 여러 유틸리티에서 동시에 비정상적 신호가 감지되고 있어, "
-            f"단순 사용량 증가가 아닌 시스템적 문제일 수 있습니다.", T,
+            f"여러 유틸리티에서 동시에 비정상적 신호가 감지되어, "
+            f"단순 사용량 증가가 아닌 시스템적 문제일 수 있습니다.",
+            T, W, accent_color=C_CRITICAL,
         )
     if caution:
         story += _prose(
@@ -600,12 +668,13 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
                 hc_text_parts = []
                 for b, m, z in high_cost[:3]:
                     hc_text_parts.append(f"<b>{b}</b>({m} Z={z:+.1f})")
-                story += _prose(
-                    f"<font color='#E63946'><b>고비용 이상</b></font>: "
-                    f"{', '.join(hc_text_parts)} 등 {len(high_cost)}건이 감지되었습니다. "
-                    "이들 브랜드는 동일 건물 내 동종 대비 단가가 2σ 이상 높으며, "
+                story += _callout_box(
+                    f"<font color='#E63946'><b>고비용 이상 {len(high_cost)}건</b></font> — "
+                    f"{', '.join(hc_text_parts)} 등이 감지되었습니다. "
+                    "동일 건물 내 동종 대비 단가가 2σ 이상 높으며, "
                     "계약 단가 차이가 아닌 경우 과다 청구 또는 계량 이상을 의심할 수 있습니다. "
-                    "해당 브랜드의 청구서 원본과 계량 데이터를 교차 검증하시기 바랍니다.", T,
+                    "해당 브랜드의 청구서 원본과 계량 데이터를 교차 검증하시기 바랍니다.",
+                    T, W, accent_color=C_CRITICAL,
                 )
 
             if low_cost:
@@ -671,11 +740,13 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
                     ]
                     if not high_hvac.empty:
                         hh_names = high_hvac["brand"].tolist()[:3]
-                        story += _prose(
-                            f"특히 {', '.join(hh_names)} 등 <b>{len(high_hvac)}개</b> 브랜드는 "
-                            f"HVAC 강도(kWh/m²)가 평균+1.5σ를 초과하여, 냉난방 시스템의 "
-                            "효율 저하 또는 과도한 운전이 의심됩니다. 이들 브랜드는 "
-                            "실외기 상태, 냉매 충전량, 운전 스케줄을 우선 점검하시기 바랍니다.", T,
+                        story += _callout_box(
+                            f"<b>HVAC 고소비 {len(high_hvac)}개 브랜드</b> — "
+                            f"{', '.join(hh_names)} 등은 "
+                            f"HVAC 강도(kWh/m²)가 평균+1.5σ를 초과하여 냉난방 시스템의 "
+                            "효율 저하 또는 과도한 운전이 의심됩니다. "
+                            "실외기 상태, 냉매 충전량, 운전 스케줄을 우선 점검하시기 바랍니다.",
+                            T, W, accent_color=C_WATCH,
                         )
 
         # Stacked bar chart
@@ -1053,14 +1124,16 @@ def generate_comprehensive_pdf(
         sections_included.append("효율 분석")
 
     if sections_included:
-        story += _prose(
-            f"<b>보고서 구성</b>: {' → '.join(sections_included)}", T,
+        # Table of contents with visual flow
+        toc_items = " &nbsp;→&nbsp; ".join(
+            [f"<b>{s}</b>" for s in sections_included]
         )
-        if brief_parts:
-            story += _prose(
-                f"<b>핵심 요약</b>: {'. '.join(brief_parts)}.", T,
-            )
-        story.append(Spacer(1, 0.3 * cm))
+        story += _callout_box(
+            f"<b>보고서 구성</b><br/>{toc_items}"
+            + (f"<br/><br/><b>핵심 요약</b>: {'. '.join(brief_parts)}." if brief_parts else ""),
+            T, W,
+        )
+        story.append(Spacer(1, 0.2 * cm))
 
     has_content = False
 

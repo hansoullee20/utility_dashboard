@@ -881,9 +881,9 @@ def _chart_status_donut(status_counts, title, status_labels):
 def _make_styles():
     s = {}
     s["cover_title"] = ParagraphStyle(
-        "CoverTitle", fontSize=26, fontName="NanumGothic-Bold",
-        leading=34, textColor=C_NAVY, alignment=TA_LEFT,
-        spaceBefore=0, spaceAfter=10,
+        "CoverTitle", fontSize=28, fontName="NanumGothic-Bold",
+        leading=36, textColor=C_NAVY, alignment=TA_LEFT,
+        spaceBefore=0, spaceAfter=6,
     )
     s["cover_sub"] = ParagraphStyle(
         "CoverSub", fontSize=13, fontName="NanumGothic",
@@ -891,7 +891,7 @@ def _make_styles():
         spaceBefore=0, spaceAfter=8,
     )
     s["section_title"] = ParagraphStyle(
-        "SectionTitle", fontSize=14, fontName="NanumGothic-Bold",
+        "SectionTitle", fontSize=13, fontName="NanumGothic-Bold",
         textColor=C_WHITE, alignment=TA_LEFT,
         leftIndent=6, spaceBefore=2, spaceAfter=2,
     )
@@ -903,15 +903,21 @@ def _make_styles():
     s["body"] = ParagraphStyle(
         "Body", fontSize=9, fontName="NanumGothic",
         textColor=C_TEXT, alignment=TA_LEFT,
-        spaceAfter=3, leading=14,
+        spaceAfter=4, leading=15,
     )
     s["caption"] = ParagraphStyle(
-        "Caption", fontSize=8, fontName="NanumGothic",
+        "Caption", fontSize=7.5, fontName="NanumGothic",
         textColor=C_SUBTEXT, alignment=TA_CENTER, spaceAfter=2,
     )
     s["note"] = ParagraphStyle(
-        "Note", fontSize=8, fontName="NanumGothic",
+        "Note", fontSize=8.5, fontName="NanumGothic",
         textColor=C_SUBTEXT, alignment=TA_LEFT, spaceAfter=4, leading=13,
+    )
+    s["callout"] = ParagraphStyle(
+        "Callout", fontSize=9, fontName="NanumGothic",
+        textColor=C_TEXT, alignment=TA_LEFT,
+        spaceAfter=4, leading=15,
+        leftIndent=8, rightIndent=8,
     )
     s["table_hdr"] = ParagraphStyle(
         "TableHdr", fontSize=8, fontName="NanumGothic-Bold",
@@ -934,15 +940,22 @@ def _make_styles():
 
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
+C_ACCENT = colors.HexColor("#2E6DA4")
+
+
 def _section_bar(text, styles, inner_w):
     return Table(
-        [[Paragraph(text, styles["section_title"])]],
-        colWidths=[inner_w],
+        [["", Paragraph(text, styles["section_title"])]],
+        colWidths=[0.25 * cm, inner_w - 0.25 * cm],
         style=TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, -1), C_NAVY),
+            ("BACKGROUND",    (0, 0), (0, 0), C_ACCENT),
+            ("BACKGROUND",    (1, 0), (-1, -1), C_NAVY),
             ("TOPPADDING",    (0, 0), (-1, -1), 7),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+            ("LEFTPADDING",   (1, 0), (-1, -1), 10),
+            ("LEFTPADDING",   (0, 0), (0, 0), 0),
+            ("RIGHTPADDING",  (0, 0), (0, 0), 0),
+            ("ROUNDEDCORNERS", [2, 0, 0, 2]),
         ]),
     )
 
@@ -1878,10 +1891,15 @@ def _make_page_template(doc, T):
 
     def _footer(canvas, doc):
         canvas.saveState()
+        # Header accent line
+        page_h = A4[1]
+        canvas.setStrokeColor(C_ACCENT)
+        canvas.setLineWidth(1.5)
+        canvas.line(margin, page_h - 1.6 * cm, page_w - margin, page_h - 1.6 * cm)
+        # Footer
         canvas.setFont("NanumGothic", 7.5)
         canvas.setFillColor(C_SUBTEXT)
         canvas.drawString(margin, 1.2 * cm, T["footer_left"])
-        # page number is drawn by _make_numbered_canvas (needs total page count)
         canvas.setStrokeColor(C_DIVIDER)
         canvas.setLineWidth(0.4)
         canvas.line(margin, 1.5 * cm, page_w - margin, 1.5 * cm)
