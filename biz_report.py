@@ -71,6 +71,17 @@ def _f(val, decimals=1, suffix=""):
         return "—"
 
 
+def _pct(val):
+    """Format a value as percentage string, handling None/NaN."""
+    if val is None:
+        return "—"
+    try:
+        v = float(val)
+        return "—" if np.isnan(v) else f"{v:+.1f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _std_table(data, col_w, styles):
     ts = TableStyle([
         ("BACKGROUND",    (0, 0), (-1, 0), C_NAVY),
@@ -83,6 +94,26 @@ def _std_table(data, col_w, styles):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("LEFTPADDING",   (0, 0), (-1, -1), 4),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_LIGHT]),
+    ] + styles)
+    return Table(data, colWidths=col_w, style=ts, repeatRows=1)
+
+
+def _highlight_table(data, col_w, styles):
+    """Table with slightly larger font and more padding — for key summary tables."""
+    ts = TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), C_NAVY),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), C_WHITE),
+        ("FONTNAME",      (0, 0), (-1, 0), "NanumGothic-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, 0), 8.5),
+        ("FONTSIZE",      (0, 1), (-1, -1), 8),
+        ("FONTNAME",      (0, 1), (-1, -1), "NanumGothic"),
+        ("GRID",          (0, 0), (-1, -1), 0.4, C_DIVIDER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [C_WHITE, C_LIGHT]),
     ] + styles)
@@ -148,20 +179,27 @@ def _img_flowable(png_buf, width_cm):
     return Image(png_buf, width=width_cm * cm, height=width_cm * cm * h_px / w_px)
 
 
-def _insight_para(text, T):
-    """Paragraph with the body style for narrative insights."""
-    return Paragraph(text, T["body"])
+def _prose(text, T):
+    """Narrative paragraph with bottom spacing — the primary building block."""
+    return [Paragraph(text, T["body"]), Spacer(1, 0.2 * cm)]
 
 
 def _action_box(items: list[str], T, W) -> list:
-    """Create a highlighted action-items box."""
-    flowables = []
-    flowables.append(_section_bar("📋 조치 권고사항", T, W))
+    """Create a highlighted action-items box with flowing recommendations."""
+    flowables = [_section_bar("📋 조치 권고사항", T, W)]
     for i, item in enumerate(items, 1):
         flowables.append(Paragraph(f"<b>{i}.</b> {item}", T["body"]))
-        flowables.append(Spacer(1, 0.15 * cm))
-    flowables.append(Spacer(1, 0.3 * cm))
+        flowables.append(Spacer(1, 0.2 * cm))
+    flowables.append(Spacer(1, 0.4 * cm))
     return flowables
+
+
+def _divider_line(W) -> list:
+    """Thin horizontal rule for visual separation between subsections."""
+    t = Table([[""]],
+              colWidths=[W],
+              style=TableStyle([("LINEBELOW", (0, 0), (-1, 0), 0.5, C_DIVIDER)]))
+    return [Spacer(1, 0.2 * cm), t, Spacer(1, 0.3 * cm)]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -169,7 +207,7 @@ def _action_box(items: list[str], T, W) -> list:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _anomaly_story(anomaly_df: pd.DataFrame, T, W) -> list:
-    """Return reportlab flowables for the anomaly section with charts + insights."""
+    """Return reportlab flowables for the anomaly section — executive narrative style."""
     story = []
     fp = _mpl_font()
     total = len(anomaly_df)
@@ -180,85 +218,41 @@ def _anomaly_story(anomaly_df: pd.DataFrame, T, W) -> list:
     observe = risk_counts.get("🟡 관찰", 0)
     normal  = risk_counts.get("🟢 정상", 0)
     flagged = danger + caution
-
-    # ── Executive summary ─────────────────────────────────────────────────
-    story.append(_section_bar("요약", T, W))
     pct_flagged = flagged / total * 100 if total else 0
-    summary_lines = [
-        f"전체 <b>{total}개</b> 브랜드 중 <b>{flagged}개({pct_flagged:.0f}%)</b>가 "
-        f"위험 또는 주의 등급으로 분류되었습니다.",
-    ]
+
+    # ── Executive Summary ──────────────────────────────────────────────────
+    story.append(_section_bar("경영진 요약", T, W))
+
+    exec_text = (
+        f"금월 검침 데이터를 기반으로 전체 <b>{total}개</b> 브랜드에 대해 "
+        f"사용량 급등, 단위 비용 이상, 소비 패턴, HVAC 효율, 계량 일관성 등 "
+        f"5개 차원의 복합 이상 분석을 수행한 결과, "
+        f"<b>{flagged}개 브랜드({pct_flagged:.0f}%)</b>가 위험 또는 주의 등급으로 분류되었습니다."
+    )
+    story += _prose(exec_text, T)
+
     if danger:
-        summary_lines.append(
-            f"<font color='#E63946'><b>위험 등급 {danger}개</b></font> 브랜드는 "
-            "복합 이상 점수 0.65 이상으로, 즉시 조사가 필요합니다."
+        story += _prose(
+            f"이 중 <font color='#E63946'><b>위험 등급 {danger}개</b></font> 브랜드는 "
+            f"복합 이상 점수 0.65 이상으로, 검침 오류·계량기 고장·누수 등의 가능성이 높아 "
+            f"<b>즉시 현장 점검이 필요</b>합니다. "
+            f"이 브랜드들은 여러 유틸리티에서 동시에 비정상적 신호가 감지되고 있어, "
+            f"단순 사용량 증가가 아닌 시스템적 문제일 수 있습니다.", T,
         )
     if caution:
-        summary_lines.append(
+        story += _prose(
             f"<font color='#F4882A'><b>주의 등급 {caution}개</b></font> 브랜드는 "
-            "하나 이상의 유틸리티에서 비정상적 패턴이 감지되었습니다."
+            f"하나 이상의 유틸리티에서 비정상적 패턴이 감지되었으나, 일시적 변동일 가능성도 있습니다. "
+            f"다음 월 검침 결과와 비교하여 추세가 지속되는지 모니터링이 필요합니다.", T,
         )
-    for line in summary_lines:
-        story.append(Paragraph(line, T["body"]))
-        story.append(Spacer(1, 0.15 * cm))
-    story.append(Spacer(1, 0.3 * cm))
-
-    # ── Risk distribution chart ───────────────────────────────────────────
-    labels = ["위험", "주의", "관찰", "정상"]
-    values = [danger, caution, observe, normal]
-    mpl_colors = ["#E63946", "#F4882A", "#E8B84B", "#43AA6F"]
-    non_zero = [(l, v, c) for l, v, c in zip(labels, values, mpl_colors) if v > 0]
-
-    if non_zero:
-        fig, (ax_pie, ax_bar) = plt.subplots(1, 2, figsize=(10, 3.5), facecolor="white")
-
-        # Pie chart
-        pie_labels, pie_vals, pie_colors = zip(*non_zero)
-        wedges, texts, autotexts = ax_pie.pie(
-            pie_vals, labels=pie_labels, colors=pie_colors, autopct="%1.0f%%",
-            startangle=90, textprops={"fontproperties": fp, "fontsize": 10},
+    if observe > 0 and normal > 0:
+        story += _prose(
+            f"나머지 <b>{observe}개</b> 관찰 등급과 <b>{normal}개</b> 정상 등급 브랜드는 "
+            f"현재 특이사항이 없으나, 정기 모니터링을 통해 조기 경보 체계를 유지하는 것이 바람직합니다.", T,
         )
-        for at in autotexts:
-            at.set_fontsize(9)
-            at.set_fontweight("bold")
-        ax_pie.set_title("위험 등급 분포", fontproperties=fp, fontsize=12, fontweight="bold")
+    story.append(Spacer(1, 0.2 * cm))
 
-        # Top 10 composite score bar chart
-        top_n = anomaly_df.nlargest(min(10, total), "composite_score")
-        brands = top_n["brand"].tolist()
-        scores = top_n["composite_score"].tolist()
-        bar_colors = [_RISK_MPL.get(r, "#888888") for r in top_n.get("risk_level", [])]
-        if len(bar_colors) < len(brands):
-            bar_colors = ["#E63946"] * len(brands)
-
-        y_pos = range(len(brands))
-        ax_bar.barh(y_pos, scores, color=bar_colors, edgecolor="white", height=0.7)
-        ax_bar.set_yticks(y_pos)
-        ax_bar.set_yticklabels(brands, fontproperties=fp, fontsize=8)
-        ax_bar.invert_yaxis()
-        ax_bar.set_xlabel("복합 이상 점수", fontproperties=fp, fontsize=10)
-        ax_bar.set_title("이상 점수 상위 브랜드", fontproperties=fp, fontsize=12, fontweight="bold")
-        ax_bar.axvline(0.65, color="#E63946", linestyle="--", linewidth=0.8, alpha=0.7)
-        ax_bar.axvline(0.40, color="#F4882A", linestyle="--", linewidth=0.8, alpha=0.7)
-        for s, score in zip(y_pos, scores):
-            ax_bar.text(score + 0.01, s, f"{score:.2f}", va="center", fontsize=7, color="#333")
-        ax_bar.spines["top"].set_visible(False)
-        ax_bar.spines["right"].set_visible(False)
-
-        fig.tight_layout(pad=2.0)
-        chart_buf = _fig_to_buf(fig)
-        story.append(_img_flowable(chart_buf, width_cm=17))
-        story.append(Spacer(1, 0.3 * cm))
-
-    # ── Score methodology note ────────────────────────────────────────────
-    story.append(Paragraph(
-        "<i>복합 점수 = 급등(30%) + 소비(25%) + 비용(25%) + HVAC(10%) + 일관성(10%)  |  "
-        "위험 ≥ 0.65  ·  주의 ≥ 0.40  ·  관찰 ≥ 0.20  ·  정상 &lt; 0.20</i>",
-        T["caption"],
-    ))
-    story.append(Spacer(1, 0.4 * cm))
-
-    # ── KPI row ───────────────────────────────────────────────────────────
+    # ── KPI summary row ────────────────────────────────────────────────────
     kpi_data = [
         ["총 브랜드", "🔴 위험", "🟠 주의", "🟡 관찰", "🟢 정상"],
         [str(total), str(danger), str(caution), str(observe), str(normal)],
@@ -283,54 +277,132 @@ def _anomaly_story(anomaly_df: pd.DataFrame, T, W) -> list:
     story.append(Table(kpi_data, colWidths=kpi_col, style=kpi_ts))
     story.append(Spacer(1, 0.5 * cm))
 
-    # ── High-risk brands — narrative + table ──────────────────────────────
+    # ── Risk distribution chart ────────────────────────────────────────────
+    labels = ["위험", "주의", "관찰", "정상"]
+    values = [danger, caution, observe, normal]
+    mpl_colors = ["#E63946", "#F4882A", "#E8B84B", "#43AA6F"]
+    non_zero = [(l, v, c) for l, v, c in zip(labels, values, mpl_colors) if v > 0]
+
+    if non_zero:
+        fig, (ax_pie, ax_bar) = plt.subplots(1, 2, figsize=(10, 3.5), facecolor="white")
+
+        pie_labels, pie_vals, pie_colors = zip(*non_zero)
+        wedges, texts, autotexts = ax_pie.pie(
+            pie_vals, labels=pie_labels, colors=pie_colors, autopct="%1.0f%%",
+            startangle=90, textprops={"fontproperties": fp, "fontsize": 10},
+        )
+        for at in autotexts:
+            at.set_fontsize(9)
+            at.set_fontweight("bold")
+        ax_pie.set_title("위험 등급 분포", fontproperties=fp, fontsize=12, fontweight="bold")
+
+        top_n = anomaly_df.nlargest(min(10, total), "composite_score")
+        brands = top_n["brand"].tolist()
+        scores = top_n["composite_score"].tolist()
+        bar_colors = [_RISK_MPL.get(r, "#888888") for r in top_n.get("risk_level", [])]
+        if len(bar_colors) < len(brands):
+            bar_colors = ["#E63946"] * len(brands)
+
+        y_pos = range(len(brands))
+        ax_bar.barh(y_pos, scores, color=bar_colors, edgecolor="white", height=0.7)
+        ax_bar.set_yticks(y_pos)
+        ax_bar.set_yticklabels(brands, fontproperties=fp, fontsize=8)
+        ax_bar.invert_yaxis()
+        ax_bar.set_xlabel("복합 이상 점수", fontproperties=fp, fontsize=10)
+        ax_bar.set_title("이상 점수 상위 브랜드", fontproperties=fp, fontsize=12, fontweight="bold")
+        ax_bar.axvline(0.65, color="#E63946", linestyle="--", linewidth=0.8, alpha=0.7)
+        ax_bar.axvline(0.40, color="#F4882A", linestyle="--", linewidth=0.8, alpha=0.7)
+        for s, score in zip(y_pos, scores):
+            ax_bar.text(score + 0.01, s, f"{score:.2f}", va="center", fontsize=7, color="#333")
+        ax_bar.spines["top"].set_visible(False)
+        ax_bar.spines["right"].set_visible(False)
+
+        fig.tight_layout(pad=2.0)
+        chart_buf = _fig_to_buf(fig)
+        story.append(_img_flowable(chart_buf, width_cm=17))
+        story.append(Spacer(1, 0.15 * cm))
+        story.append(Paragraph(
+            "<i>좌: 위험 등급 비율 | 우: 복합 이상 점수 상위 10개 브랜드 "
+            "(빨간 점선 = 위험 기준 0.65, 주황 점선 = 주의 기준 0.40)</i>",
+            T["caption"],
+        ))
+        story.append(Spacer(1, 0.4 * cm))
+
+    # ── High-risk brand deep-dive ──────────────────────────────────────────
     high_risk = anomaly_df[
         anomaly_df.get("risk_level", pd.Series(dtype=str)).isin(["🔴 위험", "🟠 주의"])
     ].copy() if "risk_level" in anomaly_df.columns else pd.DataFrame()
 
     if not high_risk.empty:
-        story.append(_section_bar(f"위험·주의 브랜드 상세 ({len(high_risk)}개)", T, W))
+        story.append(_section_bar(f"주요 점검 대상 브랜드 분석 ({len(high_risk)}개)", T, W))
 
-        # Narrative: explain WHY each top brand is flagged
-        top3 = high_risk.nlargest(min(3, len(high_risk)), "composite_score")
-        for _, r in top3.iterrows():
+        story += _prose(
+            f"아래는 위험·주의 등급으로 분류된 <b>{len(high_risk)}개</b> 브랜드에 대한 상세 분석입니다. "
+            f"각 브랜드의 이상 원인을 파악하여 우선순위별로 조사를 진행하시기 바랍니다.", T,
+        )
+
+        # Detailed narrative for top brands
+        top5 = high_risk.nlargest(min(5, len(high_risk)), "composite_score")
+        for idx, (_, r) in enumerate(top5.iterrows(), 1):
             brand = r.get("brand", "?")
             bldg = r.get("building", "")
             score = r.get("composite_score", 0)
             reason = r.get("reason", "")
             rl = _RISK_PLAIN.get(str(r.get("risk_level", "")), "")
             loc = f" ({bldg}동)" if bldg else ""
-            narrative = f"<b>{brand}</b>{loc} — {rl} (점수 {score:.2f})"
-            if reason and reason != "—":
-                narrative += f": {reason}"
-            story.append(Paragraph(narrative, T["body"]))
-            story.append(Spacer(1, 0.1 * cm))
-        if len(high_risk) > 3:
-            story.append(Paragraph(
-                f"<i>외 {len(high_risk) - 3}개 브랜드 — 아래 표 참조</i>",
-                T["caption"],
-            ))
-        story.append(Spacer(1, 0.3 * cm))
 
+            # Build a flowing narrative per brand
+            spike_pct = r.get("spike_max_pct", 0)
+            spike_util = r.get("spike_worst_util", "")
+            peer_ratio = r.get("spike_peer_ratio", 0)
+            parts = [f"<b>{idx}. {brand}</b>{loc} — <b>{rl}</b> (복합점수 {score:.2f})"]
+
+            details = []
+            if spike_pct and not pd.isna(spike_pct) and abs(spike_pct) > 10:
+                details.append(
+                    f"전월 대비 {spike_util} 사용량이 <b>{spike_pct:+.0f}%</b> 변동하였습니다"
+                )
+            if peer_ratio and not pd.isna(peer_ratio) and peer_ratio > 1.5:
+                details.append(
+                    f"동일 건물 평균 대비 <b>{peer_ratio:.1f}배</b> 높은 변동폭을 보입니다"
+                )
+            if reason and reason != "—":
+                details.append(f"주요 이상 신호: {reason}")
+
+            if details:
+                parts.append(". ".join(details) + ".")
+            else:
+                parts.append("복합 점수가 높아 전반적인 유틸리티 사용 패턴 점검이 필요합니다.")
+
+            story.append(Paragraph(" ".join(parts), T["body"]))
+            story.append(Spacer(1, 0.15 * cm))
+
+        if len(high_risk) > 5:
+            story += _prose(
+                f"<i>이상 {len(high_risk) - 5}개 브랜드는 아래 요약 테이블을 참조하시기 바랍니다.</i>", T,
+            )
+        story.append(Spacer(1, 0.2 * cm))
+
+        # Summary table — compact, key columns only
         high_risk = high_risk.sort_values("composite_score", ascending=False)
-        headers = ["브랜드", "건물", "등급", "복합점수", "급등%", "급등항목", "소비", "비용", "HVAC", "일관성"]
-        col_w = [c * cm for c in [3.0, 1.0, 1.1, 1.3, 1.2, 1.5, 1.1, 1.1, 1.1, 1.1]]
+        headers = ["브랜드", "건물", "등급", "복합점수", "최대급등", "주요항목", "이유"]
+        col_w = [c * cm for c in [2.5, 0.9, 0.9, 1.2, 1.2, 1.3, 9.0]]
 
         rows = [headers]
         row_styles = []
-        for i, (_, r) in enumerate(high_risk.iterrows(), start=1):
+        for i, (_, r) in enumerate(high_risk.head(15).iterrows(), start=1):
             rl = str(r.get("risk_level", ""))
+            reason_text = str(r.get("reason", "—"))
+            if len(reason_text) > 60:
+                reason_text = reason_text[:57] + "…"
             rows.append([
                 str(r.get("brand", "")),
                 str(r.get("building", "—")),
                 _RISK_PLAIN.get(rl, rl),
                 _f(r.get("composite_score"), 3),
-                _f(r.get("spike_max_pct"), 1, "%"),
+                _f(r.get("spike_max_pct"), 0, "%"),
                 str(r.get("spike_worst_util", "—")),
-                _f(r.get("consumption_score"), 3),
-                _f(r.get("cost_score"), 3),
-                _f(r.get("hvac_score"), 3),
-                _f(r.get("consistency_score"), 3),
+                reason_text,
             ])
             c = _RISK_COLOR_RL.get(rl)
             if c:
@@ -340,110 +412,78 @@ def _anomaly_story(anomaly_df: pd.DataFrame, T, W) -> list:
         story.append(KeepTogether([_std_table(rows, col_w, row_styles)]))
         story.append(Spacer(1, 0.5 * cm))
 
-    # ── Action items ──────────────────────────────────────────────────────
+    # ── Action plan ────────────────────────────────────────────────────────
     actions = []
     if danger:
         danger_brands = high_risk[
             high_risk.get("risk_level", pd.Series(dtype=str)) == "🔴 위험"
         ]["brand"].tolist()[:5]
         actions.append(
-            f"<b>즉시 조사</b>: 위험 등급 브랜드 ({', '.join(danger_brands)}) 대상 "
-            "검침 데이터 교차 확인 및 현장 점검 실시"
+            f"<b>즉시 현장 점검</b> — 위험 등급 브랜드({', '.join(danger_brands)})에 대해 "
+            "검침 데이터와 실제 계량기 수치를 교차 확인하고, 누수·계량기 오작동·배관 이상 등을 "
+            "점검하십시오. 특히 복수 유틸리티에서 동시 이상이 감지된 경우 설비 전반에 대한 "
+            "종합 점검이 필요합니다."
         )
     if caution:
         actions.append(
-            "<b>주의 모니터링</b>: 주의 등급 브랜드의 다음달 검침 결과를 추적하여 "
-            "일시적 변동인지 지속적 이상인지 확인"
+            f"<b>주의 브랜드 모니터링 강화</b> — 주의 등급 {caution}개 브랜드의 다음 월 검침 결과를 "
+            "면밀히 추적하여 일시적 변동인지 지속적 이상 추세인지 판별하십시오. "
+            "2개월 연속 주의 등급 유지 시 현장 점검으로 전환을 권고합니다."
         )
 
-    # Check for spike-driven anomalies
     if "spike_max_pct" in anomaly_df.columns:
         big_spikes = anomaly_df[anomaly_df["spike_max_pct"].fillna(0) > 50]
         if not big_spikes.empty:
             spike_brands = big_spikes.nlargest(3, "spike_max_pct")
             spike_items = [
-                f"{r['brand']}(+{r['spike_max_pct']:.0f}%)"
+                f"{r['brand']}({r['spike_max_pct']:+.0f}%)"
                 for _, r in spike_brands.iterrows()
             ]
             actions.append(
-                f"<b>급등 확인</b>: 전월 대비 50% 이상 급등한 {', '.join(spike_items)} 등 "
-                f"총 {len(big_spikes)}건 — 계량기 오작동 또는 누수 가능성 점검"
+                f"<b>급등 원인 조사</b> — 전월 대비 50% 이상 급등한 {', '.join(spike_items)} 등 "
+                f"총 {len(big_spikes)}건에 대해 계량기 오작동, 누수(수도), "
+                "설비 추가 가동(전기·난방), 또는 입주사 변경 등 외부 요인을 확인하십시오."
             )
 
-    # Check for consistency issues
     if "consistency_score" in anomaly_df.columns:
         inconsistent = anomaly_df[anomaly_df["consistency_score"].fillna(0) > 0.5]
         if not inconsistent.empty:
             actions.append(
-                f"<b>계량 일관성</b>: {len(inconsistent)}개 브랜드에서 시트 간 "
-                "데이터 불일치 또는 미계량 항목 발견 — 검침 프로세스 검증 필요"
+                f"<b>검침 프로세스 검증</b> — {len(inconsistent)}개 브랜드에서 시트 간 "
+                "데이터 불일치 또는 미계량 항목이 발견되었습니다. 검침 절차를 재확인하고, "
+                "집계 시트와 개별 유틸리티 시트 간 데이터 정합성을 점검하십시오."
             )
 
     if not actions:
-        actions.append("현재 심각한 이상이 감지되지 않았습니다. 정기 모니터링을 지속하세요.")
+        actions.append(
+            "현재 심각한 이상이 감지되지 않았습니다. 월별 정기 모니터링을 지속하여 "
+            "조기 경보 체계를 유지하시기 바랍니다."
+        )
     story += _action_box(actions, T, W)
 
-    # ── Full results table (top 30 by score) ──────────────────────────────
-    story.append(PageBreak())
-    story.append(_section_bar("전체 결과 (복합 점수 상위 30개)", T, W))
+    # ── Methodology note ───────────────────────────────────────────────────
+    story += _divider_line(W)
     story.append(Paragraph(
-        "아래 표는 복합 이상 점수 기준 상위 30개 브랜드입니다. "
-        "각 하위 점수 열은 해당 차원에서의 이상 정도를 0~1 스케일로 나타냅니다.",
+        "<i><b>분석 방법론</b>: 복합 이상 점수는 급등(30%), 소비 패턴(25%), 비용 이상(25%), "
+        "HVAC 효율(10%), 계량 일관성(10%)의 가중 합산으로 산출됩니다. "
+        "위험 ≥ 0.65, 주의 ≥ 0.40, 관찰 ≥ 0.20, 정상 &lt; 0.20 기준이 적용되었습니다.</i>",
         T["caption"],
     ))
-    story.append(Spacer(1, 0.2 * cm))
 
-    id_cols = [c for c in ["brand", "building"] if c in anomaly_df.columns]
-    score_cols = [c for c in ["composite_score", "risk_level", "spike_score",
-                               "consumption_score", "cost_score",
-                               "hvac_score", "consistency_score"] if c in anomaly_df.columns]
-    full = anomaly_df[id_cols + score_cols].sort_values(
-        "composite_score", ascending=False
-    ).head(30)
-
-    ko_map = {
-        "brand": "브랜드", "building": "건물", "composite_score": "복합점수",
-        "risk_level": "등급", "spike_score": "급등", "consumption_score": "소비",
-        "cost_score": "비용", "hvac_score": "HVAC", "consistency_score": "일관성",
-    }
-    full_headers = [ko_map.get(c, c) for c in full.columns]
-    n_cols = len(full_headers)
-    col_w = [W / n_cols] * n_cols
-
-    full_rows = [full_headers]
-    full_styles = []
-    for i, (_, r) in enumerate(full.iterrows(), start=1):
-        row = []
-        for c in full.columns:
-            v = r[c]
-            if c == "risk_level":
-                row.append(_RISK_PLAIN.get(str(v), str(v)))
-                c_color = _RISK_COLOR_RL.get(str(v))
-                if c_color:
-                    ci = list(full.columns).index(c)
-                    full_styles.append(("BACKGROUND", (ci, i), (ci, i), c_color))
-                    full_styles.append(("TEXTCOLOR",  (ci, i), (ci, i), C_WHITE))
-            elif isinstance(v, float):
-                row.append(_f(v, 3))
-            else:
-                row.append(str(v) if not pd.isna(v) else "—")
-        full_rows.append(row)
-
-    story.append(_std_table(full_rows, col_w, full_styles))
     return story
 
 
 def _cross_story(unit_df, elec_df, T, W) -> list:
-    """Return reportlab flowables for the cost analysis section with charts + insights."""
+    """Return reportlab flowables for the cost analysis section — narrative-driven."""
     story = []
     fp = _mpl_font()
 
-    # ── Unit cost section ─────────────────────────────────────────────────
+    # ── Unit cost analysis ─────────────────────────────────────────────────
     if unit_df is not None and not unit_df.empty:
         story.append(_section_bar("단위 비용 분석", T, W))
 
-        # Narrative overview
-        cost_metrics = []
+        # Compute stats for narrative
+        cost_stats = {}
         for col, label, unit in [
             ("water_unit_cost", "수도", "₩/m³"),
             ("elect_unit_cost", "전기", "₩/kWh"),
@@ -451,25 +491,34 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
             if col in unit_df.columns:
                 vals = pd.to_numeric(unit_df[col], errors="coerce").dropna()
                 if not vals.empty:
-                    cost_metrics.append((label, unit, vals.mean(), vals.std(), vals.median()))
+                    cost_stats[label] = {
+                        "unit": unit, "mean": vals.mean(), "std": vals.std(),
+                        "median": vals.median(), "min": vals.min(), "max": vals.max(),
+                        "cv": vals.std() / vals.mean() * 100 if vals.mean() > 0 else 0,
+                    }
 
-        if cost_metrics:
-            for label, unit, avg, std, med in cost_metrics:
-                story.append(Paragraph(
-                    f"<b>{label} 단가</b>: 평균 {avg:,.0f} {unit}, "
-                    f"중앙값 {med:,.0f} {unit}, 표준편차 {std:,.0f}",
-                    T["body"],
-                ))
-            story.append(Spacer(1, 0.2 * cm))
+        # Opening narrative
+        if cost_stats:
+            parts = []
+            for label, s in cost_stats.items():
+                parts.append(
+                    f"{label} 단가는 평균 <b>{s['mean']:,.0f} {s['unit']}</b> "
+                    f"(중앙값 {s['median']:,.0f}), 범위 {s['min']:,.0f}~{s['max']:,.0f}"
+                )
+            story += _prose(
+                "브랜드별 유틸리티 단가를 비교 분석한 결과, " + ", ".join(parts) + "으로 나타났습니다. "
+                "변동계수(CV)가 높은 항목은 동일 건물 내 브랜드 간 단가 차이가 크다는 의미로, "
+                "계약 조건 차이 또는 계량 이상의 가능성을 시사합니다.", T,
+            )
 
-        story.append(Paragraph(
-            "Z-점수 |Z| ≥ 2.0인 브랜드는 동종 대비 비용 이상으로 분류됩니다. "
-            "양의 Z-점수는 평균보다 비싼 단가, 음의 Z-점수는 비정상적으로 낮은 단가를 의미합니다.",
-            T["caption"],
-        ))
-        story.append(Spacer(1, 0.3 * cm))
+        story += _prose(
+            "아래 차트에서 <font color='#E63946'><b>빨간색</b></font>으로 표시된 브랜드는 "
+            "Z-점수 절대값이 2.0 이상으로, 동종 대비 통계적으로 유의미한 비용 이상이 감지된 "
+            "대상입니다. 양의 Z-점수는 과다 청구 가능성, 음의 Z-점수는 미계량 또는 누락 가능성을 "
+            "각각 시사합니다.", T,
+        )
 
-        # Chart: unit cost distribution with outlier highlighting
+        # Chart: unit cost distribution
         chart_cols = [(c, l) for c, l in [
             ("water_unit_cost", "수도 단가(₩/m³)"),
             ("elect_unit_cost", "전기 단가(₩/kWh)"),
@@ -495,11 +544,8 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
                 if len(v) == 0:
                     continue
 
-                # Sort by value
                 order = np.argsort(v)[::-1]
                 v, b, z = v[order], [b[i] for i in order], z[order]
-
-                # Show top 15
                 n_show = min(15, len(v))
                 v, b, z = v[:n_show], b[:n_show], z[:n_show]
 
@@ -522,101 +568,117 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
             chart_buf = _fig_to_buf(fig)
             story.append(_img_flowable(chart_buf, width_cm=17))
             story.append(Paragraph(
-                "<i>🔴 빨간색 = |Z| ≥ 2.0 (이상), 🔵 파란색 = 정상 범위, --- = 평균</i>",
+                "<i>🔴 빨간색 = |Z| ≥ 2.0 (이상 감지) | 🔵 파란색 = 정상 범위 | 점선 = 전체 평균</i>",
                 T["caption"],
             ))
-            story.append(Spacer(1, 0.3 * cm))
+            story.append(Spacer(1, 0.4 * cm))
 
-        # Anomaly summary with narrative
+        # Anomaly narrative + compact table
         anom_brands = []
-        cost_cols, col_labels = [], []
         for col, label in [
-            ("water_unit_cost", "수도 단가(₩/m³)"),
-            ("water_unit_z",    "수도 등급"),
-            ("elect_unit_cost", "전기 단가(₩/kWh)"),
-            ("elect_unit_z",    "전기 등급"),
-            ("total_cost_per_py", "평당비용(만₩/평)"),
-            ("total_cost_per_py_z", "평당비용 등급"),
-            ("total_cost_per_m2", "총비용(만₩/m²)"),
-            ("total_cost_per_m2_z", "총비용 등급"),
+            ("water_unit_z", "수도 단가"),
+            ("elect_unit_z", "전기 단가"),
+            ("total_cost_per_py_z", "평당 비용"),
+            ("total_cost_per_m2_z", "총비용/m²"),
         ]:
             if col in unit_df.columns:
-                cost_cols.append(col)
-                col_labels.append(label)
-
-        anom_rows = []
-        for col, label in zip(cost_cols, col_labels):
-            if col.endswith("_z") and col in unit_df.columns:
                 flags = unit_df[unit_df[col].abs() >= 2.0]
                 for _, r in flags.iterrows():
                     brand = str(r.get("brand", ""))
                     z_val = float(r.get(col, 0)) if not pd.isna(r.get(col)) else 0
-                    from utils import z_to_grade as _ztg
                     direction = "고비용" if z_val > 0 else "저비용"
-                    grade = _ztg(z_val)
-                    anom_brands.append((brand, label.replace(" 등급", ""), z_val, direction))
-                    anom_rows.append([brand, label.replace(" 등급", ""), grade])
+                    anom_brands.append((brand, label, z_val, direction))
 
-        if anom_rows:
-            story.append(_section_bar(f"비용 이상 브랜드 ({len(anom_rows)}건)", T, W))
+        if anom_brands:
+            story.append(_section_bar(f"비용 이상 브랜드 ({len(anom_brands)}건)", T, W))
 
-            # Narrative for top anomalies
-            for brand, metric, z_val, direction in anom_brands[:3]:
-                story.append(Paragraph(
-                    f"<b>{brand}</b>: {metric} Z={z_val:+.1f} ({direction}) — "
-                    f"동일 건물 내 동종 대비 {'높은' if z_val > 0 else '낮은'} 단가로, "
-                    f"{'과다 청구 가능성' if z_val > 0 else '계량 오류 가능성'} 검토 필요",
-                    T["body"],
-                ))
-                story.append(Spacer(1, 0.1 * cm))
-            story.append(Spacer(1, 0.2 * cm))
+            # Flowing narrative instead of listing
+            high_cost = [(b, m, z) for b, m, z, d in anom_brands if z > 0]
+            low_cost = [(b, m, z) for b, m, z, d in anom_brands if z < 0]
 
-            anom_data = [["브랜드", "이상 항목", "Z-점수"]] + anom_rows
-            anom_w = [5 * cm, 5 * cm, W - 10 * cm]
-            anom_styles = [
-                ("TEXTCOLOR", (2, 1), (2, -1), C_CRITICAL),
-                ("FONTNAME",  (2, 1), (2, -1), "NanumGothic-Bold"),
-            ]
-            story.append(_std_table(anom_data, anom_w, anom_styles))
-            story.append(Spacer(1, 0.3 * cm))
+            if high_cost:
+                hc_text_parts = []
+                for b, m, z in high_cost[:3]:
+                    hc_text_parts.append(f"<b>{b}</b>({m} Z={z:+.1f})")
+                story += _prose(
+                    f"<font color='#E63946'><b>고비용 이상</b></font>: "
+                    f"{', '.join(hc_text_parts)} 등 {len(high_cost)}건이 감지되었습니다. "
+                    "이들 브랜드는 동일 건물 내 동종 대비 단가가 2σ 이상 높으며, "
+                    "계약 단가 차이가 아닌 경우 과다 청구 또는 계량 이상을 의심할 수 있습니다. "
+                    "해당 브랜드의 청구서 원본과 계량 데이터를 교차 검증하시기 바랍니다.", T,
+                )
+
+            if low_cost:
+                lc_text_parts = []
+                for b, m, z in low_cost[:3]:
+                    lc_text_parts.append(f"<b>{b}</b>({m} Z={z:+.1f})")
+                story += _prose(
+                    f"<font color='#2E6DA4'><b>저비용 이상</b></font>: "
+                    f"{', '.join(lc_text_parts)} 등 {len(low_cost)}건이 감지되었습니다. "
+                    "비정상적으로 낮은 단가는 계량기 미작동, 검침 누락, 또는 집계 오류의 "
+                    "가능성을 시사합니다.", T,
+                )
 
         # Cost action items
         cost_actions = []
-        high_cost = [b for b, m, z, d in anom_brands if z > 2.0]
-        low_cost = [b for b, m, z, d in anom_brands if z < -2.0]
-        if high_cost:
+        high_cost_brands = [b for b, m, z, d in anom_brands if z > 2.0]
+        low_cost_brands = [b for b, m, z, d in anom_brands if z < -2.0]
+        if high_cost_brands:
             cost_actions.append(
-                f"<b>과다 청구 확인</b>: {', '.join(high_cost[:5])} — "
-                "단가가 평균 대비 2σ 이상 높음. 계약 단가 확인 및 청구서 교차 검증"
+                f"<b>청구서 교차 검증</b> — {', '.join(high_cost_brands[:5])} 브랜드의 "
+                "계약 단가와 실제 청구 단가를 비교하고, 계량기 검정 기록을 확인하십시오. "
+                "계약 단가가 동일함에도 단가 차이가 발생한다면 검침 데이터 오류 가능성이 높습니다."
             )
-        if low_cost:
+        if low_cost_brands:
             cost_actions.append(
-                f"<b>미계량 의심</b>: {', '.join(low_cost[:5])} — "
-                "단가가 비정상적으로 낮음. 계량기 정상 작동 여부 확인"
+                f"<b>계량기 정상 작동 확인</b> — {', '.join(low_cost_brands[:5])} 브랜드의 "
+                "계량기 현장 점검을 실시하고, 최근 검정 이력을 확인하십시오."
             )
         if not cost_actions:
-            cost_actions.append("비용 단가에 특이사항이 없습니다. 다음 월에도 모니터링을 지속하세요.")
+            cost_actions.append(
+                "현재 비용 단가에 통계적으로 유의미한 이상이 없습니다. "
+                "분기별 추세 분석을 통해 장기적 단가 변동을 모니터링하시기 바랍니다."
+            )
         story += _action_box(cost_actions, T, W)
 
-    # ── Electricity breakdown section ─────────────────────────────────────
+    # ── Electricity breakdown ──────────────────────────────────────────────
     if elec_df is not None and not elec_df.empty:
         if unit_df is not None and not unit_df.empty:
             story.append(PageBreak())
-        story.append(_section_bar("전기 사용 구성 분석 (EHP / HVAC / 기저부하)", T, W))
+        story.append(_section_bar("전기 사용 구성 분석", T, W))
 
-        # Narrative
+        # Narrative overview
         if "hvac_pct" in elec_df.columns:
             avg_hvac = pd.to_numeric(elec_df["hvac_pct"], errors="coerce").mean()
             avg_base = pd.to_numeric(elec_df.get("base_pct", pd.Series(dtype=float)), errors="coerce").mean()
-            story.append(Paragraph(
-                f"전체 브랜드 평균 HVAC 비중 <b>{avg_hvac:.1f}%</b>, "
-                f"기저부하 비중 <b>{avg_base:.1f}%</b>입니다. "
-                "HVAC 비중이 높은 브랜드는 냉난방 시스템 효율 개선을 검토해야 합니다.",
-                T["body"],
-            ))
-            story.append(Spacer(1, 0.3 * cm))
+            avg_ehp = pd.to_numeric(elec_df.get("ehp_pct", pd.Series(dtype=float)), errors="coerce").mean()
 
-        # Stacked bar chart: EHP / HVAC / Base
+            story += _prose(
+                f"전체 브랜드의 전기 사용 구성을 분석한 결과, 평균적으로 "
+                f"EHP(개별 냉난방) <b>{avg_ehp:.1f}%</b>, "
+                f"HVAC(중앙 냉난방) <b>{avg_hvac:.1f}%</b>, "
+                f"기저부하(조명·기기) <b>{avg_base:.1f}%</b>의 비율을 보였습니다.", T,
+            )
+
+            # Find outliers
+            if "hvac_intensity" in elec_df.columns:
+                hvac_vals = pd.to_numeric(elec_df["hvac_intensity"], errors="coerce").dropna()
+                if not hvac_vals.empty:
+                    hvac_mean = hvac_vals.mean()
+                    hvac_std = hvac_vals.std()
+                    high_hvac = elec_df[
+                        pd.to_numeric(elec_df["hvac_intensity"], errors="coerce") > hvac_mean + 1.5 * hvac_std
+                    ]
+                    if not high_hvac.empty:
+                        hh_names = high_hvac["brand"].tolist()[:3]
+                        story += _prose(
+                            f"특히 {', '.join(hh_names)} 등 <b>{len(high_hvac)}개</b> 브랜드는 "
+                            f"HVAC 강도(kWh/m²)가 평균+1.5σ를 초과하여, 냉난방 시스템의 "
+                            "효율 저하 또는 과도한 운전이 의심됩니다. 이들 브랜드는 "
+                            "실외기 상태, 냉매 충전량, 운전 스케줄을 우선 점검하시기 바랍니다.", T,
+                        )
+
+        # Stacked bar chart
         pct_cols = [c for c in ["ehp_pct", "hvac_pct", "base_pct"] if c in elec_df.columns]
         if pct_cols and len(elec_df) > 0:
             show_df = elec_df.nlargest(min(15, len(elec_df)),
@@ -636,7 +698,7 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
             ax.set_yticklabels(brands_e, fontproperties=fp, fontsize=7)
             ax.invert_yaxis()
             ax.set_xlabel("비중 (%)", fontproperties=fp, fontsize=9)
-            ax.set_title("전기 사용 구성 비율", fontproperties=fp, fontsize=12, fontweight="bold")
+            ax.set_title("전기 사용 구성 비율 (총 전력량 상위 15개)", fontproperties=fp, fontsize=12, fontweight="bold")
             ax.legend(prop=fp, fontsize=8, loc="lower right")
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
@@ -645,58 +707,21 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
             story.append(_img_flowable(chart_buf, width_cm=17))
             story.append(Spacer(1, 0.3 * cm))
 
-        # Table
-        elec_cols = [c for c in ["brand", "building", "kwh_total",
-                                   "ehp_pct", "hvac_pct", "base_pct",
-                                   "hvac_intensity", "elect_unit_cost"] if c in elec_df.columns]
-        elec_labels = {
-            "brand": "브랜드", "building": "건물",
-            "kwh_total": "총 전기(kWh)",
-            "ehp_pct": "EHP(%)", "hvac_pct": "HVAC(%)", "base_pct": "기저(%)",
-            "hvac_intensity": "HVAC 강도(kWh/m²)",
-            "elect_unit_cost": "단가(₩/kWh)",
-        }
-        headers = [elec_labels.get(c, c) for c in elec_cols]
-        n_cols = len(headers)
-        col_w = [W / n_cols] * n_cols
-
-        show = elec_df[elec_cols].sort_values(
-            "kwh_total" if "kwh_total" in elec_df.columns else elec_cols[0],
-            ascending=False,
-        )
-        rows = [headers]
-        for _, r in show.iterrows():
-            row = []
-            for c in elec_cols:
-                v = r.get(c)
-                if c in ("ehp_pct", "hvac_pct", "base_pct"):
-                    row.append(_f(v, 1, "%"))
-                elif c == "kwh_total":
-                    row.append(_f(v, 0))
-                else:
-                    row.append(_f(v, 2))
-            rows.append(row)
-
-        story.append(_std_table(rows, col_w, []))
-
         # HVAC action items
         if "hvac_intensity" in elec_df.columns:
-            high_hvac = elec_df.nlargest(3, "hvac_intensity")
-            hvac_actions = []
+            high_hvac_df = elec_df.nlargest(3, "hvac_intensity")
             hvac_items = [
                 f"{r['brand']}({r['hvac_intensity']:.1f}kWh/m²)"
-                for _, r in high_hvac.iterrows()
+                for _, r in high_hvac_df.iterrows()
                 if not pd.isna(r.get("hvac_intensity"))
             ]
             if hvac_items:
-                hvac_actions.append(
-                    f"<b>HVAC 효율 점검</b>: {', '.join(hvac_items)} — "
-                    "면적 대비 HVAC 전력 사용이 높음. 냉매 충전량, 실외기 상태, "
-                    "운전 스케줄 최적화 검토"
-                )
-            if hvac_actions:
-                story.append(Spacer(1, 0.3 * cm))
-                story += _action_box(hvac_actions, T, W)
+                story += _action_box([
+                    f"<b>HVAC 효율 개선</b> — {', '.join(hvac_items)} 브랜드는 면적 대비 HVAC "
+                    "전력 사용이 상위권입니다. 냉매 충전량 확인, 실외기 청소 상태, "
+                    "운전 스케줄 최적화(야간·주말 감량 운전) 등을 종합적으로 검토하여 "
+                    "에너지 비용 절감 기회를 모색하시기 바랍니다."
+                ], T, W)
 
     return story
 
@@ -706,7 +731,7 @@ _UNIT_KO = {"water": "m³/m²", "hwater": "m³/m²", "elect": "kWh/m²", "heat":
 
 
 def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
-    """Return reportlab flowables for the efficiency section with charts + insights."""
+    """Return reportlab flowables for the efficiency section — narrative-driven."""
     story = []
     fp = _mpl_font()
     avail = {p: f"{p}_usage_per_m2" for p in present if f"{p}_usage_per_m2" in cur_df.columns}
@@ -715,17 +740,16 @@ def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
         story.append(Paragraph("전용면적 데이터가 없어 효율 분석을 생성할 수 없습니다.", T["body"]))
         return story
 
-    # Overview narrative
+    # Opening narrative
     story.append(_section_bar("효율 분석 개요", T, W))
-    story.append(Paragraph(
-        f"총 <b>{len(avail)}개</b> 유틸리티(수도/온수/전기/난방)에 대해 "
-        "단위 면적(m²)당 소비량을 산출하여 브랜드별 에너지 효율을 비교합니다. "
-        "상위 20%(효율 우수)는 녹색, 하위 20%(고소비)는 빨간색으로 표시됩니다.",
-        T["body"],
-    ))
-    story.append(Spacer(1, 0.3 * cm))
+    story += _prose(
+        f"총 <b>{len(avail)}개</b> 유틸리티({', '.join(_UTIL_KO.get(p, p) for p in avail)})에 대해 "
+        "단위 면적(m²)당 소비량을 산출하여 브랜드별 에너지 효율을 비교 분석하였습니다. "
+        "면적당 소비량은 브랜드의 규모 차이를 보정하여 실질적인 에너지 사용 강도를 비교할 수 있는 "
+        "핵심 지표입니다. 상위 20%(효율 우수)는 녹색, 하위 20%(고소비)는 빨간색으로 구분됩니다.", T,
+    )
 
-    all_inefficient = []  # collect for combined action items
+    all_inefficient = []
 
     for prefix, per_m2_col in avail.items():
         util_ko = _UTIL_KO.get(prefix, prefix)
@@ -742,22 +766,33 @@ def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
         n = len(df_util)
         top_20_thresh = max(1, n // 5)
         bottom_20_start = n - max(1, n // 5)
-
-        # Narrative stats
         vals = df_util[per_m2_col]
-        story.append(_section_bar(f"{util_ko} 효율 순위 ({unit})", T, W))
-        story.append(Paragraph(
-            f"<b>{util_ko}</b>: {n}개 브랜드, "
-            f"평균 {vals.mean():.3f} {unit}, "
-            f"중앙값 {vals.median():.3f} {unit}, "
-            f"범위 {vals.min():.3f} ~ {vals.max():.3f}",
-            T["body"],
-        ))
-        story.append(Spacer(1, 0.2 * cm))
 
-        # Chart: horizontal bar with color coding
+        story.append(_section_bar(f"{util_ko} 효율 분석 ({unit})", T, W))
+
+        # Rich narrative per utility
+        best3 = df_util.head(min(3, n))
+        worst3 = df_util.tail(min(3, n))
+        spread_ratio = vals.max() / vals.min() if vals.min() > 0 else 0
+
+        story += _prose(
+            f"<b>{util_ko}</b> 효율 분석 대상 {n}개 브랜드의 면적당 소비량은 "
+            f"평균 <b>{vals.mean():.3f} {unit}</b>(중앙값 {vals.median():.3f})이며, "
+            f"최소 {vals.min():.3f}에서 최대 {vals.max():.3f}까지 "
+            f"<b>{spread_ratio:.1f}배</b>의 편차를 보였습니다.", T,
+        )
+
+        story += _prose(
+            f"가장 효율적인 브랜드는 <b>{', '.join(best3['brand'].tolist())}</b>"
+            f"(평균 {best3[per_m2_col].mean():.3f} {unit})이며, "
+            f"고소비 브랜드는 <b>{', '.join(worst3['brand'].tolist())}</b>"
+            f"(평균 {worst3[per_m2_col].mean():.3f} {unit})입니다. "
+            f"고소비 브랜드는 업종 특성(예: 음식점, 세탁소)을 고려하더라도 "
+            f"설비 효율 점검의 우선 대상입니다.", T,
+        )
+
+        # Chart
         show_n = min(20, n)
-        # Show worst + best combined
         if n > show_n:
             chart_df = pd.concat([df_util.tail(show_n // 2), df_util.head(show_n // 2)])
         else:
@@ -782,7 +817,7 @@ def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
         ax.set_yticklabels(brands_c, fontproperties=fp, fontsize=7)
         ax.invert_yaxis()
         ax.set_xlabel(f"소비량 ({unit})", fontproperties=fp, fontsize=9)
-        ax.set_title(f"{util_ko} 효율 순위", fontproperties=fp, fontsize=12, fontweight="bold")
+        ax.set_title(f"{util_ko} 면적당 소비 효율", fontproperties=fp, fontsize=12, fontweight="bold")
         avg_val = vals.mean()
         ax.axvline(avg_val, color="#555", linestyle="--", linewidth=0.8, alpha=0.7)
         ax.spines["top"].set_visible(False)
@@ -791,67 +826,25 @@ def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
         chart_buf = _fig_to_buf(fig)
         story.append(_img_flowable(chart_buf, width_cm=16))
         story.append(Paragraph(
-            "<i>🟢 상위 20% (효율 우수)  |  🔴 하위 20% (고소비, 점검 권장)  |  --- 평균</i>",
+            "<i>🟢 상위 20% (효율 우수) | 🔴 하위 20% (고소비) | 점선 = 전체 평균</i>",
             T["caption"],
         ))
-        story.append(Spacer(1, 0.2 * cm))
+        story.append(Spacer(1, 0.4 * cm))
 
-        # Top/bottom narrative
-        best3 = df_util.head(min(3, n))
-        worst3 = df_util.tail(min(3, n))
-        story.append(Paragraph(
-            f"<b>효율 우수</b>: {', '.join(best3['brand'].tolist())} "
-            f"(평균 {best3[per_m2_col].mean():.3f} {unit})",
-            T["body"],
-        ))
-        story.append(Paragraph(
-            f"<b>고소비</b>: {', '.join(worst3['brand'].tolist())} "
-            f"(평균 {worst3[per_m2_col].mean():.3f} {unit})",
-            T["body"],
-        ))
-        story.append(Spacer(1, 0.2 * cm))
-
-        # Collect inefficient brands for action items
+        # Collect inefficient brands
         inefficient = df_util.tail(max(1, n // 5))
         for _, r in inefficient.iterrows():
             all_inefficient.append((r["brand"], util_ko, r[per_m2_col], unit))
 
-        # Table
-        id_cols = [c for c in ["brand", "building"] if c in df_util.columns]
-        id_labels = ["브랜드", "건물"][: len(id_cols)]
-        headers = id_labels + [f"소비량({unit})", "순위"]
-        n_id = len(id_cols)
-        id_w = [3.5 * cm, 1.2 * cm][: n_id]
-        data_w = (W - sum(id_w)) / 2
-        col_w = id_w + [data_w, data_w]
-
-        rows = [headers]
-        eff_styles = []
-        for rank, (_, r) in enumerate(df_util.iterrows(), start=1):
-            row = [str(r.get(c, "")) for c in id_cols]
-            row.append(_f(r[per_m2_col], 4))
-            row.append(str(rank))
-            rows.append(row)
-            if rank <= top_20_thresh:
-                eff_styles.append(("BACKGROUND", (n_id, rank), (n_id, rank), C_STABLE))
-                eff_styles.append(("TEXTCOLOR",  (n_id, rank), (n_id, rank), C_WHITE))
-            elif rank > bottom_20_start:
-                eff_styles.append(("BACKGROUND", (n_id, rank), (n_id, rank), C_CRITICAL))
-                eff_styles.append(("TEXTCOLOR",  (n_id, rank), (n_id, rank), C_WHITE))
-
-        story.append(_std_table(rows, col_w, eff_styles))
-        story.append(Spacer(1, 0.6 * cm))
-
     # Combined efficiency score
     if len(avail) >= 2:
         story.append(PageBreak())
-        story.append(_section_bar("종합 효율 점수 (유틸리티 순위 합산)", T, W))
-        story.append(Paragraph(
-            "각 유틸리티의 순위를 합산하여 종합적인 에너지 효율을 평가합니다. "
-            "점수가 낮을수록 전반적으로 효율적인 브랜드입니다.",
-            T["caption"],
-        ))
-        story.append(Spacer(1, 0.3 * cm))
+        story.append(_section_bar("종합 효율 점수", T, W))
+        story += _prose(
+            "각 유틸리티의 효율 순위를 합산하여 종합적인 에너지 효율을 평가하였습니다. "
+            "종합점수가 낮을수록 전반적으로 효율적인 브랜드이며, 여러 유틸리티에서 고르게 "
+            "효율적인 운영을 하고 있음을 의미합니다.", T,
+        )
 
         id_cols = [c for c in ["brand", "building"] if c in cur_df.columns]
         combined = cur_df[id_cols].copy()
@@ -862,6 +855,18 @@ def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
                 combined["종합점수"] += col_s.rank(method="min", na_option="bottom")
         combined = combined.dropna(subset=["종합점수"]).sort_values("종합점수")
 
+        # Narrative for top/bottom
+        if len(combined) >= 3:
+            top3 = combined.head(3)["brand"].tolist()
+            bot3 = combined.tail(3)["brand"].tolist()
+            story += _prose(
+                f"종합 효율 상위 브랜드는 <b>{', '.join(top3)}</b>로, 모든 유틸리티에서 "
+                f"균형 잡힌 효율적 운영을 보여주고 있습니다. 반면 <b>{', '.join(bot3)}</b>는 "
+                f"종합 순위 하위권으로, 복수 유틸리티에서 동시에 고소비 패턴이 관찰되어 "
+                f"운영 전반에 대한 점검이 필요합니다.", T,
+            )
+
+        # Top 15 table only (not all)
         id_labels = ["브랜드", "건물"][: len(id_cols)]
         headers = id_labels + ["종합점수", "순위"]
         n_id = len(id_cols)
@@ -872,7 +877,7 @@ def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
         rows = [headers]
         n = len(combined)
         comb_styles = []
-        for rank, (_, r) in enumerate(combined.iterrows(), start=1):
+        for rank, (_, r) in enumerate(combined.head(15).iterrows(), start=1):
             row = [str(r.get(c, "")) for c in id_cols]
             row.append(_f(r["종합점수"], 1))
             row.append(str(rank))
@@ -884,31 +889,41 @@ def _efficiency_story(cur_df: pd.DataFrame, present: list[str], T, W) -> list:
                 comb_styles.append(("BACKGROUND", (n_id, rank), (n_id, rank), C_CRITICAL))
                 comb_styles.append(("TEXTCOLOR",  (n_id, rank), (n_id, rank), C_WHITE))
 
-        story.append(_std_table(rows, col_w, comb_styles))
+        story.append(_highlight_table(rows, col_w, comb_styles))
+        if n > 15:
+            story.append(Paragraph(
+                f"<i>상위 15개 브랜드 표시 (전체 {n}개 중)</i>",
+                T["caption"],
+            ))
+        story.append(Spacer(1, 0.4 * cm))
 
     # Efficiency action items
     eff_actions = []
     if all_inefficient:
-        # Group by brand
         brand_issues = {}
         for brand, util, val, unit in all_inefficient:
             brand_issues.setdefault(brand, []).append(f"{util}({val:.3f}{unit})")
         multi_issue = {b: issues for b, issues in brand_issues.items() if len(issues) >= 2}
         if multi_issue:
-            items = [f"{b}: {', '.join(iss)}" for b, iss in list(multi_issue.items())[:3]]
+            items = [f"{b}({', '.join(iss)})" for b, iss in list(multi_issue.items())[:3]]
             eff_actions.append(
-                f"<b>복합 고소비 브랜드</b>: {'; '.join(items)} — "
-                "여러 유틸리티에서 동시에 고소비. 운영 패턴 전반 점검 필요"
+                f"<b>복합 고소비 브랜드 종합 점검</b> — {'; '.join(items)} 등은 "
+                "여러 유틸리티에서 동시에 하위 20%에 해당합니다. 업종 특성을 감안하더라도 "
+                "설비 노후화, 운영 비효율, 또는 계량 이상의 가능성을 종합적으로 검토하십시오."
             )
         single_issue = {b: issues for b, issues in brand_issues.items() if len(issues) == 1}
         if single_issue:
             top_singles = list(single_issue.items())[:3]
             items = [f"{b}({iss[0]})" for b, iss in top_singles]
             eff_actions.append(
-                f"<b>단일 항목 고소비</b>: {', '.join(items)} — 해당 유틸리티 설비 점검"
+                f"<b>단일 항목 고소비</b> — {', '.join(items)} 브랜드는 특정 유틸리티에서 "
+                "효율이 낮습니다. 해당 설비의 정비 상태 및 운전 조건을 확인하시기 바랍니다."
             )
     if not eff_actions:
-        eff_actions.append("전반적으로 효율이 양호합니다. 분기별 추적을 지속하세요.")
+        eff_actions.append(
+            "전반적으로 브랜드 간 효율 편차가 크지 않으며 양호한 수준입니다. "
+            "분기별 추적을 통해 효율 변화 추세를 지속 모니터링하시기 바랍니다."
+        )
     story += _action_box(eff_actions, T, W)
 
     return story
@@ -1020,19 +1035,32 @@ def generate_comprehensive_pdf(
         context, T,
     )
 
-    # Table of contents summary
+    # Executive brief on cover page
     sections_included = []
+    brief_parts = []
     if anomaly_df is not None and not anomaly_df.empty:
         sections_included.append("이상감지 분석")
+        total = len(anomaly_df)
+        risk_counts = anomaly_df["risk_level"].value_counts().to_dict() if "risk_level" in anomaly_df.columns else {}
+        danger = risk_counts.get("🔴 위험", 0)
+        caution = risk_counts.get("🟠 주의", 0)
+        brief_parts.append(
+            f"전체 {total}개 브랜드 중 위험 {danger}개, 주의 {caution}개"
+        )
     if (unit_df is not None and not unit_df.empty) or (elec_br_df is not None and not elec_br_df.empty):
         sections_included.append("비용 분석")
     if cur_df is not None and present:
         sections_included.append("효율 분석")
 
     if sections_included:
-        toc_text = "포함 섹션: " + " → ".join(sections_included)
-        story.append(Paragraph(toc_text, T["caption"]))
-        story.append(Spacer(1, 0.5 * cm))
+        story += _prose(
+            f"<b>보고서 구성</b>: {' → '.join(sections_included)}", T,
+        )
+        if brief_parts:
+            story += _prose(
+                f"<b>핵심 요약</b>: {'. '.join(brief_parts)}.", T,
+            )
+        story.append(Spacer(1, 0.3 * cm))
 
     has_content = False
 
@@ -1076,12 +1104,12 @@ def generate_insight_pdf(
 ) -> bytes:
     """Generate a combined insight PDF (cost + efficiency)."""
     buf = io.BytesIO()
-    doc, T = _build_doc(buf, footer_left="인사이트 분석 보고서  ·  대외비")
+    doc, T = _build_doc(buf, footer_left="비용·효율 분석 보고서  ·  대외비")
     W = doc.width
 
     story = _cover_items(
-        "인사이트 분석 리포트",
-        "비용 분석 · 효율 분석 통합",
+        "비용·효율 분석 리포트",
+        "단위 비용 이상 감지 및 에너지 효율 분석",
         context, T,
     )
 

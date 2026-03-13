@@ -682,7 +682,7 @@ def _render_tier3_detail(file_name, file_map, sheet_map, all_sheet_keys,
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    st.set_page_config(page_title="Utility Analysis Dashboard", layout="wide",
+    st.set_page_config(page_title="유틸리티 분석", layout="wide",
                        page_icon="📊")
     st.markdown("""
 <style>
