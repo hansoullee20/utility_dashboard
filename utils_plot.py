@@ -7,6 +7,22 @@ import streamlit as st
 from utils import BLD_COLOR as _BLDG_COLOR
 
 
+def dedup_brand_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Add _x_label column: brand(building) only for duplicate brand names."""
+    if "brand" not in df.columns or "building" not in df.columns:
+        return df
+    out = df.copy()
+    _dups = set(out["brand"][out["brand"].duplicated(keep=False)])
+    if not _dups:
+        out["_x_label"] = out["brand"]
+    else:
+        out["_x_label"] = out.apply(
+            lambda r: f"{str(r['brand'])[:18]}({r['building']})" if r["brand"] in _dups else str(r["brand"]),
+            axis=1,
+        )
+    return out
+
+
 def handle_chart_click(ev, df: pd.DataFrame, brand_col: str = "brand",
                        field: str = "x", trunc: int = 0) -> None:
     """Generic click handler for plotly charts — show selected brand detail."""
@@ -41,8 +57,20 @@ def bar_chart(
     """Plotly bar chart with building-colour support and click-to-show row."""
     _key = key or f"bar_{title[:30].replace(' ', '_')}"
     _logy = st.checkbox("Log 스케일", key=f"{_key}_logy") if show_logy else False
+    # Make x labels unique for duplicate brands
+    _plot_df = df.copy()
+    if x == "brand" and "building" in _plot_df.columns:
+        _dups = set(_plot_df["brand"][_plot_df["brand"].duplicated(keep=False)])
+        if _dups:
+            _plot_df["_x_label"] = _plot_df.apply(
+                lambda r: f"{str(r['brand'])[:18]}({r['building']})" if r["brand"] in _dups else str(r["brand"]),
+                axis=1,
+            )
+            x = "_x_label"
+    else:
+        _plot_df = df
     fig = px.bar(
-        df, x=x, y=y,
+        _plot_df, x=x, y=y,
         color=color_col if color_col and color_col in df.columns else None,
         title=title,
         labels={y: y_label, x: "Brand"},
