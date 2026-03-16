@@ -36,13 +36,27 @@ _LIGHT_BLUE = "#A8C4E0"
 
 # ── Data loading ─────────────────────────────────────────────────────────────
 
+def _extract_date_from_filename(fname: str) -> str | None:
+    """Try to extract YYYY-MM or YYYY.MM from filename as fallback."""
+    import re
+    # Match patterns: 2025-02, 2025.02, 202502, 2025년2월, 2025_02
+    m = re.search(r'(20\d{2})[._\-년]?\s*(\d{1,2})', fname)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12:
+            return f"{y}년 {mo}월"
+    return None
+
+
 @st.cache_data(show_spinner="데이터 로드 중…")
 def _load_data(_uploads_key, file_map):
     """Load current + previous meter data and billing."""
     periods = {}
     for fname, fdata in file_map.items():
         sheets = get_sheet_names(fname, fdata)
-        bp = get_billing_period(fname, fdata, sheets)
+        bp = get_billing_period(fname, fdata)
+        if not bp:
+            bp = _extract_date_from_filename(fname)
         periods[fname] = (bp or fname, sheets)
 
     sorted_files = sorted(periods.keys(), key=lambda f: periods[f][0])
