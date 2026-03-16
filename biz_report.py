@@ -13,6 +13,7 @@ from datetime import date as _date
 
 import matplotlib
 matplotlib.use("Agg")
+from utils import UTIL_LABELS as _UTIL_KO
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as _fm
 
@@ -797,7 +798,6 @@ def _cross_story(unit_df, elec_df, T, W) -> list:
     return story
 
 
-_UTIL_KO = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "난방"}
 _UNIT_KO = {"water": "m³/m²", "hwater": "m³/m²", "elect": "kWh/m²", "heat": "m³(MWh)/m²"}
 
 

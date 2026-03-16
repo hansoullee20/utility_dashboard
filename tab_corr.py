@@ -24,8 +24,8 @@ _SUFFIX_LABELS = {
     "pct":           "Percentage Change",
 }
 _COL_LABELS = {"size_m2": "m²", "size_py": "평 (py)"}
-_UTIL_PREFIXES = ["water_", "hwater_", "elect_", "heat_"]
-_BLDG_COLOR_MAP = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
+_UTIL_PREFIXES = ["water_", "hwater_", "elect_", "heat_"]  # trailing _ for startswith matching
+from utils import BLD_COLOR as _BLDG_COLOR_MAP
 
 
 def _col_label(col: str) -> str:

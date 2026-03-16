@@ -7,13 +7,7 @@ from features import add_display_index, download_df_as_excel
 from biz_report import render_pdf_buttons, generate_efficiency_pdf
 from utils_plot import bar_chart
 from lang import t
-
-_UTIL_LABELS = {
-    "water":  "💧 수도",
-    "hwater": "🌡️ 온수",
-    "elect":  "⚡ 전기",
-    "heat":   "🔥 난방",
-}
+from utils import UTIL_LABELS_UI as _UTIL_LABELS
 _UNIT_LABELS = {
     "water":  "m³/m²",
     "hwater": "m³/m²",
@@ -283,7 +277,7 @@ def render_efficiency_tab(
 
     # ── Business Insight Summary ────────────────────────────────────────────
     _eff_insights: list[str] = []
-    _PLABEL = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "난방"}
+    from utils import UTIL_LABELS as _PLABEL
     from data import to_numeric_series as _tns_eff
     for p, pm2_col in avail.items():
         s = _tns_eff(cur_df[pm2_col]).dropna()

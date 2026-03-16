@@ -50,6 +50,9 @@ UTIL_LABELS: dict[str, str] = {
 UTIL_UNITS: dict[str, str] = {
     "water": "m³", "hwater": "m³", "elect": "kWh", "heat": "m³/MWh",
 }
+UTIL_LABELS_UI: dict[str, str] = {
+    "water": "💧 수도", "hwater": "🌡 온수", "elect": "⚡ 전기", "heat": "🔥 난방",
+}
 
 
 # ── Shared formatting helpers ────────────────────────────────────────────────

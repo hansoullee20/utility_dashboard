@@ -297,10 +297,6 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
         file_name, file_map, sheet_map, all_sheet_keys, prev_file,
         key_prefix="t1",
     )
-    from filters import brand_search_bar, render_active_filters
-    brand_search_bar("t1")
-    render_active_filters("t1")
-
     # Anomaly detection — single page, no sub-tabs
     prev_data = file_map.get(prev_file) if prev_file else None
     prev_sheets = sheet_map.get(prev_file, []) if prev_file else None
@@ -337,13 +333,11 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
     present = []
     split_bldg = False
     ehp_sheet = None
-    from filters import render_active_filters as _raf
     if has_meter:
         cur_df, present, split_bldg, ref_df, ehp_sheet = _load_meter_data(
             file_name, file_map, sheet_map, all_sheet_keys, prev_file,
             key_prefix="t2",
         )
-        _raf("t2")
     elif has_util:
         # No meter sheet — render standalone filters for utility summary
         import pandas as _pd_u
@@ -364,8 +358,8 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
         tab_labels.append("📊 유틸리티 분석")
         tab_keys.append("summary")
     if has_meter:
-        tab_labels += ["💰 비용 분석", "⚡ 효율 분석"]
-        tab_keys += ["cost", "eff"]
+        tab_labels += ["🏢 건물 평균", "💰 비용 분석", "⚡ 효율 분석"]
+        tab_keys += ["bldg_avg", "cost", "eff"]
         tab_labels.append("📈 기간 비교")
         tab_keys.append("period")
         if prev_file or yoy_file:
@@ -389,7 +383,11 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
             yoy_file, file_map, _yoy_sheets, _yoy_sheets, None,
         )
 
-    if _t2_key == "cost" and cur_df is not None:
+    if _t2_key == "bldg_avg" and cur_df is not None:
+        from tab_building_avg import render_building_avg_tab
+        render_building_avg_tab(cur_df)
+
+    elif _t2_key == "cost" and cur_df is not None:
         render_cross_tab(
             cur_df, file_name, file_map[file_name], all_sheet_keys,
             split_by_building=split_bldg,
@@ -873,6 +871,7 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
     elif st.session_state.get(_nav_key) not in _valid_labels:
         st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
     with st.sidebar:
+        st.subheader("📊 분석")
         nav_mode = sac.tabs(
             [sac.TabsItem(label=_NAV_ANOMALY_BADGE),
              sac.TabsItem(label=_NAV_INSIGHT),
@@ -884,6 +883,10 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
             key=_nav_key,
         )
 
+        # Reserve filter placeholder right after nav tabs
+        _filter_placeholder = st.container()
+        st.session_state["_filter_container"] = _filter_placeholder
+
         # ── "← 돌아가기" button (visible when navigated to profile via shortcut)
         _return_nav = st.session_state.get("_profile_return_nav")
         if _return_nav and nav_mode == _NAV_PROFILE:
@@ -891,50 +894,6 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
                          use_container_width=True, type="primary"):
                 st.session_state["_profile_do_return"] = True
                 st.rerun()
-
-        # ── Brands of Interest (관심 브랜드) ──────────────────────────────
-        st.divider()
-        _watchlist = st.session_state.get("_brand_watchlist", [])
-        if _watchlist:
-            st.subheader("⭐ 관심 브랜드")
-            # Quick-click buttons for each watchlisted brand
-            for _wi, _wb in enumerate(_watchlist):
-                _wc1, _wc2 = st.columns([4, 1])
-                with _wc1:
-                    if st.button(
-                        f"🔍 {_wb}", key=f"watchlist_goto_{_wi}",
-                        use_container_width=True,
-                    ):
-                        st.session_state["_goto_profile_brand"] = _wb
-                        st.rerun()
-                with _wc2:
-                    if st.button("✕", key=f"watchlist_rm_{_wi}",
-                                 help=f"{_wb} 제거"):
-                        _watchlist.remove(_wb)
-                        st.session_state["_brand_watchlist"] = _watchlist
-                        st.rerun()
-
-            # Manage watchlist
-            with st.expander("관심 브랜드 관리"):
-                # Add from all brands
-                _all_brands_for_wl = sorted(
-                    set(st.session_state.get("_all_brand_names", []))
-                    - set(_watchlist)
-                )
-                if _all_brands_for_wl:
-                    _add_brand = st.selectbox(
-                        "브랜드 추가", [""] + _all_brands_for_wl,
-                        key="watchlist_add_sel",
-                        label_visibility="collapsed",
-                        placeholder="브랜드 선택하여 추가…",
-                    )
-                    if _add_brand:
-                        _watchlist.append(_add_brand)
-                        st.session_state["_brand_watchlist"] = _watchlist
-                        st.rerun()
-                if st.button("전체 초기화", key="watchlist_clear"):
-                    st.session_state["_brand_watchlist"] = []
-                    st.rerun()
 
         # ── Report generation ─────────────────────────────────────────────
         st.divider()
@@ -1000,8 +959,76 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
         st.divider()
         debug = st.checkbox(t("debug"), value=False)
 
+        # ── Brands of Interest (관심 브랜드) — bottom of sidebar ─────────
+        _watchlist = st.session_state.get("_brand_watchlist", [])
+        if _watchlist:
+            st.divider()
+            st.subheader("⭐ 관심 브랜드")
+            for _wi, _wb in enumerate(_watchlist):
+                _wc1, _wc2 = st.columns([4, 1])
+                with _wc1:
+                    if st.button(f"🔍 {_wb}", key=f"watchlist_goto_{_wi}",
+                                 use_container_width=True):
+                        st.session_state["_goto_profile_brand"] = _wb
+                        st.rerun()
+                with _wc2:
+                    if st.button("✕", key=f"watchlist_rm_{_wi}", help=f"{_wb} 제거"):
+                        _watchlist.remove(_wb)
+                        st.session_state["_brand_watchlist"] = _watchlist
+                        st.rerun()
+            with st.expander("관심 브랜드 관리"):
+                _all_brands_for_wl = sorted(
+                    set(st.session_state.get("_all_brand_names", [])) - set(_watchlist)
+                )
+                if _all_brands_for_wl:
+                    _add_brand = st.selectbox(
+                        "브랜드 추가", [""] + _all_brands_for_wl,
+                        key="watchlist_add_sel", label_visibility="collapsed",
+                        placeholder="브랜드 선택하여 추가…",
+                    )
+                    if _add_brand:
+                        _watchlist.append(_add_brand)
+                        st.session_state["_brand_watchlist"] = _watchlist
+                        st.rerun()
+                if st.button("전체 초기화", key="watchlist_clear"):
+                    st.session_state["_brand_watchlist"] = []
+                    st.rerun()
+
     # ── Route to tier ────────────────────────────────────────────────────────
     yoy_file = _find_yoy_file(file_name)
+
+    # ── Data Quality (triggered from sidebar) ─────────────────────────────
+    # Clear DQ view if user navigated away via sidebar tabs
+    if st.session_state.get("_show_dq", False) and st.session_state.get(_nav_key) != st.session_state.get("_dq_nav_snapshot"):
+        st.session_state["_show_dq"] = False
+    if st.session_state.get("_show_dq", False):
+        st.session_state["_dq_nav_snapshot"] = st.session_state.get(_nav_key)
+        if st.button("← 돌아가기", key="dq_back_btn"):
+            st.session_state["_show_dq"] = False
+            st.rerun()
+        if "검침 내역" not in all_sheet_keys:
+            st.info("데이터 품질 분석을 위해 **검침 내역** 시트가 필요합니다.")
+        else:
+            from tab_anomaly import render_data_quality_tab
+            _dq_df, _, _, _, _ = _load_meter_data(
+                file_name, file_map, sheet_map, all_sheet_keys, prev_file,
+                key_prefix="dq",
+            )
+            _prev_data = file_map.get(prev_file) if prev_file else None
+            _prev_sheets = sheet_map.get(prev_file, []) if prev_file else None
+            _yoy_data = file_map.get(yoy_file) if yoy_file else None
+            _yoy_sheets = sheet_map.get(yoy_file, []) if yoy_file else None
+            render_data_quality_tab(
+                _dq_df,
+                file_name=file_name,
+                file_data=file_map[file_name],
+                all_sheet_keys=all_sheet_keys,
+                prev_file_data=_prev_data,
+                prev_sheet_keys=_prev_sheets,
+                yoy_file_data=_yoy_data,
+                yoy_sheet_keys=_yoy_sheets,
+            )
+        st.stop()
 
     # Clear return-to-profile state when user navigates away from profile manually
     if nav_mode != _NAV_PROFILE:

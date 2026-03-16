@@ -48,6 +48,13 @@ def setup_sidebar():
             else:
                 st.warning("폴더를 찾을 수 없습니다.")
 
+        # ── Data Quality button — right after data path ──────────────────
+        if uploads:
+            st.divider()
+            st.subheader("🛡 데이터 품질")
+            if st.button("🛡 품질 검사 실행", key="sidebar_dq_btn", use_container_width=True):
+                st.session_state["_show_dq"] = True
+
     tail = 20
     bins = 50
     q = (tail / 100.0, 1.0 - tail / 100.0)

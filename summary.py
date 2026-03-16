@@ -277,7 +277,7 @@ def render_summary_view(
         f'<div style="width:{_el_p}%;background:#DD8A00" title="전기 {_el_p:.0f}%"></div>'
         f'<div style="width:{_ht_p}%;background:#E377C2" title="난방 {_ht_p:.0f}%"></div>'
         f'</div>'
-        f'<div style="display:flex;gap:20px;font-size:0.92rem;font-weight:600;color:#444;margin-bottom:6px">'
+        f'<div style="display:flex;gap:20px;font-size:0.92rem;font-weight:600;color:inherit;opacity:0.75;margin-bottom:6px">'
         f'<span style="color:#4C72B0">■ 수도 {_w_p:.0f}%</span>'
         f'<span style="color:#C44E52">■ 온수 {_hw_p:.0f}%</span>'
         f'<span style="color:#DD8A00">■ 전기 {_el_p:.0f}%</span>'

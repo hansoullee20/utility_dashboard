@@ -15,9 +15,10 @@ so absolute levels are irrelevant for anomaly detection.
 
 Anomaly dimensions
 ------------------
-spike        (40 %) — MoM % change magnitude per utility
-             Sigmoid-mapped: 20%→0.27 · 50%→0.50 · 100%→0.88 · 200%→0.998
-             Boosted when brand spikes much more than building peers.
+spike        (40 %) — MoM % change magnitude per utility (peer-relative)
+             Scores **excess spike** = brand % − building avg %.
+             80% excess sigmoid + 20% raw sigmoid (absolute floor).
+             A brand at +150% when building avg is +200% scores LOW.
              Also flags large drops (possible meter error / vacancy).
 consumption  (25 %) — quadrant classification per utility from 검침내역
              HH=1.0 · HL=0.6 · LH=0.5 · Normal=0 · LL=0 → max across utilities
@@ -51,10 +52,13 @@ import pandas as pd
 
 from cross_features import build_unit_costs, build_elec_breakdown
 from data import to_numeric_series
-from utils import zscore as _zscore, iqr_upper as _iqr_upper
+from utils import (
+    zscore as _zscore, iqr_upper as _iqr_upper, z_to_grade as _ztg,
+    UTIL_PREFIXES as _UTIL_PREFIXES_TUPLE, UTIL_LABELS as _UTIL_LABELS,
+    RISK_DANGER, RISK_CAUTION, RISK_OBSERVE, RISK_NORMAL,
+)
 
-_UTIL_PREFIXES = ["water", "hwater", "elect", "heat"]
-_UTIL_LABELS   = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "난방"}
+_UTIL_PREFIXES = list(_UTIL_PREFIXES_TUPLE)
 
 # Quadrant → score: exponential, HH dominates
 _QUAD_SCORE = {"HH": 1.0, "HL": 0.6, "LH": 0.5, "Normal": 0.0, "LL": 0.0, "No Data": 0.0}
@@ -116,14 +120,23 @@ def _z_to_score(z: pd.Series) -> pd.Series:
 # ── 0. Spike signals — absolute MoM change detection ─────────────────────────
 
 def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect abrupt MoM usage changes using absolute-anchored sigmoid scoring.
+    """Detect abrupt MoM usage changes using peer-relative sigmoid scoring.
 
-    Focuses on % change from own previous month — business size irrelevant.
+    Primary signal is **excess spike** = brand % change − building average %.
+    A brand moving with the herd (e.g., +150% when building avg is +200%)
+    scores low; a brand spiking far above peers scores high.
+
+    A small floor score (20% of raw sigmoid) is kept for extreme absolute
+    spikes — +500% is still noteworthy even if peers averaged +400%.
+
     Both increases AND large drops are flagged (drops may indicate meter error).
-    Score is boosted when a brand's spike exceeds its building peers.
     """
     out = df.copy()
+    has_building = "building" in df.columns
+
+    # ── Per-utility raw % changes ─────────────────────────────────────────
     spike_scores: list[pd.Series] = []
+    per_util_pcts: dict[str, pd.Series] = {}
 
     for pfx in _UTIL_PREFIXES:
         pct_col = f"{pfx}_pct"
@@ -137,6 +150,7 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
         c = to_numeric_series(df[chg_col]) if chg_col in df.columns else pd.Series(np.nan, index=df.index)
 
         out[out_col] = p.round(1)   # store raw (signed) for display
+        per_util_pcts[pfx] = p
 
         # Severity flag (for display — separate from scoring)
         def _flag(v):
@@ -152,16 +166,25 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
 
         out[f"{pfx}_spike_flag"] = p.apply(_flag)
 
-        # Sigmoid score on positive spikes
+        # ── Per-utility building average (for display) ────────────────
+        if has_building:
+            bldg = df["building"]
+            pos_p = p.clip(lower=0).fillna(0)
+            bldg_sum = bldg.map(pos_p.groupby(bldg).sum())
+            bldg_cnt = bldg.groupby(bldg).transform("count")
+            loo_avg = ((bldg_sum - pos_p) / (bldg_cnt - 1)).where(bldg_cnt >= 2)
+            out[f"{pfx}_bldg_avg_pct"] = loo_avg.round(1)
+
+        # ── Raw sigmoid on absolute spike (used for floor) ────────────
         pos_pct = p.clip(lower=0).fillna(0)
-        pos_score = _sigmoid_score(pos_pct)
+        raw_score = _sigmoid_score(pos_pct)
 
         # Also score large drops (meter error / vacancy signal)
         drop_score = _sigmoid_score(p.abs().fillna(0).where(p < _DROP_THRESHOLD, 0),
                                     midpoint=50.0, k=0.03)  # softer curve for drops
 
-        # Combined: max of increase or drop signal
-        util_score = pd.concat([pos_score, drop_score], axis=1).max(axis=1)
+        # Combined raw: max of increase or drop signal
+        raw_util_score = pd.concat([raw_score, drop_score], axis=1).max(axis=1)
 
         # Attenuate tiny-base spikes: if absolute change is very small,
         # reduce score (e.g., 0.1 → 1.0 m³ is +900% but not alarming)
@@ -169,9 +192,19 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
             c_abs = c.abs().fillna(0)
             median_change = c_abs[c_abs > 0].median()
             if median_change is not None and not pd.isna(median_change) and median_change > 0:
-                # If absolute change < 10% of peer median, dampen by 50%
                 small_base = c_abs < (median_change * 0.1)
-                util_score = util_score.where(~small_base, util_score * 0.5)
+                raw_util_score = raw_util_score.where(~small_base, raw_util_score * 0.5)
+
+        # ── Peer-relative excess score ────────────────────────────────
+        if has_building:
+            bldg_avg = out[f"{pfx}_bldg_avg_pct"].fillna(0)
+            excess = (pos_pct - bldg_avg).clip(lower=0)
+            excess_score = _sigmoid_score(excess)
+            # Blend: 80% excess (peer-relative) + 20% raw (absolute floor)
+            util_score = (0.8 * excess_score + 0.2 * raw_util_score).round(4)
+        else:
+            # No building info — fall back to raw absolute scoring
+            util_score = raw_util_score
 
         spike_scores.append(util_score.rename(out_col))
 
@@ -189,19 +222,11 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
             lambda c: _UTIL_LABELS.get(c.replace("_spike_pct", ""), c) if isinstance(c, str) else ""
         )
 
-        # Peer context: compare each brand's spike to its building average
-        if "building" in out.columns:
+        # Overall peer context (max spike across utilities)
+        if has_building:
             _peer_context = _compute_peer_context(out, raw_pct_cols)
             for col in _peer_context.columns:
                 out[col] = _peer_context[col]
-
-            # Peer boost: if brand spiked ≥2x its building peers, boost score
-            ratio = out.get("spike_peer_ratio")
-            if ratio is not None:
-                r = to_numeric_series(ratio).fillna(1.0)
-                # Boost: ratio 2x → +10%, 5x → +25%, 10x → +40% (capped)
-                peer_boost = ((r - 1).clip(lower=0) * 0.05).clip(upper=0.4)
-                base_spike = (base_spike + peer_boost).clip(upper=1.0)
 
         out["spike_score"] = base_spike.round(4)
     else:
@@ -417,13 +442,16 @@ def _build_reason_flags(df: pd.DataFrame) -> pd.Series:
     """
     def _row_reason(r):
         parts: list[str] = []
-        # 1. Spike + peer context
+        # 1. Spike + peer context (show building avg so user sees context)
         pct = r.get("spike_max_pct", 0) or 0
         if pct >= _SPIKE_MEDIUM:
             s = f"급등 +{pct:.0f}%({r.get('spike_worst_util', '') or ''})"
+            bavg = r.get("spike_bldg_avg_pct")
             pr = r.get("spike_peer_ratio")
-            if pr is not None and not pd.isna(pr) and pr >= 2.0:
-                s += f" vs건물 {pr:.1f}x"
+            if bavg is not None and not pd.isna(bavg):
+                s += f" 건물평균 +{bavg:.0f}%"
+                if pr is not None and not pd.isna(pr) and pr >= 2.0:
+                    s += f"({pr:.1f}x)"
             parts.append(s)
         # 1b. Large drops
         n_drops = r.get("n_drop_utilities", 0) or 0
@@ -436,7 +464,6 @@ def _build_reason_flags(df: pd.DataFrame) -> pd.Series:
             if drop_utils:
                 parts.append(f"급감 {','.join(drop_utils)}")
         # 2. Worst unit cost Z ≥ 1.5 — shown as business-friendly grade
-        from utils import z_to_grade as _ztg
         _Z = [("수도단가", r.get("water_unit_z")),
               ("전기단가", r.get("elect_unit_z")),
               ("평당비용", r.get("total_cost_per_py_z") or r.get("total_cost_per_m2_z"))]
@@ -519,10 +546,12 @@ def build_anomaly_df(
 
     # 5. Weighted composite score — redistribute weights for missing data
     available_dims = {}
+    _cost_avail = df["_cost_available"].any() if "_cost_available" in df.columns else True
+    _hvac_avail = df["_hvac_available"].any() if "_hvac_available" in df.columns else True
     for k, v in _WEIGHTS.items():
-        if k == "cost_score" and not df.get("_cost_available", pd.Series(True)).any():
+        if k == "cost_score" and not _cost_avail:
             continue  # billing sheet not loaded — exclude from weighting
-        if k == "hvac_score" and not df.get("_hvac_available", pd.Series(True)).any():
+        if k == "hvac_score" and not _hvac_avail:
             continue  # electricity sheet not loaded — exclude from weighting
         available_dims[k] = v
 
@@ -540,10 +569,10 @@ def build_anomaly_df(
 
     # 7. Risk classification (absolute thresholds on absolute-anchored scores)
     def _risk(s: float) -> str:
-        if s >= 0.65: return "🔴 위험"
-        if s >= 0.40: return "🟠 주의"
-        if s >= 0.20: return "🟡 관찰"
-        return "🟢 정상"
+        if s >= 0.65: return RISK_DANGER
+        if s >= 0.40: return RISK_CAUTION
+        if s >= 0.20: return RISK_OBSERVE
+        return RISK_NORMAL
 
     df["risk_level"] = df["composite_score"].map(_risk)
     return df.sort_values("composite_score", ascending=False).reset_index(drop=True)

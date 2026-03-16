@@ -36,7 +36,7 @@ _VACANCY_LABELS = {
 
 def _all_toggle(key: str) -> callable:
     def cb():
-        sel = st.session_state[key]
+        sel = st.session_state.get(key)
         if not sel:
             st.session_state[key] = ["All"]
         elif sel[-1] == "All":
@@ -83,27 +83,33 @@ def show_filter_widgets(ref_df, key_prefix: str = ""):
     gkey = f"{key_prefix}_gongshil"
     skey = f"{key_prefix}_brand_search"
 
-    # Read from session state — the widget is rendered above tabs via brand_search_bar()
     brand_search = st.session_state.get(skey, "").strip().lower()
 
-    fc1, fc2, fc3 = st.columns(3)
-    with fc1:
-        sel_bldg = st.multiselect(
-            t("building"), ["All"] + all_buildings, default=["All"],
-            key=bkey, on_change=_all_toggle(bkey),
-        )
-    with fc2:
-        sel_floor = st.multiselect(
-            t("floor"), ["All"] + all_floors, default=["All"],
-            key=fkey, on_change=_all_toggle(fkey),
-        )
-    with fc3:
-        gong_mode = st.radio(
-            t("vacancy"), _VACANCY_OPTS,
-            format_func=lambda x: _VACANCY_LABELS[x][_lang],
-            index=0, horizontal=True, disabled=not has_gong,
-            key=gkey,
-        )
+    # Render in the placeholder reserved in sidebar (right after nav tabs)
+    # Brand search — inline on each page
+    st.text_input("🔍 브랜드 검색", placeholder="브랜드명 입력...", key=skey)
+
+    # Building/floor/vacancy filters — sidebar
+    _filter_container = st.session_state.get("_filter_container")
+    _ctx = _filter_container if _filter_container else st
+    with _ctx:
+        with st.expander("🔍 필터", expanded=False):
+            sel_bldg = st.multiselect(
+                t("building"), ["All"] + all_buildings, default=["All"],
+                key=bkey, on_change=_all_toggle(bkey),
+            )
+            sel_floor = st.multiselect(
+                t("floor"), ["All"] + all_floors, default=["All"],
+                key=fkey, on_change=_all_toggle(fkey),
+            )
+            gong_mode = st.radio(
+                t("vacancy"), _VACANCY_OPTS,
+                format_func=lambda x: _VACANCY_LABELS[x][_lang],
+                index=0, horizontal=True, disabled=not has_gong,
+                key=gkey,
+            )
+
+    brand_search = st.session_state.get(skey, "").strip().lower()
 
     return sel_bldg, sel_floor, gong_mode, brand_search
 
@@ -192,13 +198,8 @@ def render_meter_filters(raw_df, key_prefix: str = ""):
 
 
 def brand_search_bar(key_prefix: str = "") -> None:
-    """Render the brand search text input. Call this just above st.tabs().
-
-    The filter itself is applied earlier via session state in show_filter_widgets()
-    or apply_sheet_filter(). This function only renders the visible widget.
-    """
-    skey = f"{key_prefix}_brand_search"
-    st.text_input("🔍 브랜드 검색", placeholder="브랜드명 입력...", key=skey)
+    """No-op — brand search is now in the sidebar via show_filter_widgets()."""
+    pass
 
 
 def render_active_filters(key_prefix: str = "") -> None:

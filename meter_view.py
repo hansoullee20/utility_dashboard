@@ -70,26 +70,13 @@ def load_meter_df(
     df = load_raw_meter_df(file_name, file_map, sheet_name, prev_file_name, prev_sheet_name)
     df = aggregate_by_brand(df)
 
-    _usage_cols = {
-        "water_current":  ("water_usage_per_m2",  "water_usage_per_py"),
-        "hwater_current": ("hwater_usage_per_m2", "hwater_usage_per_py"),
-        "elect_current":  ("elect_usage_per_m2",  "elect_usage_per_py"),
-        "heat_current":   ("heat_usage_per_m2",   "heat_usage_per_py"),
-    }
-    size_m2 = to_numeric_series(df["size_m2"]).replace(0, float("nan")) if "size_m2" in df.columns else None
-    size_py = to_numeric_series(df["size_py"]).replace(0, float("nan")) if "size_py" in df.columns else None
-    for usage_col, (per_m2_col, per_py_col) in _usage_cols.items():
-        if usage_col in df.columns:
-            usage = to_numeric_series(df[usage_col])
-            if size_m2 is not None:
-                df[per_m2_col] = (usage / size_m2).round(4)
-            if size_py is not None:
-                df[per_py_col] = (usage / size_py).round(4)
+    from utils import add_per_area_cols
+    add_per_area_cols(df)
 
     return df
 
 
-_CAT_LABELS = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "열"}
+from utils import UTIL_LABELS as _CAT_LABELS
 _QUAD_EMOJI = {"HH": "🔴 HH", "HL": "🟠 HL", "LH": "🟡 LH", "LL": "🟢 LL", "—": "—"}
 
 

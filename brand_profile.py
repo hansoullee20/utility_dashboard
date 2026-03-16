@@ -14,14 +14,7 @@ _C_AVG   = "#DD8A00"   # amber       — fleet average
 _C_POS   = "#E07070"   # red-ish     — positive change (increase)
 _C_NEG   = "#6AAB6A"   # green       — negative change (decrease)
 
-_CAT_META = [
-    ("water",  "수도",  "m³"),
-    ("hwater", "온수",  "m³"),
-    ("elect",  "전기",  "kWh"),
-    ("heat",   "열",    "m³/MWh"),
-]
-_LABEL = {p: lbl for p, lbl, _ in _CAT_META}
-_UNIT  = {p: u   for p, _,   u in _CAT_META}
+from utils import UTIL_LABELS as _LABEL, UTIL_UNITS as _UNIT
 
 _QUAD_LABEL = {
     "HH": "🔴 HH — 변화·비율 모두 상위",
@@ -308,9 +301,9 @@ def _render_single_brand_profile(
     st.markdown(
         f'<div style="background:linear-gradient(135deg,#4C72B010,#4C72B005);'
         f'border:1px solid #4C72B025;border-radius:12px;padding:16px 20px;margin-bottom:16px">'
-        f'<div style="font-size:1.5rem;font-weight:800;color:#333;margin-bottom:8px">'
+        f'<div style="font-size:1.5rem;font-weight:800;color:inherit;margin-bottom:8px">'
         f'{selected}</div>'
-        f'<div style="display:flex;gap:24px;font-size:0.88rem;color:#555">'
+        f'<div style="display:flex;gap:24px;font-size:0.88rem;color:inherit;opacity:0.7">'
         f'<span>🏢 <b>{bldg}</b></span>'
         f'<span>📍 <b>{floor}</b></span>'
         f'<span>📐 <b>{size_str}</b></span>'

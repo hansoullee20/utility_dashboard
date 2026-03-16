@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-_BLDG_COLOR = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
+from utils import BLD_COLOR as _BLDG_COLOR
 
 
 def handle_chart_click(ev, df: pd.DataFrame, brand_col: str = "brand",
