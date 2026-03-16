@@ -700,9 +700,14 @@ def _render_composite_bar(df: pd.DataFrame, n: int, split_by_building: bool) -> 
         if split_by_building and "building" in top.columns
         else [_RISK_COLOR.get(r, "#888") for r in top["risk_level"]]
     )
+    # Make labels unique: append building to avoid Plotly stacking same-name brands
+    if "building" in top.columns:
+        _labels = [f"{str(b)[:22]}({bldg})" for b, bldg in zip(top["brand"], top["building"])]
+    else:
+        _labels = [str(b)[:28] for b in top["brand"]]
     fig = go.Figure(go.Bar(
         x=top["composite_score"],
-        y=[str(b)[:28] for b in top["brand"]],
+        y=_labels,
         orientation="h",
         marker_color=marker_color,
         text=[f'{r}  {s:.3f}' for r, s in zip(top["risk_level"], top["composite_score"])],
@@ -762,7 +767,10 @@ def _render_heatmap(df: pd.DataFrame, n: int) -> None:
         axis=0,
     )
 
-    brand_labels = [str(b)[:26] for b in top["brand"]]
+    if "building" in top.columns:
+        brand_labels = [f"{str(b)[:20]}({bldg})" for b, bldg in zip(top["brand"], top["building"])]
+    else:
+        brand_labels = [str(b)[:26] for b in top["brand"]]
 
     fig = go.Figure(go.Heatmap(
         z=norm.values,
@@ -854,7 +862,10 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
             fig_ov = go.Figure()
             _util_colors = {"water": "#4C72B0", "hwater": "#C44E52",
                             "elect": "#DD8A00", "heat": "#E377C2"}
-            brands = [str(b)[:20] for b in _overview_df["brand"]]
+            if "building" in _overview_df.columns:
+                brands = [f"{str(b)[:16]}({bldg})" for b, bldg in zip(_overview_df["brand"], _overview_df["building"])]
+            else:
+                brands = [str(b)[:20] for b in _overview_df["brand"]]
             for p in _avail_pfx:
                 col = f"{p}_spike_pct"
                 lbl = _UTIL_LABELS_UI.get(p, p)
