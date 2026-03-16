@@ -10,6 +10,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from utils_plot import dedup_brand_labels as _dedup
 
 from data import (
     to_numeric_series,
@@ -396,14 +397,16 @@ def _render_elec_breakdown(elec_br: pd.DataFrame, split_by_building: bool = True
                 st.info("📌 HVAC 비중이 높은 편 — 계절별 패턴 확인 필요")
 
     # Stacked bar chart
-    melt_df = elec_br[["brand"] + pct_cols].melt(
-        id_vars="brand", var_name="category", value_name="pct")
+    _elec_dedup = _dedup(elec_br)
+    _melt_cols = ["_x_label"] if "_x_label" in _elec_dedup.columns else ["brand"]
+    melt_df = _elec_dedup[_melt_cols + pct_cols].melt(
+        id_vars=_melt_cols[0], var_name="category", value_name="pct")
     melt_df["category"] = melt_df["category"].map(
         {"ehp_pct": "EHP", "hvac_pct": "HVAC", "base_pct": "기본 부하"}
     )
-    fig = px.bar(melt_df, x="brand", y="pct", color="category", barmode="stack",
+    fig = px.bar(melt_df, x=_melt_cols[0], y="pct", color="category", barmode="stack",
                  title="전기 카테고리 비율 (%)",
-                 labels={"pct": "비율 (%)", "brand": "브랜드"},
+                 labels={"pct": "비율 (%)", _melt_cols[0]: "브랜드"},
                  color_discrete_map={"EHP": "#DD8A00", "HVAC": "#C44E52", "기본 부하": "#4C72B0"})
     fig.update_layout(height=400, xaxis_tickangle=-45, margin=dict(t=50, b=80))
     _ev = st.plotly_chart(fig, use_container_width=True, key="cross_elec_stacked", on_select="rerun")
@@ -490,12 +493,14 @@ def _render_water_breakdown(water_br: pd.DataFrame, split_by_building: bool = Tr
         "수도요금": "#4C72B0", "하수도": "#C44E52",
         "부담금": "#DD8A00", "관경비": "#2ca02c",
     }
-    melt_df = water_br[["brand"] + pct_cols].melt(
-        id_vars="brand", var_name="category", value_name="pct")
+    _water_dedup = _dedup(water_br)
+    _wm_col = "_x_label" if "_x_label" in _water_dedup.columns else "brand"
+    melt_df = _water_dedup[[_wm_col] + pct_cols].melt(
+        id_vars=_wm_col, var_name="category", value_name="pct")
     melt_df["category"] = melt_df["category"].map(_label_map)
-    fig = px.bar(melt_df, x="brand", y="pct", color="category", barmode="stack",
+    fig = px.bar(melt_df, x=_wm_col, y="pct", color="category", barmode="stack",
                  title="수도 요금 카테고리 비율 (%)",
-                 labels={"pct": "비율 (%)", "brand": "브랜드"},
+                 labels={"pct": "비율 (%)", _wm_col: "브랜드"},
                  color_discrete_map=_color_map)
     fig.update_layout(height=400, xaxis_tickangle=-45, margin=dict(t=50, b=80))
     _ev = st.plotly_chart(fig, use_container_width=True, key="cross_water_stacked", on_select="rerun")

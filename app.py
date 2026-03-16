@@ -293,7 +293,7 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
         st.info("이상감지를 위해 **검침 내역** 시트가 필요합니다.")
         return
 
-    cur_df, present, split_bldg, _, _ = _load_meter_data(
+    cur_df, present, split_bldg, ref_df, _ = _load_meter_data(
         file_name, file_map, sheet_map, all_sheet_keys, prev_file,
         key_prefix="t1",
     )
@@ -306,6 +306,7 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
     yoy_lbl = "전년동월"
     render_anomaly_tab(
         cur_df, file_name, file_map[file_name], all_sheet_keys,
+        raw_df=ref_df,
         split_by_building=split_bldg,
         prev_file_data=prev_data,
         prev_sheet_keys=prev_sheets,
@@ -360,8 +361,9 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
     if has_meter:
         tab_labels += ["🏢 건물 평균", "💰 비용 분석", "⚡ 효율 분석"]
         tab_keys += ["bldg_avg", "cost", "eff"]
-        tab_labels.append("📈 기간 비교")
-        tab_keys.append("period")
+        if prev_file or yoy_file:
+            tab_labels.append("📈 기간 비교")
+            tab_keys.append("period")
         if prev_file or yoy_file:
             tab_labels.append("🔄 공실 현황")
             tab_keys.append("vacancy")
@@ -868,8 +870,13 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
         if _prev_nav and _prev_nav != _NAV_PROFILE:
             st.session_state["_profile_return_nav"] = _prev_nav
         st.session_state[_nav_key] = _NAV_PROFILE
-    elif st.session_state.get(_nav_key) not in _valid_labels:
-        st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
+    else:
+        # Allow stale badge labels (count may have changed) — match by prefix
+        _cur_nav = st.session_state.get(_nav_key, "")
+        if _cur_nav not in _valid_labels and not _cur_nav.startswith(_NAV_ANOMALY):
+            st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
+        elif _cur_nav.startswith(_NAV_ANOMALY) and _cur_nav != _NAV_ANOMALY_BADGE:
+            st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
     with st.sidebar:
         st.subheader("📊 분석")
         nav_mode = sac.tabs(
@@ -999,8 +1006,11 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
 
     # ── Data Quality (triggered from sidebar) ─────────────────────────────
     # Clear DQ view if user navigated away via sidebar tabs
-    if st.session_state.get("_show_dq", False) and st.session_state.get(_nav_key) != st.session_state.get("_dq_nav_snapshot"):
+    # Clear DQ view only if user explicitly changed nav tab (not on first load)
+    _dq_snap = st.session_state.get("_dq_nav_snapshot")
+    if st.session_state.get("_show_dq", False) and _dq_snap is not None and st.session_state.get(_nav_key) != _dq_snap:
         st.session_state["_show_dq"] = False
+        st.session_state.pop("_dq_nav_snapshot", None)
     if st.session_state.get("_show_dq", False):
         st.session_state["_dq_nav_snapshot"] = st.session_state.get(_nav_key)
         if st.button("← 돌아가기", key="dq_back_btn"):
@@ -1010,7 +1020,7 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
             st.info("데이터 품질 분석을 위해 **검침 내역** 시트가 필요합니다.")
         else:
             from tab_anomaly import render_data_quality_tab
-            _dq_df, _, _, _, _ = _load_meter_data(
+            _dq_df, _, _, _dq_ref_df, _ = _load_meter_data(
                 file_name, file_map, sheet_map, all_sheet_keys, prev_file,
                 key_prefix="dq",
             )
@@ -1027,6 +1037,7 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
                 prev_sheet_keys=_prev_sheets,
                 yoy_file_data=_yoy_data,
                 yoy_sheet_keys=_yoy_sheets,
+                raw_df=_dq_ref_df,
             )
         st.stop()
 

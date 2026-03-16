@@ -54,17 +54,20 @@ def normalize_brand(name: str) -> str:
     s = str(name).strip()
     if s in ("nan", "", "NaN"):
         return ""
+    # 0. Preserve 공실 parentheticals — they identify the specific vacant unit
+    _is_gongshil = s.startswith("공실")
     # 1. Remove trailing date annotations (with or without parens)
     s = re.sub(r"\s*\(?\d{1,2}/\d{1,2}\s*해지?\)?\s*$", "", s)
-    # 2. Truncate at previous-tenant markers: (전, (구, (舊 — anywhere in string
-    s = re.sub(r"\s*\((?:전|구|舊)[^)]*\).*$", "", s)
-    s = re.sub(r"\s*\((?:전|구|舊)[^)]*$", "", s)  # unclosed paren
-    # 3. Remove ALL trailing parentheticals repeatedly
-    while True:
-        s2 = re.sub(r"\s*\([^)]*\)?\s*$", "", s)
-        if s2 == s:
-            break
-        s = s2
+    if not _is_gongshil:
+        # 2. Truncate at previous-tenant markers: (전, (구, (舊 — anywhere in string
+        s = re.sub(r"\s*\((?:전|구|舊)[^)]*\).*$", "", s)
+        s = re.sub(r"\s*\((?:전|구|舊)[^)]*$", "", s)  # unclosed paren
+        # 3. Remove ALL trailing parentheticals repeatedly
+        while True:
+            s2 = re.sub(r"\s*\([^)]*\)?\s*$", "", s)
+            if s2 == s:
+                break
+            s = s2
     # 4. Remove ALL spaces for fuzzy comparison
     s = re.sub(r"\s+", "", s)
     # 5. Common character normalization
