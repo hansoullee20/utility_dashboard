@@ -1856,6 +1856,7 @@ def render_anomaly_tab(
     yoy_file_data: bytes | None = None,
     yoy_sheet_keys: list[str] | None = None,
     yoy_label: str | None = None,
+    raw_df: pd.DataFrame | None = None,
 ) -> None:
     """Render the 이상감지 분석 view — loads immediately (no lazy-load button)."""
 
@@ -1886,13 +1887,14 @@ def render_anomaly_tab(
 
     # ── Data quality warning ─────────────────────────────────────────────
     from data import to_numeric_series as _tns_dqw
+    _bw_src = raw_df if raw_df is not None else cur_df
     _n_bw = 0
     for _pfx in _UTIL_PREFIXES:
-        # Check cumulative meter readings, not usage
-        _pc = f"{_pfx}_meter_prev" if f"{_pfx}_meter_prev" in cur_df.columns else f"{_pfx}_previous"
-        _cc = f"{_pfx}_meter_curr" if f"{_pfx}_meter_curr" in cur_df.columns else f"{_pfx}_current"
-        if _pc in cur_df.columns and _cc in cur_df.columns:
-            _p, _c = _tns_dqw(cur_df[_pc]), _tns_dqw(cur_df[_cc])
+        # Check cumulative meter readings from raw data
+        _pc = f"{_pfx}_meter_prev" if f"{_pfx}_meter_prev" in _bw_src.columns else f"{_pfx}_previous"
+        _cc = f"{_pfx}_meter_curr" if f"{_pfx}_meter_curr" in _bw_src.columns else f"{_pfx}_current"
+        if _pc in _bw_src.columns and _cc in _bw_src.columns:
+            _p, _c = _tns_dqw(_bw_src[_pc]), _tns_dqw(_bw_src[_cc])
             _n_bw += int((_c.notna() & _p.notna() & (_c < _p)).sum())
     _n_zr = int((anomaly_df["n_zero_utilities"] > 0).sum()) if "n_zero_utilities" in anomaly_df.columns else 0
     _n_all_zero = 0

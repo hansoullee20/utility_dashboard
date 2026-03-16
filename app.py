@@ -293,7 +293,7 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
         st.info("이상감지를 위해 **검침 내역** 시트가 필요합니다.")
         return
 
-    cur_df, present, split_bldg, _, _ = _load_meter_data(
+    cur_df, present, split_bldg, ref_df, _ = _load_meter_data(
         file_name, file_map, sheet_map, all_sheet_keys, prev_file,
         key_prefix="t1",
     )
@@ -306,6 +306,7 @@ def _render_tier1_anomaly(file_name, file_map, sheet_map, all_sheet_keys,
     yoy_lbl = "전년동월"
     render_anomaly_tab(
         cur_df, file_name, file_map[file_name], all_sheet_keys,
+        raw_df=ref_df,
         split_by_building=split_bldg,
         prev_file_data=prev_data,
         prev_sheet_keys=prev_sheets,
