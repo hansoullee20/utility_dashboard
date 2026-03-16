@@ -361,8 +361,9 @@ def _render_tier2_insight(file_name, file_map, sheet_map, all_sheet_keys,
     if has_meter:
         tab_labels += ["🏢 건물 평균", "💰 비용 분석", "⚡ 효율 분석"]
         tab_keys += ["bldg_avg", "cost", "eff"]
-        tab_labels.append("📈 기간 비교")
-        tab_keys.append("period")
+        if prev_file or yoy_file:
+            tab_labels.append("📈 기간 비교")
+            tab_keys.append("period")
         if prev_file or yoy_file:
             tab_labels.append("🔄 공실 현황")
             tab_keys.append("vacancy")

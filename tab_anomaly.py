@@ -700,11 +700,12 @@ def _render_composite_bar(df: pd.DataFrame, n: int, split_by_building: bool) -> 
         if split_by_building and "building" in top.columns
         else [_RISK_COLOR.get(r, "#888") for r in top["risk_level"]]
     )
-    # Make labels unique: append building to avoid Plotly stacking same-name brands
-    if "building" in top.columns:
-        _labels = [f"{str(b)[:22]}({bldg})" for b, bldg in zip(top["brand"], top["building"])]
-    else:
-        _labels = [str(b)[:28] for b in top["brand"]]
+    # Append building only for brands that appear more than once
+    _dup_brands = set(top["brand"][top["brand"].duplicated(keep=False)]) if "building" in top.columns else set()
+    _labels = [
+        f"{str(b)[:22]}({bldg})" if b in _dup_brands else str(b)[:28]
+        for b, bldg in zip(top["brand"], top.get("building", [""] * len(top)))
+    ]
     fig = go.Figure(go.Bar(
         x=top["composite_score"],
         y=_labels,
@@ -767,10 +768,11 @@ def _render_heatmap(df: pd.DataFrame, n: int) -> None:
         axis=0,
     )
 
-    if "building" in top.columns:
-        brand_labels = [f"{str(b)[:20]}({bldg})" for b, bldg in zip(top["brand"], top["building"])]
-    else:
-        brand_labels = [str(b)[:26] for b in top["brand"]]
+    _dup_h = set(top["brand"][top["brand"].duplicated(keep=False)]) if "building" in top.columns else set()
+    brand_labels = [
+        f"{str(b)[:20]}({bldg})" if b in _dup_h else str(b)[:26]
+        for b, bldg in zip(top["brand"], top.get("building", [""] * len(top)))
+    ]
 
     fig = go.Figure(go.Heatmap(
         z=norm.values,
@@ -862,10 +864,11 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
             fig_ov = go.Figure()
             _util_colors = {"water": "#4C72B0", "hwater": "#C44E52",
                             "elect": "#DD8A00", "heat": "#E377C2"}
-            if "building" in _overview_df.columns:
-                brands = [f"{str(b)[:16]}({bldg})" for b, bldg in zip(_overview_df["brand"], _overview_df["building"])]
-            else:
-                brands = [str(b)[:20] for b in _overview_df["brand"]]
+            _dup_ov = set(_overview_df["brand"][_overview_df["brand"].duplicated(keep=False)]) if "building" in _overview_df.columns else set()
+            brands = [
+                f"{str(b)[:16]}({bldg})" if b in _dup_ov else str(b)[:20]
+                for b, bldg in zip(_overview_df["brand"], _overview_df.get("building", [""] * len(_overview_df)))
+            ]
             for p in _avail_pfx:
                 col = f"{p}_spike_pct"
                 lbl = _UTIL_LABELS_UI.get(p, p)
