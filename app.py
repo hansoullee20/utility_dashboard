@@ -1013,7 +1013,7 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
             st.info("데이터 품질 분석을 위해 **검침 내역** 시트가 필요합니다.")
         else:
             from tab_anomaly import render_data_quality_tab
-            _dq_df, _, _, _, _ = _load_meter_data(
+            _dq_df, _, _, _dq_ref_df, _ = _load_meter_data(
                 file_name, file_map, sheet_map, all_sheet_keys, prev_file,
                 key_prefix="dq",
             )
@@ -1030,6 +1030,7 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
                 prev_sheet_keys=_prev_sheets,
                 yoy_file_data=_yoy_data,
                 yoy_sheet_keys=_yoy_sheets,
+                raw_df=_dq_ref_df,
             )
         st.stop()
 

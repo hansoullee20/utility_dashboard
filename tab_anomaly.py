@@ -1154,21 +1154,25 @@ def _render_data_quality_tab(
     yoy_file_data: bytes | None = None,
     yoy_sheet_keys: list[str] | None = None,
     yoy_label: str | None = None,
+    raw_df: pd.DataFrame | None = None,
 ) -> None:
     """Consolidated data quality view: KPI summary + tabbed detail sections."""
     from data import to_numeric_series as _tns
+    # Use raw_df for backward detection (has cumulative meter readings)
+    _backward_src = raw_df if raw_df is not None else cur_df
 
     st.subheader("🛡 데이터 품질 검사")
 
     # ── KPI summary row ───────────────────────────────────────────────────
-    # Count backward readings using cumulative meter columns if available
+    # Count backward readings from raw data (cumulative meter readings)
     _kpi_pairs = [
         ("water_meter_prev", "water_meter_curr"),
         ("hwater_meter_prev", "hwater_meter_curr"),
         ("elect_meter_prev", "elect_meter_curr"),
         ("heat_meter_prev", "heat_meter_curr"),
     ]
-    if not any(c in cur_df.columns for _, c in _kpi_pairs):
+    if not any(c in _backward_src.columns for _, c in _kpi_pairs):
+        # Single-file fallback: previous/current in raw are cumulative
         _kpi_pairs = [
             ("water_previous", "water_current"),
             ("hwater_previous", "hwater_current"),
@@ -1177,8 +1181,8 @@ def _render_data_quality_tab(
         ]
     n_backward = 0
     for prev_col, curr_col in _kpi_pairs:
-        if prev_col in cur_df.columns and curr_col in cur_df.columns:
-            p, c = _tns(cur_df[prev_col]), _tns(cur_df[curr_col])
+        if prev_col in _backward_src.columns and curr_col in _backward_src.columns:
+            p, c = _tns(_backward_src[prev_col]), _tns(_backward_src[curr_col])
             n_backward += int((c.notna() & p.notna() & (c < p)).sum())
 
     n_zero = int((df["n_zero_utilities"] > 0).sum()) if "n_zero_utilities" in df.columns else 0
@@ -1195,7 +1199,7 @@ def _render_data_quality_tab(
     )
 
     with _dq1:
-        _render_backward_detection(cur_df)
+        _render_backward_detection(_backward_src)
 
     with _dq2:
         st.caption("시트 간 동일 브랜드의 명칭 불일치 검출. 불일치 시 데이터 병합에서 누락이 발생합니다.")
@@ -1810,6 +1814,7 @@ def render_data_quality_tab(
     prev_sheet_keys: list[str] | None = None,
     yoy_file_data: bytes | None = None,
     yoy_sheet_keys: list[str] | None = None,
+    raw_df: pd.DataFrame | None = None,
 ) -> None:
     """Standalone data quality tab — builds anomaly_df internally."""
     with st.spinner("데이터 품질 분석 중…"):
@@ -1835,6 +1840,7 @@ def render_data_quality_tab(
         prev_sheet_keys=prev_sheet_keys,
         yoy_file_data=yoy_file_data,
         yoy_sheet_keys=yoy_sheet_keys,
+        raw_df=raw_df,
     )
 
 
