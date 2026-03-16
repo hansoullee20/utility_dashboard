@@ -243,6 +243,10 @@ def render_brand_profile_tab(
     anomaly_df: pd.DataFrame | None = None,
 ) -> None:
     """Render brand profile with sub-tabs: single profile + comparison."""
+    from utils import display_brand as _display_brand
+    cur_df = _display_brand(cur_df)
+    if anomaly_df is not None:
+        anomaly_df = _display_brand(anomaly_df)
     brands = sorted(cur_df["brand"].dropna().astype(str).unique().tolist())
     if not brands:
         st.info("표시할 브랜드가 없습니다.")

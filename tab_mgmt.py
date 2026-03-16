@@ -94,6 +94,16 @@ def _build_merged(
         else:
             merged[col] = 0
 
+    # Recover brand_raw for display
+    _raw_parts = [
+        df.groupby("brand")["brand_raw"].first()
+        for df in [water_df, hotwater_df, elec_df, billing_df, meter_df]
+        if df is not None and not df.empty and "brand_raw" in df.columns
+    ]
+    if _raw_parts:
+        _raw_map = pd.concat(_raw_parts).groupby(level=0).first()
+        merged["brand_raw"] = merged["brand"].map(_raw_map)
+
     _meta_parts = [
         df.groupby("brand")[["building", "floor", "size_m2"]].first()
         for df in [water_df, hotwater_df, elec_df, billing_df]
@@ -114,6 +124,9 @@ def _build_merged(
 
     merged["util_total"] = merged["water_total"] + merged["hw_total"] + merged["elec_total"] + merged["heat_total"]
     merged = merged[merged["util_total"] > 0].sort_values("util_total", ascending=False).reset_index(drop=True)
+
+    from utils import display_brand as _display_brand
+    merged = _display_brand(merged)
 
     # ── MoM ──────────────────────────────────────────────────────────────────
     _has_prev = any(d is not None and not d.empty
@@ -620,6 +633,7 @@ def render_mgmt_report(
         _movers_bot = merged[merged["util_change"] < 0].nsmallest(5, "util_change")
         _mover_df = pd.concat([_movers, _movers_bot]).drop_duplicates(subset="brand").sort_values("util_change", ascending=False)
         if len(_mover_df) >= 3:
+            _mom_wf_logy = st.checkbox("Log 스케일", key="mgmt_mom_wf_logy")
             _m_colors = _mover_df["util_change"].apply(
                 lambda v: "#C44E52" if v > 0 else "#2ca02c"
             ).tolist()
@@ -636,6 +650,7 @@ def render_mgmt_report(
                 title="전월 대비 비용 변화 — 주요 변동 브랜드",
                 height=380, xaxis_tickangle=-40,
                 yaxis_title="변화 (원)",
+                yaxis_type="log" if _mom_wf_logy else None,
                 margin=dict(t=55, b=80, l=60, r=20),
                 showlegend=False,
             )
@@ -658,6 +673,7 @@ def render_mgmt_report(
         _bld_agg["원_per_m2"] = (_bld_agg["총비용"] / _bld_agg["면적합계"]).round(0)
         _bld_agg = _bld_agg.sort_values("원_per_m2", ascending=False)
 
+        _mgmt_bld_logy = st.checkbox("Log 스케일", key="mgmt_bld_bench_logy")
         _bc1, _bc2 = st.columns([3, 2])
         with _bc1:
             _bld_stack = _bld_agg.copy()
@@ -682,6 +698,7 @@ def render_mgmt_report(
                 title="건물별 면적당 유틸리티 비용 (원/m²)",
                 height=380,
                 yaxis_title="원/m²",
+                yaxis_type="log" if _mgmt_bld_logy else None,
                 margin=dict(t=55, b=40, l=60, r=20),
                 legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center"),
             )

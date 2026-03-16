@@ -179,8 +179,8 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
                 water_df=sheets.get(WATER_SHEET_NAME),
                 hotwater_df=sheets.get(HOTWATER_SHEET_NAME),
             )
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"이상감지 데이터 생성 실패: {e}")
 
     # Build cross features
     unit_df = elec_br = None
@@ -191,15 +191,15 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
             unit_df = build_unit_costs(cur_df, billing_df)
             if unit_df is not None and unit_df.empty:
                 unit_df = None
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"비용 분석 데이터 생성 실패: {e}")
     if elec_df is not None:
         try:
             elec_br = build_elec_breakdown(elec_df, meter_df=cur_df)
             if elec_br is not None and elec_br.empty:
                 elec_br = None
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"전기 분석 데이터 생성 실패: {e}")
 
     if scope == "이상감지":
         if anomaly_df is None or anomaly_df.empty:
@@ -244,8 +244,8 @@ def _generate_excel_export(file_name, file_map, sheet_map, all_sheet_keys, prev_
                 )
                 if adf is not None and not adf.empty:
                     adf.to_excel(writer, sheet_name="이상감지", index=False)
-            except Exception:
-                pass
+            except Exception as e:
+                st.warning(f"이상감지 시트 생성 실패: {e}")
 
         # 2. Unit cost analysis
         billing_df = sheets.get(BILLING_SHEET_NAME)
@@ -255,8 +255,8 @@ def _generate_excel_export(file_name, file_map, sheet_map, all_sheet_keys, prev_
                 udf = build_unit_costs(cur_df, billing_df)
                 if udf is not None and not udf.empty:
                     udf.to_excel(writer, sheet_name="단가분석", index=False)
-            except Exception:
-                pass
+            except Exception as e:
+                st.warning(f"단가분석 시트 생성 실패: {e}")
 
         # 3. Electricity breakdown
         elec_df = sheets.get(ELECTRICITY_SHEET_NAME)
@@ -266,8 +266,8 @@ def _generate_excel_export(file_name, file_map, sheet_map, all_sheet_keys, prev_
                 ebr = build_elec_breakdown(elec_df, meter_df=cur_df)
                 if ebr is not None and not ebr.empty:
                     ebr.to_excel(writer, sheet_name="전기분류", index=False)
-            except Exception:
-                pass
+            except Exception as e:
+                st.warning(f"전기분류 시트 생성 실패: {e}")
 
         # 4. Meter data (검침 내역)
         if cur_df is not None:
@@ -649,7 +649,7 @@ def main():
     st.markdown("""
 <style>
 /* ── Layout: clean, breathable ── */
-.block-container { padding-top: 0.6rem !important; padding-bottom: 1rem !important; }
+.block-container { padding-top: 1.5rem !important; padding-bottom: 1rem !important; }
 header[data-testid="stHeader"] { height: 0; }
 
 /* ── Typography: Inter-style hierarchy ── */

@@ -3,18 +3,32 @@
 Aggregates anomaly signals from every available sheet into a single per-brand
 DataFrame with component scores [0, 1] and a weighted composite_score.
 
+Scoring Philosophy (v2 — absolute-anchored, change-focused)
+------------------------------------------------------------
+All scores are anchored to **fixed thresholds**, not min-max normalized.
+This means a brand with 100% spike always scores ~0.88 regardless of whether
+another brand spiked 500%.  Scores are comparable across months.
+
+Every dimension measures **change from baseline or deviation from peers**,
+never absolute usage levels — a restaurant naturally uses more than an office,
+so absolute levels are irrelevant for anomaly detection.
+
 Anomaly dimensions
 ------------------
-spike        (30 %) — absolute MoM % change magnitude per utility (NEW — primary signal)
-             pct ≥ 200% → critical · ≥ 100% → high · ≥ 50% → medium · ≥ 20% → low
-             score = normalised max spike magnitude across all utilities
+spike        (40 %) — MoM % change magnitude per utility
+             Sigmoid-mapped: 20%→0.27 · 50%→0.50 · 100%→0.88 · 200%→0.998
+             Boosted when brand spikes much more than building peers.
+             Also flags large drops (possible meter error / vacancy).
 consumption  (25 %) — quadrant classification per utility from 검침내역
-             HH=4 · HL=3 · LH=2 · Normal=1 · LL=0  → sum, normalised
-cost         (25 %) — unit cost Z-scores from 수도광열비 부과 내역
-             max |Z| across water ₩/m³, elect ₩/kWh, total 만원/m²
-hvac         (10 %) — HVAC intensity from 전체 전기 사용내역
-             normalised kWh/m² (IQR-aware)
-consistency  (10 %) — zero-usage count across all utility columns
+             HH=1.0 · HL=0.6 · LH=0.5 · Normal=0 · LL=0 → max across utilities
+             Measures change relative to peer distribution, not absolute level.
+cost         (20 %) — unit cost Z-scores from 수도광열비 부과 내역
+             |Z| ≥ 3→1.0 · ≥ 2→0.75 · ≥ 1.5→0.50 · ≥ 1→0.25
+             Z-scores compare brand to peers, not absolute cost.
+hvac         (5 %)  — HVAC intensity Z-score from 전체 전기 사용내역
+             Same Z-mapping as cost.
+consistency  (10 %) — zero-usage + sudden-drop detection
+             Counts zero-current utilities + large MoM drops.
 
 Public API
 ----------
@@ -26,7 +40,7 @@ Spike columns added
 -------------------
 {pfx}_spike_pct   — raw MoM % change for that utility (positive = increase)
 {pfx}_spike_flag  — 🔴 급등(≥100%) / 🟠 주의(≥50%) / 🟡 관찰(≥20%) / "" normal
-spike_score       — normalised max positive spike across all utilities [0, 1]
+spike_score       — absolute-anchored max spike score across all utilities [0, 1]
 spike_max_pct     — the highest single-utility MoM % increase
 spike_worst_util  — which utility had the largest spike
 """
@@ -37,15 +51,19 @@ import pandas as pd
 
 from cross_features import build_unit_costs, build_elec_breakdown
 from data import to_numeric_series
+from utils import zscore as _zscore, iqr_upper as _iqr_upper
 
 _UTIL_PREFIXES = ["water", "hwater", "elect", "heat"]
 _UTIL_LABELS   = {"water": "수도", "hwater": "온수", "elect": "전기", "heat": "난방"}
-_QUAD_SCORE = {"HH": 4, "HL": 3, "LH": 2, "Normal": 1, "LL": 0, "No Data": 0}
+
+# Quadrant → score: exponential, HH dominates
+_QUAD_SCORE = {"HH": 1.0, "HL": 0.6, "LH": 0.5, "Normal": 0.0, "LL": 0.0, "No Data": 0.0}
+
 _WEIGHTS = {
-    "spike_score":       0.30,
+    "spike_score":       0.40,
     "consumption_score": 0.25,
-    "cost_score":        0.25,
-    "hvac_score":        0.10,
+    "cost_score":        0.20,
+    "hvac_score":        0.05,
     "consistency_score": 0.10,
 }
 
@@ -54,41 +72,58 @@ _SPIKE_CRITICAL = 100.0   # ≥ 100% increase
 _SPIKE_HIGH     =  50.0   # ≥  50%
 _SPIKE_MEDIUM   =  20.0   # ≥  20%
 
+# Sudden-drop threshold (large negative change → possible meter error / vacancy)
+_DROP_THRESHOLD = -50.0   # ≥ 50% decrease
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _zscore(s: pd.Series) -> pd.Series:
-    valid = s.dropna()
-    if len(valid) < 3:
-        return pd.Series(np.nan, index=s.index)
-    mu, sigma = valid.mean(), valid.std()
-    return pd.Series(0.0, index=s.index) if sigma == 0 else ((s - mu) / sigma).round(3)
+def _sigmoid_score(pct: pd.Series, midpoint: float = 50.0, k: float = 0.04) -> pd.Series:
+    """Map % change to [0, 1] via sigmoid, anchored to fixed thresholds.
+
+    At midpoint the score is 0.5.  Default k=0.04 gives:
+        20% → ~0.27,  50% → 0.50,  100% → ~0.88,  200% → ~0.998
+    """
+    return (1 / (1 + np.exp(-k * (pct - midpoint)))).round(4)
 
 
-def _normalize(s: pd.Series) -> pd.Series:
-    lo, hi = s.min(), s.max()
-    if pd.isna(hi - lo) or hi == lo:
-        return pd.Series(0.0, index=s.index)
-    return ((s - lo) / (hi - lo)).round(4)
+def _z_to_score(z: pd.Series) -> pd.Series:
+    """Map absolute Z-score to [0, 1] via fixed thresholds.
 
-
-def _iqr_upper(s: pd.Series) -> float:
-    q1, q3 = float(s.quantile(0.25)), float(s.quantile(0.75))
-    return q3 + 1.5 * (q3 - q1)
+    |Z| ≥ 3.0 → 1.0,  ≥ 2.0 → 0.75,  ≥ 1.5 → 0.50,  ≥ 1.0 → 0.25,  < 1.0 → 0.0
+    Linearly interpolated within each band.
+    """
+    az = z.abs().fillna(0)
+    score = pd.Series(0.0, index=z.index)
+    # Linear interpolation within bands
+    # [0, 1) → [0, 0.25)
+    mask = (az >= 0) & (az < 1.0)
+    score[mask] = (az[mask] / 1.0) * 0.25
+    # [1, 1.5) → [0.25, 0.50)
+    mask = (az >= 1.0) & (az < 1.5)
+    score[mask] = 0.25 + ((az[mask] - 1.0) / 0.5) * 0.25
+    # [1.5, 2.0) → [0.50, 0.75)
+    mask = (az >= 1.5) & (az < 2.0)
+    score[mask] = 0.50 + ((az[mask] - 1.5) / 0.5) * 0.25
+    # [2.0, 3.0) → [0.75, 1.0)
+    mask = (az >= 2.0) & (az < 3.0)
+    score[mask] = 0.75 + ((az[mask] - 2.0) / 1.0) * 0.25
+    # ≥ 3.0 → 1.0
+    score[az >= 3.0] = 1.0
+    return score.round(4)
 
 
 # ── 0. Spike signals — absolute MoM change detection ─────────────────────────
 
 def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect abrupt MoM usage spikes using absolute % change thresholds.
+    """Detect abrupt MoM usage changes using absolute-anchored sigmoid scoring.
 
-    Unlike the quadrant approach (relative: brand vs other brands), this flags
-    brands that spiked by a large % regardless of what other brands did.
-    A brand that goes from 100 → 300 units (+200%) is always flagged, even if
-    the whole building increased.
+    Focuses on % change from own previous month — business size irrelevant.
+    Both increases AND large drops are flagged (drops may indicate meter error).
+    Score is boosted when a brand's spike exceeds its building peers.
     """
     out = df.copy()
-    spike_pct_cols: list[str] = []
+    spike_scores: list[pd.Series] = []
 
     for pfx in _UTIL_PREFIXES:
         pct_col = f"{pfx}_pct"
@@ -101,11 +136,9 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
         p = to_numeric_series(df[pct_col])   # % change (can be NaN for new tenants)
         c = to_numeric_series(df[chg_col]) if chg_col in df.columns else pd.Series(np.nan, index=df.index)
 
-        # Only positive changes count as spikes; drops are handled by quadrant LH/LL
-        spike_pct = p.clip(lower=0).fillna(0)
         out[out_col] = p.round(1)   # store raw (signed) for display
 
-        # Severity flag
+        # Severity flag (for display — separate from scoring)
         def _flag(v):
             if pd.isna(v) or v <= 0:
                 return ""
@@ -119,19 +152,32 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
 
         out[f"{pfx}_spike_flag"] = p.apply(_flag)
 
-        # Weight spike magnitude by absolute change size (large pct on tiny base = less alarming)
-        if c.dropna().any():
-            c_pos = c.clip(lower=0).fillna(0)
-            # Blend: 60% pct magnitude + 40% absolute change (both normalised)
-            c_norm = _normalize(c_pos)
-            p_norm = _normalize(spike_pct)
-            spike_pct_cols.append((p_norm * 0.6 + c_norm * 0.4).rename(out_col))
-        else:
-            spike_pct_cols.append(_normalize(spike_pct).rename(out_col))
+        # Sigmoid score on positive spikes
+        pos_pct = p.clip(lower=0).fillna(0)
+        pos_score = _sigmoid_score(pos_pct)
 
-    if spike_pct_cols:
-        spike_mat = pd.concat(spike_pct_cols, axis=1)
-        out["spike_score"]    = spike_mat.max(axis=1).round(4)
+        # Also score large drops (meter error / vacancy signal)
+        drop_score = _sigmoid_score(p.abs().fillna(0).where(p < _DROP_THRESHOLD, 0),
+                                    midpoint=50.0, k=0.03)  # softer curve for drops
+
+        # Combined: max of increase or drop signal
+        util_score = pd.concat([pos_score, drop_score], axis=1).max(axis=1)
+
+        # Attenuate tiny-base spikes: if absolute change is very small,
+        # reduce score (e.g., 0.1 → 1.0 m³ is +900% but not alarming)
+        if c.dropna().any():
+            c_abs = c.abs().fillna(0)
+            median_change = c_abs[c_abs > 0].median()
+            if median_change is not None and not pd.isna(median_change) and median_change > 0:
+                # If absolute change < 10% of peer median, dampen by 50%
+                small_base = c_abs < (median_change * 0.1)
+                util_score = util_score.where(~small_base, util_score * 0.5)
+
+        spike_scores.append(util_score.rename(out_col))
+
+    if spike_scores:
+        spike_mat = pd.concat(spike_scores, axis=1)
+        base_spike = spike_mat.max(axis=1).round(4)
 
         # Which utility spiked most, and by how much
         raw_pct_cols = [f"{pfx}_spike_pct" for pfx in _UTIL_PREFIXES
@@ -148,6 +194,16 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
             _peer_context = _compute_peer_context(out, raw_pct_cols)
             for col in _peer_context.columns:
                 out[col] = _peer_context[col]
+
+            # Peer boost: if brand spiked ≥2x its building peers, boost score
+            ratio = out.get("spike_peer_ratio")
+            if ratio is not None:
+                r = to_numeric_series(ratio).fillna(1.0)
+                # Boost: ratio 2x → +10%, 5x → +25%, 10x → +40% (capped)
+                peer_boost = ((r - 1).clip(lower=0) * 0.05).clip(upper=0.4)
+                base_spike = (base_spike + peer_boost).clip(upper=1.0)
+
+        out["spike_score"] = base_spike.round(4)
     else:
         out["spike_score"]     = 0.0
         out["spike_max_pct"]   = 0.0
@@ -164,7 +220,7 @@ def _compute_peer_context(df: pd.DataFrame, raw_pct_cols: list[str]) -> pd.DataF
     max_spike = df[raw_pct_cols].clip(lower=0).fillna(0).max(axis=1)
     bldg = df["building"]
     bldg_sum = bldg.map(max_spike.groupby(bldg).sum())
-    bldg_cnt = bldg.map(bldg.groupby(bldg).transform("count"))
+    bldg_cnt = bldg.groupby(bldg).transform("count")
     # Leave-one-out average: exclude this brand from its building mean
     loo_avg = ((bldg_sum - max_spike) / (bldg_cnt - 1)).where(bldg_cnt >= 2).round(1)
     ratio = (max_spike / loo_avg.replace(0, np.nan)).round(1)
@@ -175,9 +231,18 @@ def _compute_peer_context(df: pd.DataFrame, raw_pct_cols: list[str]) -> pd.DataF
 # ── 1. Consumption signals (always available from meter) ──────────────────────
 
 def _add_consumption_signals(df: pd.DataFrame, q0: float, q1: float) -> pd.DataFrame:
-    """Classify each utility into HH/HL/LH/LL/Normal and sum quadrant weights."""
+    """Classify each utility into HH/HL/LH/LL/Normal quadrants.
+
+    Quadrant analysis uses *change* and *% change* — NOT absolute usage levels.
+    A brand is HH when its usage CHANGE and % CHANGE are both in the top decile.
+    This is inherently peer-relative: it answers "did this brand change more than
+    its peers?" regardless of business type or absolute usage.
+
+    Score = max quadrant score across utilities (one HH is more concerning than
+    four Normals).
+    """
     out = df.copy()
-    total_quad = pd.Series(0.0, index=df.index)
+    quad_scores: list[pd.Series] = []
     n_active = 0
 
     for pfx in _UTIL_PREFIXES:
@@ -185,7 +250,7 @@ def _add_consumption_signals(df: pd.DataFrame, q0: float, q1: float) -> pd.DataF
         p_col = f"{pfx}_pct"
         if c_col not in df.columns:
             out[f"{pfx}_quadrant"]  = "No Data"
-            out[f"{pfx}_quad_score"] = 0
+            out[f"{pfx}_quad_score"] = 0.0
             continue
 
         c = to_numeric_series(df[c_col])
@@ -195,7 +260,7 @@ def _add_consumption_signals(df: pd.DataFrame, q0: float, q1: float) -> pd.DataF
 
         if c.dropna().empty:
             out[f"{pfx}_quadrant"]  = "No Data"
-            out[f"{pfx}_quad_score"] = 0
+            out[f"{pfx}_quad_score"] = 0.0
             continue
 
         lo_c, hi_c = float(c.quantile(q0)), float(c.quantile(q1))
@@ -212,28 +277,39 @@ def _add_consumption_signals(df: pd.DataFrame, q0: float, q1: float) -> pd.DataF
         quad[has_data & (c <= lo_c) & (p <= lo_p)] = "LL"
         quad[~has_data] = "No Data"
 
-        scores = quad.map(_QUAD_SCORE).fillna(0)
+        scores = quad.map(_QUAD_SCORE).fillna(0.0)
         out[f"{pfx}_quadrant"]  = quad
         out[f"{pfx}_quad_score"] = scores
         out[f"{pfx}_change_z"]   = _zscore(c)
         if p.dropna().any():
             out[f"{pfx}_pct_z"]  = _zscore(p)
 
-        total_quad += scores
+        quad_scores.append(scores)
         n_active += 1
 
-    out["consumption_raw"]   = total_quad
-    out["consumption_score"] = _normalize(total_quad) if n_active else 0.0
+    if n_active and quad_scores:
+        # Max across utilities — one HH is more alarming than multiple Normals
+        score_mat = pd.concat(quad_scores, axis=1)
+        out["consumption_raw"]   = score_mat.sum(axis=1).round(2)
+        out["consumption_score"] = score_mat.max(axis=1).round(4)
+    else:
+        out["consumption_raw"]   = 0.0
+        out["consumption_score"] = 0.0
     return out
 
 
 # ── 2. Cost signals (billing sheet) ──────────────────────────────────────────
 
 def _add_cost_signals(df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.DataFrame:
+    """Score unit cost deviation from peers using Z-score thresholds.
+
+    Unit cost (₩/m³, ₩/kWh, 만원/m²) normalizes for business size —
+    a large restaurant pays more total but shouldn't pay more PER UNIT.
+    """
     try:
         unit_df = build_unit_costs(df, billing_df)
     except Exception:
-        return df.assign(cost_score=0.0)
+        return df.assign(cost_score=0.0, _cost_available=False)
 
     join_cols = ["brand", "building"] if "building" in df.columns else ["brand"]
     cost_cols = [c for c in [
@@ -244,27 +320,34 @@ def _add_cost_signals(df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.DataFram
     ] if c in unit_df.columns]
 
     if not cost_cols:
-        return df.assign(cost_score=0.0)
+        return df.assign(cost_score=0.0, _cost_available=False)
 
     merged = df.merge(unit_df[join_cols + cost_cols], on=join_cols, how="left")
 
     z_cols = [c for c in ["water_unit_z", "elect_unit_z", "total_cost_per_py_z",
                            "total_cost_per_m2_z"]
               if c in merged.columns]
-    merged["cost_score"] = (
-        _normalize(merged[z_cols].abs().max(axis=1).fillna(0))
-        if z_cols else 0.0
-    )
+    if z_cols:
+        max_z = merged[z_cols].abs().max(axis=1).fillna(0)
+        merged["cost_score"] = _z_to_score(max_z)
+    else:
+        merged["cost_score"] = 0.0
+    merged["_cost_available"] = True
     return merged
 
 
 # ── 3. HVAC signals (electricity detail sheet) ────────────────────────────────
 
 def _add_hvac_signals(df: pd.DataFrame, elec_df: pd.DataFrame) -> pd.DataFrame:
+    """Score HVAC intensity deviation from peers using Z-score thresholds.
+
+    HVAC intensity = kWh/m² — normalized by floor area so business size
+    doesn't affect the score.
+    """
     try:
         elec_br = build_elec_breakdown(elec_df, meter_df=df)
     except Exception:
-        return df.assign(hvac_score=0.0)
+        return df.assign(hvac_score=0.0, _hvac_available=False)
 
     join_cols = ["brand", "building"] if "building" in df.columns else ["brand"]
     hvac_cols = [c for c in [
@@ -272,47 +355,56 @@ def _add_hvac_signals(df: pd.DataFrame, elec_df: pd.DataFrame) -> pd.DataFrame:
     ] if c in elec_br.columns]
 
     if not hvac_cols:
-        return df.assign(hvac_score=0.0)
+        return df.assign(hvac_score=0.0, _hvac_available=False)
 
     merged = df.merge(elec_br[join_cols + hvac_cols], on=join_cols, how="left")
 
     if "hvac_intensity" in merged.columns:
         hi_s = to_numeric_series(merged["hvac_intensity"]).fillna(0)
-        merged["hvac_intensity_z"] = _zscore(hi_s)
-        # IQR-aware score: flag brands above IQR upper bound more heavily
-        iqr_up = _iqr_upper(hi_s.replace(0, np.nan).dropna())
-        clipped = hi_s.clip(upper=iqr_up * 2)   # cap extremes so 1–2 outliers don't dominate
-        merged["hvac_score"] = _normalize(clipped)
+        z = _zscore(hi_s)
+        merged["hvac_intensity_z"] = z
+        merged["hvac_score"] = _z_to_score(z)
     else:
         merged["hvac_score"] = 0.0
-
+    merged["_hvac_available"] = True
     return merged
 
 
-# ── 4. Consistency signals (zero-usage detection) ─────────────────────────────
+# ── 4. Consistency signals (zero-usage + sudden-drop detection) ──────────────
 
 def _add_consistency_signals(
     df: pd.DataFrame,
     water_df: pd.DataFrame | None,
     hotwater_df: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Count zero-usage utilities per brand from meter readings only.
+    """Detect data quality anomalies: zero usage + sudden large drops.
 
-    Previously also counted zeros from water/hotwater billing sheets, but
-    those are billing data (not usage), so comparing them to meter readings
-    was invalid and caused double-counting.
+    Zero current-usage and large negative MoM changes both suggest
+    meter issues, vacancy, or data errors — regardless of business type.
     """
     out = df.copy()
     zero_cnt = pd.Series(0, index=df.index, dtype=int)
+    drop_cnt = pd.Series(0, index=df.index, dtype=int)
 
-    # Zero detection from meter current-usage columns only
     for pfx in _UTIL_PREFIXES:
+        # Zero detection from meter current-usage columns
         cur = f"{pfx}_current"
         if cur in out.columns:
             zero_cnt += (to_numeric_series(out[cur]).fillna(0) == 0).astype(int)
 
-    out["n_zero_utilities"]  = zero_cnt.values
-    out["consistency_score"] = _normalize(zero_cnt.astype(float))
+        # Large drop detection from MoM pct change
+        pct_col = f"{pfx}_pct"
+        if pct_col in out.columns:
+            p = to_numeric_series(out[pct_col])
+            drop_cnt += (p < _DROP_THRESHOLD).fillna(False).astype(int)
+
+    out["n_zero_utilities"] = zero_cnt.values
+    out["n_drop_utilities"] = drop_cnt.values
+
+    # Score: direct mapping — no min-max normalization
+    # 0 issues → 0.0, 1 → 0.25, 2 → 0.50, 3 → 0.75, 4+ → 1.0
+    total_issues = (zero_cnt + drop_cnt).clip(upper=4)
+    out["consistency_score"] = (total_issues / 4.0).round(4)
     return out
 
 
@@ -333,6 +425,16 @@ def _build_reason_flags(df: pd.DataFrame) -> pd.Series:
             if pr is not None and not pd.isna(pr) and pr >= 2.0:
                 s += f" vs건물 {pr:.1f}x"
             parts.append(s)
+        # 1b. Large drops
+        n_drops = r.get("n_drop_utilities", 0) or 0
+        if n_drops >= 1:
+            drop_utils = []
+            for pfx, lbl in _UTIL_LABELS.items():
+                sp = r.get(f"{pfx}_spike_pct")
+                if sp is not None and not pd.isna(sp) and sp < _DROP_THRESHOLD:
+                    drop_utils.append(f"{lbl}{sp:.0f}%")
+            if drop_utils:
+                parts.append(f"급감 {','.join(drop_utils)}")
         # 2. Worst unit cost Z ≥ 1.5 — shown as business-friendly grade
         from utils import z_to_grade as _ztg
         _Z = [("수도단가", r.get("water_unit_z")),
@@ -395,35 +497,48 @@ def build_anomaly_df(
     # 0. Spike signals (absolute MoM — primary anomaly signal)
     df = _add_spike_signals(df)
 
-    # 1. Consumption signals (always available)
+    # 1. Consumption signals (always available — change-based quadrants)
     df = _add_consumption_signals(df, q0=q0, q1=q1)
 
-    # 2. Cost signals
+    # 2. Cost signals (unit cost Z-scores — size-normalized)
     if billing_df is not None and not billing_df.empty:
         df = _add_cost_signals(df, billing_df)
     else:
         df["cost_score"] = 0.0
+        df["_cost_available"] = False
 
-    # 3. HVAC signals
+    # 3. HVAC signals (intensity Z-scores — size-normalized)
     if elec_df is not None and not elec_df.empty:
         df = _add_hvac_signals(df, elec_df)
     else:
         df["hvac_score"] = 0.0
+        df["_hvac_available"] = False
 
-    # 4. Consistency signals
+    # 4. Consistency signals (zero-usage + drop detection)
     df = _add_consistency_signals(df, water_df, hotwater_df)
 
-    # 5. Weighted composite score
-    active = {k: v for k, v in _WEIGHTS.items() if k in df.columns}
-    total_w = sum(active.values())
+    # 5. Weighted composite score — redistribute weights for missing data
+    available_dims = {}
+    for k, v in _WEIGHTS.items():
+        if k == "cost_score" and not df.get("_cost_available", pd.Series(True)).any():
+            continue  # billing sheet not loaded — exclude from weighting
+        if k == "hvac_score" and not df.get("_hvac_available", pd.Series(True)).any():
+            continue  # electricity sheet not loaded — exclude from weighting
+        available_dims[k] = v
+
+    total_w = sum(available_dims.values())
     df["composite_score"] = sum(
-        df[k].fillna(0) * (v / total_w) for k, v in active.items()
+        df[k].fillna(0) * (v / total_w) for k, v in available_dims.items()
     ).round(4)
+
+    # Clean up internal flags
+    df.drop(columns=[c for c in ["_cost_available", "_hvac_available"] if c in df.columns],
+            inplace=True)
 
     # 6. Reason flags — human-readable summary of WHY a brand is flagged
     df["reason"] = _build_reason_flags(df)
 
-    # 7. Risk classification
+    # 7. Risk classification (absolute thresholds on absolute-anchored scores)
     def _risk(s: float) -> str:
         if s >= 0.65: return "🔴 위험"
         if s >= 0.40: return "🟠 주의"

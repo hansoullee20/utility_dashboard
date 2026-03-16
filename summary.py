@@ -156,6 +156,16 @@ def render_summary_view(
             merged[col] = merged[col].fillna(0)
         else:
             merged[col] = 0
+    # Recover brand_raw from source data for display
+    _raw_parts = [
+        df.groupby("brand")["brand_raw"].first()
+        for df in [water_df, hotwater_df, elec_df, billing_df, meter_df]
+        if df is not None and not df.empty and "brand_raw" in df.columns
+    ]
+    if _raw_parts:
+        _raw_map = pd.concat(_raw_parts).groupby(level=0).first()
+        merged["brand_raw"] = merged["brand"].map(_raw_map)
+
     # Fill building/floor/size_m2 from all available sources (vectorized)
     _meta_parts = [
         df.groupby("brand")[["building", "floor", "size_m2"]].first()
@@ -180,6 +190,9 @@ def render_summary_view(
 
     merged["util_total"] = merged["water_total"] + merged["hw_total"] + merged["elec_total"] + merged["heat_total"]
     merged = merged[merged["util_total"] > 0].sort_values("util_total", ascending=False).reset_index(drop=True)
+
+    from utils import display_brand as _display_brand
+    merged = _display_brand(merged)
 
     # ── Previous month aggregation & MoM change ────────────────────────────────
     _has_prev = any(d is not None and not d.empty
@@ -536,6 +549,7 @@ def render_summary_view(
                 _, _cur_col, _prv_col, _chg_col = _spec
 
                 # Bar chart
+                _cmp_logy = st.checkbox("Log 스케일", key=f"{_key_pfx}_change_logy")
                 _plot_df = _cmp_data[["brand", _chg_col]].copy()
                 if "building" in _cmp_data.columns:
                     _plot_df["building"] = _cmp_data["building"]
@@ -559,6 +573,7 @@ def render_summary_view(
                     height=420,
                     xaxis_tickangle=-45,
                     yaxis_title="변화 (만원)",
+                    yaxis_type="log" if _cmp_logy else None,
                     margin=dict(t=55, b=80),
                     showlegend=False,
                 )
@@ -854,6 +869,7 @@ def render_summary_view(
 
             from plotly.subplots import make_subplots as _make_sub
 
+            _bld_logy = st.checkbox("Log 스케일", key="sum_bld_logy")
             _bc1, _bc2 = st.columns(2)
             with _bc1:
                 # Dual-axis bar: m³ (left) + kWh (right) per building
@@ -882,8 +898,10 @@ def render_summary_view(
                     legend=dict(orientation="h", yanchor="top", y=-0.12,
                                 xanchor="center", x=0.5, font=dict(size=10)),
                 )
-                _fig_bld.update_yaxes(title_text="m³", secondary_y=False)
-                _fig_bld.update_yaxes(title_text="kWh", secondary_y=True)
+                _fig_bld.update_yaxes(title_text="m³", secondary_y=False,
+                                      type="log" if _bld_logy else None)
+                _fig_bld.update_yaxes(title_text="kWh", secondary_y=True,
+                                      type="log" if _bld_logy else None)
                 st.plotly_chart(_fig_bld, use_container_width=True, key="sum_bld_abs")
 
             with _bc2:
@@ -912,8 +930,10 @@ def render_summary_view(
                     legend=dict(orientation="h", yanchor="top", y=-0.12,
                                 xanchor="center", x=0.5, font=dict(size=10)),
                 )
-                _fig_pm2.update_yaxes(title_text="m³/m²", secondary_y=False)
-                _fig_pm2.update_yaxes(title_text="kWh/m²", secondary_y=True)
+                _fig_pm2.update_yaxes(title_text="m³/m²", secondary_y=False,
+                                      type="log" if _bld_logy else None)
+                _fig_pm2.update_yaxes(title_text="kWh/m²", secondary_y=True,
+                                      type="log" if _bld_logy else None)
                 st.plotly_chart(_fig_pm2, use_container_width=True, key="sum_bld_pm2")
 
             # Summary table

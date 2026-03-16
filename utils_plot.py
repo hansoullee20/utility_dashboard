@@ -157,6 +157,7 @@ def render_sheet_mom_tab(
     )
     _unit = col_units.get(sel_col, "")
     _chg_col = f"{sel_col}_chg"
+    _mom_h_logy = st.checkbox("Log 스케일", key=f"{key_prefix}_bar_logy")
     plot_df = merged[["brand", "building", f"{sel_col}_c", f"{sel_col}_p", _chg_col]].copy()
     plot_df = plot_df.sort_values(_chg_col, ascending=True).reset_index(drop=True)
 
@@ -174,10 +175,13 @@ def render_sheet_mom_tab(
         hovertemplate=f"<b>%{{y}}</b><br>변화: %{{x:+,.1f}} {_unit}<extra></extra>",
     ))
     fig.add_vline(x=0, line_color="#888888", line_width=1)
+    _x_cfg = dict(title=f"변화 ({_unit})")
+    if _mom_h_logy:
+        _x_cfg["type"] = "log"
     fig.update_layout(
         title=f"{col_labels.get(sel_col, sel_col)} {_chart_label} ({_unit})",
         height=max(430, len(plot_df) * 22 + 80),
-        xaxis_title=f"변화 ({_unit})",
+        xaxis=_x_cfg,
         margin=dict(t=55, b=40, l=10, r=130),
         showlegend=False,
         yaxis=dict(tickfont=dict(size=10)),

@@ -108,8 +108,12 @@ def _render_ehp(cur_df: pd.DataFrame, ehp_annual: pd.DataFrame,
     avail_years = sorted([y for y in year_cols if ehp_annual[y].notna().any()])
     if len(avail_years) >= 2:
         st.divider()
-        st.subheader("📈 EHP 연간 추세")
-        st.caption(f"{avail_years[0]}–{avail_years[-1]} 연간 EHP 사용량 추이 (kWh)")
+        _ehp_c1, _ehp_c2 = st.columns([4, 1])
+        with _ehp_c1:
+            st.subheader("📈 EHP 연간 추세")
+            st.caption(f"{avail_years[0]}–{avail_years[-1]} 연간 EHP 사용량 추이 (kWh)")
+        with _ehp_c2:
+            _ehp_logy = st.checkbox("Log 스케일", key="eff_ehp_trend_logy")
 
         # Build brand-level annual totals across all years — top 10 by total
         brand_year = ehp_annual.groupby("brand")[avail_years].sum()
@@ -131,6 +135,7 @@ def _render_ehp(cur_df: pd.DataFrame, ehp_annual: pd.DataFrame,
             height=420,
             xaxis_title="연도",
             yaxis_title="사용량 (kWh)",
+            yaxis_type="log" if _ehp_logy else None,
             margin=dict(t=55, b=60, l=60, r=20),
             legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5,
                         font=dict(size=9)),
@@ -267,6 +272,9 @@ def render_efficiency_tab(
     sheet_names: list[str] | None = None,
 ) -> None:
     """Rank brands by per-area current usage to evaluate energy efficiency."""
+    from utils import display_brand as _display_brand
+    cur_df = _display_brand(cur_df)
+
     avail = {p: f"{p}_usage_per_m2" for p in present if f"{p}_usage_per_m2" in cur_df.columns}
 
     if not avail and ehp_sheet is None:

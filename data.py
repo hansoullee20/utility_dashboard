@@ -7,6 +7,24 @@ import streamlit as st
 _BLANK: frozenset = frozenset({"", "-", "–", "—", "nan", "NaN", "N/A", "n/a"})
 
 
+def _normalize_brand_col(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize brand column for consistent cross-sheet joins.
+
+    Keeps original name in ``brand_raw`` and overwrites ``brand`` with
+    the normalized form produced by :func:`brand_normalize.normalize_brand`.
+    """
+    from brand_normalize import normalize_brand, load_synonyms
+    if "brand" not in df.columns:
+        return df
+    df["brand_raw"] = df["brand"].astype(str).str.strip()
+    synonyms = load_synonyms()
+    normed = df["brand_raw"].apply(normalize_brand)
+    if synonyms:
+        normed = normed.replace(synonyms)
+    df["brand"] = normed
+    return df
+
+
 def get_billing_period(name: str, data: bytes, ehp_sheet: str = "EHP(OAC)검침자료") -> str | None:
     """Extract the billing period from the EHP sheet's year-month column headers.
 
@@ -122,9 +140,10 @@ def read_water_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     df = data_rows[present_cols].copy()
     df.columns = [col_map[c] for c in present_cols]
 
-    # Drop rows where brand is missing
+    # Drop rows where brand is missing, then normalize
     brand_str = df["brand"].astype(str).str.strip()
     df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+    df = _normalize_brand_col(df)
 
     str_cols = {"building", "floor", "unit", "brand"}
     fee_cols = {
@@ -186,6 +205,7 @@ def read_hotwater_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
 
     brand_str = df["brand"].astype(str).str.strip()
     df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+    df = _normalize_brand_col(df)
 
     str_cols = {"building", "floor", "unit", "brand"}
     num_cols  = set(col_map.values()) - str_cols
@@ -271,6 +291,7 @@ def read_electricity_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
 
     brand_str = df["brand"].astype(str).str.strip()
     df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+    df = _normalize_brand_col(df)
 
     str_cols = {"building", "floor", "unit", "brand"}
     _blank = _BLANK
@@ -324,9 +345,10 @@ def read_billing_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
     df = data_rows[present_cols].copy()
     df.columns = [col_map[c] for c in present_cols]
 
-    # Drop rows where brand is missing
+    # Drop rows where brand is missing, then normalize
     brand_str = df["brand"].astype(str).str.strip()
     df = df[~brand_str.isin({"nan", "", "NaN"}) & df["brand"].notna()].copy()
+    df = _normalize_brand_col(df)
 
     # Coerce numeric columns
     # Cost/amount columns: blank or dash means no charge → fill with 0
@@ -771,6 +793,7 @@ def read_ehp_oac_sheet(name: str, data: bytes, sheet: str) -> pd.DataFrame:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
+    df = _normalize_brand_col(df)
     return df.reset_index(drop=True)
 
 

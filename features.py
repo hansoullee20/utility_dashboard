@@ -133,6 +133,11 @@ def aggregate_by_brand(df: pd.DataFrame) -> pd.DataFrame:
                 agg[change] = d
                 agg[pct] = p.round(2)
 
+    # Preserve original brand name for display
+    if "brand_raw" in df.columns:
+        raw = df.groupby(group_cols)["brand_raw"].first().reset_index()
+        agg = agg.merge(raw, on=group_cols, how="left")
+
     # Add floor summary (e.g. "1F, 2F, 3F") if available
     if "floor" in df.columns:
         flr = df.groupby(group_cols)["floor"].apply(

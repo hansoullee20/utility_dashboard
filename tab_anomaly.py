@@ -552,7 +552,11 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
         ).copy()
         if not _overview_df.empty:
             _n_ov = len(_overview_df)
-            st.markdown(f"**{_cmp_label} 대비 유틸리티별 급등 현황** — 상위 {_n_ov}개 브랜드")
+            _ov_c1, _ov_c2 = st.columns([4, 1])
+            with _ov_c1:
+                st.markdown(f"**{_cmp_label} 대비 유틸리티별 급등 현황** — 상위 {_n_ov}개 브랜드")
+            with _ov_c2:
+                _ov_logy = st.checkbox("Log 스케일", key=f"spike_ov_logy{sfx}")
             fig_ov = go.Figure()
             _util_colors = {"water": "#4C72B0", "hwater": "#C44E52",
                             "elect": "#DD8A00", "heat": "#E377C2"}
@@ -578,12 +582,15 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
                 fig_ov.add_vline(x=lvl, line_dash="dot", line_color=clr, line_width=1.5,
                                  annotation_text=lbl, annotation_position="top",
                                  annotation_font_size=10, annotation_font_color=clr)
+            _ov_xaxis = dict(title="증가율 합계 (%)",
+                            gridcolor="rgba(128,128,128,0.15)", griddash="dot")
+            if _ov_logy:
+                _ov_xaxis["type"] = "log"
             fig_ov.update_layout(
                 barmode="stack",
                 height=max(420, _n_ov * 36 + 100),
                 margin=dict(l=10, r=80, t=40, b=40),
-                xaxis=dict(title="증가율 합계 (%)",
-                           gridcolor="rgba(128,128,128,0.15)", griddash="dot"),
+                xaxis=_ov_xaxis,
                 yaxis=dict(autorange="reversed", categoryorder="array",
                            categoryarray=brands, tickfont=dict(size=11)),
                 legend=dict(orientation="h", y=1.06, x=0, font_size=12),
@@ -621,7 +628,11 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
     with _viz2:
         # Scatter: max spike pct vs peer ratio (bubble = brand)
         if "spike_peer_ratio" in df.columns:
-            st.markdown(f"**급등율 vs 건물 대비 배수** — 우상단이 가장 위험")
+            _sc_c1, _sc_c2 = st.columns([4, 1])
+            with _sc_c1:
+                st.markdown(f"**급등율 vs 건물 대비 배수** — 우상단이 가장 위험")
+            with _sc_c2:
+                _scat_logy = st.checkbox("Log 스케일", key=f"spike_scat_logy{sfx}")
             _scat_df = df[df["spike_max_pct"] > 0].copy()
             _scat_df["_label"] = _scat_df["brand"].astype(str).str[:15]
             _scat_df["_color"] = _scat_df["spike_max_pct"].apply(
@@ -631,40 +642,56 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
                 else "#2ca02c"
             )
             fig_scat = go.Figure()
-            fig_scat.add_trace(go.Scatter(
-                x=_scat_df["spike_max_pct"],
-                y=_scat_df["spike_peer_ratio"].fillna(1),
-                mode="markers+text",
-                marker=dict(
-                    size=10, color=_scat_df["_color"],
-                    line=dict(width=1, color="white"),
-                ),
-                text=_scat_df["_label"],
-                textposition="top center", textfont_size=8,
-                hovertemplate=(
-                    "<b>%{text}</b><br>"
-                    f"{_cmp_label} 대비: %{{x:.1f}}%<br>"
-                    "vs건물: %{y:.1f}x<extra></extra>"
-                ),
-            ))
-            # Danger zone shading
-            fig_scat.add_vrect(x0=_SPIKE_CRITICAL, x1=_scat_df["spike_max_pct"].max() * 1.1,
-                               fillcolor="rgba(196,78,82,0.03)", line_width=0)
-            fig_scat.add_hrect(y0=2, y1=max(5, _scat_df["spike_peer_ratio"].max() * 1.1),
-                               fillcolor="rgba(196,78,82,0.03)", line_width=0)
+            for _, _row in _scat_df.iterrows():
+                fig_scat.add_trace(go.Scatter(
+                    x=[_row["spike_max_pct"]],
+                    y=[_row["spike_peer_ratio"] if pd.notna(_row["spike_peer_ratio"]) else 1],
+                    mode="markers",
+                    marker=dict(
+                        size=10, color=_row["_color"],
+                        line=dict(width=1, color="white"),
+                    ),
+                    name=_row["_label"],
+                    hovertemplate=(
+                        f"<b>{_row['_label']}</b><br>"
+                        f"{_cmp_label} 대비: %{{x:.1f}}%<br>"
+                        "vs건물: %{y:.1f}x<extra></extra>"
+                    ),
+                ))
+            # Danger zone shading — use yref/xref="paper" (0–1) for far edge
+            # so shapes don't pin the axis range when legend items are toggled
+            fig_scat.add_shape(
+                type="rect", x0=_SPIKE_CRITICAL, x1=1, y0=0, y1=1,
+                xref="x", yref="paper",
+                fillcolor="rgba(196,78,82,0.03)", line_width=0, layer="below",
+            )
+            fig_scat.add_shape(
+                type="rect", x0=0, x1=1, y0=2, y1=1,
+                xref="paper", yref="y",
+                fillcolor="rgba(196,78,82,0.03)", line_width=0, layer="below",
+            )
             fig_scat.add_hline(y=2, line_dash="dot", line_color="rgba(196,78,82,0.3)",
                                annotation_text="동종 2배", annotation_position="right",
                                annotation_font_size=9)
             fig_scat.add_vline(x=_SPIKE_HIGH, line_dash="dot", line_color="rgba(221,138,0,0.3)")
             fig_scat.update_layout(
-                height=340,
+                height=400,
                 xaxis=dict(title=f"{_cmp_label} 대비 최대 증가율 (%)",
-                           gridcolor="rgba(128,128,128,0.15)", griddash="dot"),
+                           gridcolor="rgba(128,128,128,0.15)", griddash="dot",
+                           **({"type": "log"} if _scat_logy else {})),
                 yaxis=dict(title="건물 평균 대비 (배수)",
-                           gridcolor="rgba(128,128,128,0.15)", griddash="dot"),
+                           gridcolor="rgba(128,128,128,0.15)", griddash="dot",
+                           **({"type": "log"} if _scat_logy else {})),
                 plot_bgcolor="rgba(0,0,0,0)",
                 margin=dict(t=10, b=40, l=50, r=20),
-                showlegend=False,
+                showlegend=True,
+                legend=dict(
+                    font_size=10,
+                    itemsizing="constant",
+                    orientation="v",
+                    yanchor="top", y=1,
+                    xanchor="left", x=1.02,
+                ),
             )
             st.plotly_chart(fig_scat, use_container_width=True, key=f"spike_scatter{sfx}")
         else:
@@ -799,10 +826,11 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
     _handle_chart_click(ev, chart_df, field="x")
 
 
-# ── Tab: 일관성 검사 ──────────────────────────────────────────────────────────
+# ── Tab: 데이터 품질 (consolidated) ──────────────────────────────────────────
 
-def _render_consistency_tab(
+def _render_data_quality_tab(
     df: pd.DataFrame,
+    cur_df: pd.DataFrame,
     file_name: str | None = None,
     file_data: bytes | None = None,
     all_sheet_keys: list[str] | None = None,
@@ -813,7 +841,93 @@ def _render_consistency_tab(
     yoy_sheet_keys: list[str] | None = None,
     yoy_label: str | None = None,
 ) -> None:
-    st.subheader("일관성 검사 — 미계량 + 시트 간 교차검증")
+    """Consolidated data quality tab: backward readings + zero-usage + name mismatches."""
+    st.subheader("🛡 데이터 품질 검사")
+    st.caption("원본 데이터의 정확성을 검증합니다. 분석 신뢰도에 직접 영향을 주는 항목들입니다.")
+
+    # ── Section 1: Backward meter readings ────────────────────────────────
+    _render_backward_detection(cur_df)
+
+    st.divider()
+
+    # ── Section 2: Zero-usage / unmeasured detection ──────────────────────
+    _render_consistency_section(
+        df,
+        prev_file_data=prev_file_data,
+        prev_sheet_keys=prev_sheet_keys,
+        prev_label=prev_label,
+        yoy_file_data=yoy_file_data,
+        yoy_sheet_keys=yoy_sheet_keys,
+        yoy_label=yoy_label,
+    )
+
+    st.divider()
+
+    # ── Section 3: Cross-sheet brand name inconsistencies ─────────────────
+    _render_sheet_reconciliation(
+        file_name, file_data, all_sheet_keys,
+        prev_file_data=prev_file_data,
+        prev_sheet_keys=prev_sheet_keys,
+        prev_label=prev_label,
+        yoy_file_data=yoy_file_data,
+        yoy_sheet_keys=yoy_sheet_keys,
+        yoy_label=yoy_label,
+    )
+
+
+def _render_backward_detection(cur_df: pd.DataFrame) -> None:
+    """Detect meters where current reading < previous reading (physically impossible)."""
+    from data import to_numeric_series
+    from lang import t
+
+    st.markdown("#### ⚠️ 역방향 검침 감지")
+    st.caption("현재 검침값이 이전 검침값보다 낮은 경우 — 계량기 교체 없이 물리적으로 불가능하며 데이터 입력 오류 가능성이 높습니다.")
+
+    _meter_pairs = [
+        ("water", "water_previous", "water_current", "m³"),
+        ("hwater", "hwater_previous", "hwater_current", "m³"),
+        ("elect", "elect_previous", "elect_current", "kWh"),
+        ("heat", "heat_previous", "heat_current", "m³/MWh"),
+    ]
+    backward_rows = []
+    for prefix, prev_col, curr_col, unit in _meter_pairs:
+        if prev_col not in cur_df.columns or curr_col not in cur_df.columns:
+            continue
+        prev_s = to_numeric_series(cur_df[prev_col])
+        curr_s = to_numeric_series(cur_df[curr_col])
+        mask = curr_s.notna() & prev_s.notna() & (curr_s < prev_s)
+        for idx in cur_df[mask].index:
+            brand_col = "brand_raw" if "brand_raw" in cur_df.columns else "brand"
+            backward_rows.append({
+                "브랜드": cur_df.at[idx, brand_col] if brand_col in cur_df.columns else "",
+                "건물": cur_df.at[idx, "building"] if "building" in cur_df.columns else "",
+                "층": cur_df.at[idx, "floor"] if "floor" in cur_df.columns else "",
+                "유틸리티": prefix,
+                "이전": round(float(prev_s.at[idx]), 2),
+                "현재": round(float(curr_s.at[idx]), 2),
+                "차이": round(float(curr_s.at[idx] - prev_s.at[idx]), 2),
+            })
+
+    if backward_rows:
+        st.error(f"**{len(backward_rows)}건**의 역방향 검침이 감지되었습니다.")
+        st.dataframe(pd.DataFrame(backward_rows), hide_index=True, use_container_width=True)
+        st.info("💡 해당 업체의 계량기 교체 여부를 확인하거나, 데이터 입력 오류를 수정하세요.")
+    else:
+        st.success("역방향 검침 없음 — 모든 검침값이 정상 순서입니다.")
+
+
+# ── Section: 일관성 검사 (미계량) ──────────────────────────────────────────────
+
+def _render_consistency_section(
+    df: pd.DataFrame,
+    prev_file_data: bytes | None = None,
+    prev_sheet_keys: list[str] | None = None,
+    prev_label: str | None = None,
+    yoy_file_data: bytes | None = None,
+    yoy_sheet_keys: list[str] | None = None,
+    yoy_label: str | None = None,
+) -> None:
+    st.markdown("#### 🔍 미계량 검출")
 
     # ── Section 1: Zero-usage detection ────────────────────────────────────
     st.caption("사용량=0으로 기록된 유틸리티 항목 수. 계량기 미설치 또는 입력 누락 가능성.")
@@ -851,16 +965,7 @@ def _render_consistency_tab(
     _render_zero_change(df, prev_file_data, prev_sheet_keys, prev_label,
                         yoy_file_data, yoy_sheet_keys, yoy_label)
 
-    # ── Section 2: Cross-sheet brand reconciliation ────────────────────────
-    _render_sheet_reconciliation(
-        file_name, file_data, all_sheet_keys,
-        prev_file_data=prev_file_data,
-        prev_sheet_keys=prev_sheet_keys,
-        prev_label=prev_label,
-        yoy_file_data=yoy_file_data,
-        yoy_sheet_keys=yoy_sheet_keys,
-        yoy_label=yoy_label,
-    )
+    # (Cross-sheet reconciliation moved to its own tab — 🔤 명칭 불일치)
 
 
 def _render_sheet_reconciliation(
@@ -876,16 +981,20 @@ def _render_sheet_reconciliation(
 ) -> None:
     """Cross-sheet brand reconciliation: name consistency + amount verification."""
     if not file_data or not all_sheet_keys:
+        st.info("파일을 업로드하면 시트 간 브랜드 명칭 불일치를 검출합니다.")
         return
 
     SH_A = "브랜드별 집계 내역"
     SH_B_match = next((s for s in all_sheet_keys
                        if s.strip() == "수도광열비 부과 내역"), None)
     if SH_A not in all_sheet_keys or SH_B_match is None:
+        st.warning(f"교차검증에 필요한 시트를 찾을 수 없습니다 ('{SH_A}' 또는 '수도광열비 부과 내역').")
         return
     SH_B = SH_B_match.strip()
 
-    st.divider()
+    st.subheader("시트 간 명칭 불일치 — 교차검증")
+    st.caption("동일 브랜드가 시트별로 다른 이름으로 기록된 경우를 검출합니다. "
+               "명칭 불일치는 데이터 병합 시 누락을 유발합니다.")
 
     # Show tabs for each available period
     file_pairs = [("📋 현재 파일", file_data, all_sheet_keys)]
@@ -1226,6 +1335,10 @@ def render_anomaly_tab(
         st.error("이상감지 데이터를 생성할 수 없습니다.")
         return
 
+    # Restore original brand names for display
+    from utils import display_brand as _display_brand
+    anomaly_df = _display_brand(anomaly_df)
+
     has_billing = BILLING_SHEET_NAME in sheets
     has_elec    = ELECTRICITY_SHEET_NAME in sheets
 
@@ -1346,7 +1459,9 @@ def render_anomaly_tab(
     st.divider()
 
     # ── 4. Detail deep-dives — unique signals only ────────────────────────────
-    tab_spike, tab_chk, tab_mgmt = st.tabs(["📈 급등 감지", "🔍 일관성 검사", "📋 경영 보고"])
+    tab_spike, tab_dq, tab_mgmt = st.tabs(
+        ["📈 급등 감지", "🛡 데이터 품질", "📋 경영 보고"]
+    )
 
     with tab_spike:
         # Two comparison modes: 전월 대비 (MoM) and 작년동월 대비 (YoY)
@@ -1381,9 +1496,9 @@ def render_anomaly_tab(
                 else:
                     st.info("작년동월 파일에서 비교 가능한 검침 데이터를 찾을 수 없습니다.")
 
-    with tab_chk:
-        _render_consistency_tab(
-            anomaly_df, file_name, file_data, all_sheet_keys,
+    with tab_dq:
+        _render_data_quality_tab(
+            anomaly_df, cur_df, file_name, file_data, all_sheet_keys,
             prev_file_data=prev_file_data,
             prev_sheet_keys=prev_sheet_keys,
             prev_label=prev_label,

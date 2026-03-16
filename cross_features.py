@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from data import to_numeric_series
+from utils import zscore as _zscore
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -24,15 +25,11 @@ def _to_num(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 def _agg_sum(df: pd.DataFrame, num_cols: list[str]) -> pd.DataFrame:
     group_cols = ["brand", "building"] if "building" in df.columns else ["brand"]
     present = [c for c in num_cols if c in df.columns]
-    return df.groupby(group_cols, as_index=False)[present].sum(min_count=1)
-
-
-def _zscore(s: pd.Series) -> pd.Series:
-    valid = s.dropna()
-    if len(valid) < 3:
-        return pd.Series(np.nan, index=s.index)
-    mean, std = valid.mean(), valid.std()
-    return ((s - mean) / std).round(2) if std > 0 else pd.Series(0.0, index=s.index)
+    agg = df.groupby(group_cols, as_index=False)[present].sum(min_count=1)
+    if "brand_raw" in df.columns:
+        raw = df.groupby(group_cols)["brand_raw"].first().reset_index()
+        agg = agg.merge(raw, on=group_cols, how="left")
+    return agg
 
 
 # ── public API ────────────────────────────────────────────────────────────────

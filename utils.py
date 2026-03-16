@@ -2,6 +2,19 @@
 import numpy as np
 import pandas as pd
 
+
+def display_brand(df: pd.DataFrame) -> pd.DataFrame:
+    """Swap normalized ``brand`` with ``brand_raw`` for user-facing display.
+
+    Returns a shallow copy so the caller's DataFrame is not mutated.
+    If ``brand_raw`` is absent, returns the original DataFrame unchanged.
+    """
+    if "brand_raw" not in df.columns:
+        return df
+    out = df.copy(deep=False)
+    out["brand"] = out["brand_raw"]
+    return out
+
 BLD_COLOR: dict[str, str] = {
     "A": "#4C72B0",
     "B": "#55A868",
@@ -178,6 +191,17 @@ def z_col_to_grade(s: pd.Series) -> pd.Series:
 def z_col_to_badge(s: pd.Series) -> pd.Series:
     """Vectorized Z-score → badge conversion for a DataFrame column."""
     return s.apply(z_to_badge)
+
+
+def zscore(s: pd.Series, min_valid: int = 3, decimals: int = 3) -> pd.Series:
+    """Robust Z-score: returns NaN when fewer than *min_valid* non-null values."""
+    valid = s.dropna()
+    if len(valid) < min_valid:
+        return pd.Series(np.nan, index=s.index)
+    mu, sigma = valid.mean(), valid.std()
+    if sigma < 1e-9:
+        return pd.Series(0.0, index=s.index)
+    return ((s - mu) / sigma).round(decimals)
 
 
 def iqr_upper(s: pd.Series) -> float:

@@ -125,9 +125,13 @@ def _render_trend_section(
     period_order = [p for p, _ in period_dfs]
     pivot = pivot.reindex([p for p in period_order if p in pivot.index])
 
-    # Moving average option
-    _show_ma = st.checkbox("3기간 이동평균 표시", key="trend_show_ma",
-                           help="3개월 이동평균선을 추가하여 추세 방향을 파악합니다.") if len(period_dfs) >= 3 else False
+    # Options row
+    _opt_c1, _opt_c2 = st.columns([1, 1])
+    with _opt_c1:
+        _show_ma = st.checkbox("3기간 이동평균 표시", key="trend_show_ma",
+                               help="3개월 이동평균선을 추가하여 추세 방향을 파악합니다.") if len(period_dfs) >= 3 else False
+    with _opt_c2:
+        _trend_logy = st.checkbox("Log 스케일", key="trend_logy")
 
     # Plot
     fig = go.Figure()
@@ -156,6 +160,7 @@ def _render_trend_section(
         height=450,
         xaxis_title="기간",
         yaxis_title=f"사용량 ({unit})",
+        yaxis_type="log" if _trend_logy else None,
         margin=dict(t=55, b=60, l=60, r=20),
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5,
                     font=dict(size=9)),
@@ -185,6 +190,8 @@ def render_mom_tab(
     sheet_map: dict[str, list] | None = None,
 ) -> None:
     """Render the month-over-month change view + multi-month trends."""
+    from utils import display_brand as _display_brand
+    cur_df = _display_brand(cur_df)
 
     # ── Pairwise MoM comparison — "What just changed?" ─────────────────
     _has_prev = any(f"{p}_previous" in cur_df.columns for p in present)
@@ -338,6 +345,7 @@ def render_mom_tab(
 
     # ── Change bar chart (full brand list) ─────────────────────────────────
     st.divider()
+    _mom_logy = st.checkbox("Log 스케일", key=f"mom_bar_logy_{_sel}")
     _sorted = _plot_df.sort_values(chg_col, ascending=False).reset_index(drop=True)
     _colors = _sorted[chg_col].apply(lambda v: "#C44E52" if v > 0 else "#2ca02c").tolist()
     fig = go.Figure(go.Bar(
@@ -354,6 +362,7 @@ def render_mom_tab(
         title=f"{_UTIL_META[_sel]['label']} 전월 대비 변화 ({unit})",
         height=430,
         yaxis_title=f"변화 ({unit})",
+        yaxis_type="log" if _mom_logy else None,
         xaxis_tickangle=-45,
         margin=dict(t=55, b=100, l=50, r=20),
         showlegend=False,

@@ -35,11 +35,13 @@ def _full_height(n_rows: int) -> int:
 
 
 def _load_and_clean(file_name: str, file_map: Dict[str, bytes], sheet_name: str) -> pd.DataFrame:
-    """Load meter sheet, apply headers, filter to valid buildings."""
+    """Load meter sheet, apply headers, filter to valid buildings, normalize brand."""
+    from data import _normalize_brand_col
     raw_df = read_sheet(file_name, file_map[file_name], sheet_name)
     df = apply_header_rows(raw_df)
     df["building"] = df["building"].astype(str).str.strip()
-    return df[df["building"].isin({"A", "B", "C", "D"})].copy()
+    df = df[df["building"].isin({"A", "B", "C", "D"})].copy()
+    return _normalize_brand_col(df)
 
 
 def load_raw_meter_df(

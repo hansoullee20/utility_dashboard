@@ -25,8 +25,6 @@ from lang import t
 
 _Z_THRESH = 2.0
 
-_BLDG_COLOR = {"A": "#1f77b4", "B": "#d62728", "C": "#2ca02c", "D": "#9467bd"}
-
 _COST_META = {
     "water_unit_cost":   {"label": "💧 수도 단가",  "unit": "₩/m³",   "z": "water_unit_z"},
     "elect_unit_cost":   {"label": "⚡ 전기 단가",  "unit": "₩/kWh",  "z": "elect_unit_z"},
@@ -636,6 +634,7 @@ def _render_yoy_cross(billing_df, yoy_file, yoy_file_data, yoy_sheet_names,
     ).round(1)
 
     # Bar chart — change per brand
+    _yoy_logy = st.checkbox("Log 스케일", key=f"cross_yoy_logy_{col}")
     _is_r = m.get("is_ratio", False)
     _sorted = _merged.sort_values(chg_col, ascending=False).reset_index(drop=True)
     _colors = _sorted[chg_col].apply(lambda v: "#C44E52" if v > 0 else "#2ca02c").tolist()
@@ -660,6 +659,7 @@ def _render_yoy_cross(billing_df, yoy_file, yoy_file_data, yoy_sheet_names,
         title=f"{m['label']} 전년 대비 변화",
         height=430, xaxis_tickangle=-45,
         yaxis_title=_ytitle,
+        yaxis_type="log" if _yoy_logy else None,
         margin=dict(t=55, b=80, l=60, r=20),
         showlegend=False,
     )
@@ -702,6 +702,9 @@ def render_cross_tab(
     billing_period: str | None = None,
     yoy_billing_period: str | None = None,
 ) -> None:
+    from utils import display_brand as _display_brand
+    cur_df = _display_brand(cur_df)
+
     _find = lambda target: next((s for s in sheet_names if s.strip() == target), None)
     _bill_key = _find(BILLING_SHEET_NAME)
 
