@@ -105,14 +105,28 @@ def _detect_all_issues(agg_df, raw_df):
     """Detect all billing issues. Returns list of dicts, one per issue."""
     issues = []
 
-    # 1. Backward meter readings
-    _pairs = [
+    # 1. Backward meter readings — check CUMULATIVE readings, not usage
+    #    After build_from_two_files: water_meter_prev/water_meter_curr = cumulative
+    #    These must always increase (meter physically counts up)
+    _meter_pairs = [
+        ("water", "water_meter_prev", "water_meter_curr"),
+        ("hwater", "hwater_meter_prev", "hwater_meter_curr"),
+        ("elect", "elect_meter_prev", "elect_meter_curr"),
+        ("heat", "heat_meter_prev", "heat_meter_curr"),
+    ]
+    # Fallback: if meter columns don't exist (single-file mode),
+    # check the raw previous/current from the Excel directly
+    _fallback_pairs = [
         ("water", "water_previous", "water_current"),
         ("hwater", "hwater_previous", "hwater_current"),
         ("elect", "elect_previous", "elect_current"),
         ("heat", "heat_previous", "heat_current"),
     ]
-    for pfx, prev_col, cur_col in _pairs:
+    _check_pairs = _meter_pairs if any(
+        c in raw_df.columns for _, _, c in _meter_pairs
+    ) else _fallback_pairs
+
+    for pfx, prev_col, cur_col in _check_pairs:
         if prev_col not in raw_df.columns or cur_col not in raw_df.columns:
             continue
         p = to_numeric_series(raw_df[prev_col])
@@ -125,8 +139,8 @@ def _detect_all_issues(agg_df, raw_df):
                 "건물": raw_df.at[idx, "building"] if "building" in raw_df.columns else "",
                 "유형": "⛔ 검침 오류",
                 "항목": UTIL_LABELS.get(pfx, pfx),
-                "내용": f"현재({float(c.at[idx]):,.1f}) < 이전({float(p.at[idx]):,.1f})",
-                "조치": "검침값 입력 오류 확인 — 숫자 바꿔 입력했을 가능성",
+                "내용": f"당월검침({float(c.at[idx]):,.1f}) < 전월검침({float(p.at[idx]):,.1f})",
+                "조치": "검침값 입력 오류 — 누적 검침값은 항상 증가해야 합니다",
                 "severity": 3,
             })
 
