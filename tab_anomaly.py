@@ -45,7 +45,7 @@ _SCORE_CSCALE = [
 
 # ── Insight summary ──────────────────────────────────────────────────────────
 
-def _render_overall_trend(anomaly_df: pd.DataFrame) -> None:
+def _render_overall_trend(anomaly_df: pd.DataFrame, sheets: dict | None = None) -> None:
     """Render overall + per-building trend context with toggleable outlier view.
 
     Two modes for manual comparison:
@@ -111,50 +111,89 @@ def _render_overall_trend(anomaly_df: pd.DataFrame) -> None:
         '📊 전월 대비 전체 평균 변화율</p>',
         unsafe_allow_html=True,
     )
+    from utils import UTIL_UNITS, fmt_won as _fmt_won
+
+    # Load billing data for cost info
+    _billing_df = None
+    _COST_COL = {"water": "water_total", "hwater": None, "elect": "elect_total", "heat": "heat_total"}
+    if sheets and BILLING_SHEET_NAME in sheets:
+        _billing_df = sheets[BILLING_SHEET_NAME]
+
+    def _fmt_qty(v):
+        if v is None or pd.isna(v):
+            return "—"
+        av = abs(v)
+        if av >= 10000:
+            return f"{v / 10000:.1f}만"
+        if av >= 1000:
+            return f"{v / 1000:.1f}천"
+        return f"{v:,.0f}"
+
     _metric_cols = st.columns(len(avail_pfx))
     for _mi, pfx in enumerate(avail_pfx):
         lbl = _UTIL_LABELS_UI.get(pfx, pfx)
         avg = overall_avgs.get(pfx)
         if avg is None or pd.isna(avg):
             continue
-        # Per-평 value
-        py_col = f"{pfx}_usage_per_py"
-        py_str = ""
-        if py_col in anomaly_df.columns:
-            py_avg = to_numeric_series(anomaly_df[py_col]).mean()
-            if pd.notna(py_avg):
-                py_str = f"{py_avg:.2f}/평"
+
+        _unit = UTIL_UNITS.get(pfx, "")
+
+        # Current vs previous totals
+        cur_col = f"{pfx}_current"
+        prev_col = f"{pfx}_previous"
+        cur_total = to_numeric_series(anomaly_df[cur_col]).sum() if cur_col in anomaly_df.columns else None
+        prev_total = to_numeric_series(anomaly_df[prev_col]).sum() if prev_col in anomaly_df.columns else None
+        abs_change = (cur_total - prev_total) if cur_total is not None and prev_total is not None else None
 
         clr = "#C44E52" if avg > 10 else "#2ca02c" if avg < -10 else "#888"
         arrow = "▲" if avg > 0 else "▼" if avg < 0 else ""
 
-        # Distortion note for this utility
-        distortion = ""
-        if has_building and len(buildings) >= 2:
-            worst_bldg, worst_diff = None, 0
-            for bldg in buildings:
-                b_avg = bldg_avgs.get(bldg, {}).get(pfx)
-                if b_avg is None or pd.isna(b_avg):
-                    continue
-                diff = b_avg - avg
-                if abs(diff) > abs(worst_diff):
-                    worst_bldg, worst_diff = bldg, diff
-            if worst_bldg and abs(worst_diff) >= 15:
-                d_clr = "#C44E52" if worst_diff > 0 else "#2ca02c"
-                distortion = (
-                    f'<div style="font-size:0.68rem;color:{d_clr};margin-top:3px">'
-                    f'⚠ {worst_bldg}동 {worst_diff:+.0f}%p</div>'
+        # Usage change box
+        usage_box = ""
+        if abs_change is not None and not pd.isna(abs_change):
+            _u_clr = "#C44E52" if abs_change > 0 else "#2ca02c"
+            _u_sign = "+" if abs_change > 0 else ""
+            usage_box = (
+                f'<div style="background:{_u_clr}10;border:1px solid {_u_clr}25;'
+                f'border-radius:6px;padding:3px 8px;margin-top:6px;font-size:0.7rem;'
+                f'color:{_u_clr};font-weight:600">'
+                f'📦 {_u_sign}{_fmt_qty(abs_change)} {_unit}</div>'
+            )
+
+        # Cost box
+        cost_box = ""
+        _cost_col = _COST_COL.get(pfx)
+        if _billing_df is not None and _cost_col and _cost_col in _billing_df.columns:
+            _cost_total = to_numeric_series(_billing_df[_cost_col]).sum()  # 만원
+            if pd.notna(_cost_total) and _cost_total > 0:
+                _cost_won = _cost_total * 10000
+                # Estimate cost change from usage change ratio
+                _cost_change_str = ""
+                if prev_total and prev_total > 0 and cur_total is not None:
+                    _prev_cost_est = _cost_won * prev_total / cur_total if cur_total > 0 else 0
+                    _cost_diff = _cost_won - _prev_cost_est
+                    if abs(_cost_diff) > 0:
+                        _c_clr = "#C44E52" if _cost_diff > 0 else "#2ca02c"
+                        _cost_change_str = (
+                            f' <span style="color:{_c_clr}">'
+                            f'({_fmt_won(_cost_diff, signed=True)})</span>'
+                        )
+                cost_box = (
+                    f'<div style="background:#DD8A0010;border:1px solid #DD8A0025;'
+                    f'border-radius:6px;padding:3px 8px;margin-top:4px;font-size:0.7rem;'
+                    f'color:#DD8A00;font-weight:600">'
+                    f'💰 {_fmt_won(_cost_won)}{_cost_change_str}</div>'
                 )
 
         with _metric_cols[_mi]:
             st.markdown(
-                f'<div style="background:linear-gradient(135deg,{clr}08,{clr}03);'
-                f'border:1px solid {clr}20;border-radius:10px;padding:12px 14px;text-align:center">'
-                f'<div style="font-size:0.78rem;color:inherit;opacity:0.55;margin-bottom:2px">{lbl}</div>'
-                f'<div style="font-size:1.5rem;font-weight:800;color:{clr};line-height:1.1">'
+                f'<div style="background:linear-gradient(135deg,{clr}0C,{clr}04);'
+                f'border:1px solid {clr}25;border-radius:10px;padding:12px 14px;text-align:center">'
+                f'<div style="font-size:0.78rem;color:inherit;opacity:0.55;margin-bottom:4px">{lbl}</div>'
+                f'<div style="font-size:1.6rem;font-weight:800;color:{clr};line-height:1.1">'
                 f'{arrow}{abs(avg):.1f}%</div>'
-                f'<div style="font-size:0.7rem;color:inherit;opacity:0.45;margin-top:2px">{py_str}</div>'
-                f'{distortion}'
+                f'{usage_box}'
+                f'{cost_box}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -1866,7 +1905,7 @@ def render_anomaly_tab(
         )
 
     # ── 0. Overall trend — context first ────────────────────────────────
-    _render_overall_trend(anomaly_df)
+    _render_overall_trend(anomaly_df, sheets=sheets)
 
     # ── 0b. KPI row ──────────────────────────────────────────────────────
     _render_kpis(anomaly_df, has_billing, has_elec)
