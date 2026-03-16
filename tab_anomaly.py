@@ -1161,15 +1161,22 @@ def _render_data_quality_tab(
     st.subheader("🛡 데이터 품질 검사")
 
     # ── KPI summary row ───────────────────────────────────────────────────
-    # Count issues
-    _meter_pairs = [
-        ("water", "water_previous", "water_current"),
-        ("hwater", "hwater_previous", "hwater_current"),
-        ("elect", "elect_previous", "elect_current"),
-        ("heat", "heat_previous", "heat_current"),
+    # Count backward readings using cumulative meter columns if available
+    _kpi_pairs = [
+        ("water_meter_prev", "water_meter_curr"),
+        ("hwater_meter_prev", "hwater_meter_curr"),
+        ("elect_meter_prev", "elect_meter_curr"),
+        ("heat_meter_prev", "heat_meter_curr"),
     ]
+    if not any(c in cur_df.columns for _, c in _kpi_pairs):
+        _kpi_pairs = [
+            ("water_previous", "water_current"),
+            ("hwater_previous", "hwater_current"),
+            ("elect_previous", "elect_current"),
+            ("heat_previous", "heat_current"),
+        ]
     n_backward = 0
-    for _, prev_col, curr_col in _meter_pairs:
+    for prev_col, curr_col in _kpi_pairs:
         if prev_col in cur_df.columns and curr_col in cur_df.columns:
             p, c = _tns(cur_df[prev_col]), _tns(cur_df[curr_col])
             n_backward += int((c.notna() & p.notna() & (c < p)).sum())
@@ -1220,12 +1227,24 @@ def _render_backward_detection(cur_df: pd.DataFrame) -> None:
     from data import to_numeric_series
     st.caption("현재 검침값 < 이전 검침값인 경우. 계량기 교체 없이 물리적으로 불가능 — 데이터 입력 오류 가능성.")
 
+    # Check cumulative meter readings if available, else fall back to usage columns
+    # Cumulative readings (water_meter_prev/curr) must always increase
+    # Usage columns (water_previous/current) can legitimately decrease
     _meter_pairs = [
-        ("water", "water_previous", "water_current", "m³"),
-        ("hwater", "hwater_previous", "hwater_current", "m³"),
-        ("elect", "elect_previous", "elect_current", "kWh"),
-        ("heat", "heat_previous", "heat_current", "m³/MWh"),
+        ("water", "water_meter_prev", "water_meter_curr", "m³"),
+        ("hwater", "hwater_meter_prev", "hwater_meter_curr", "m³"),
+        ("elect", "elect_meter_prev", "elect_meter_curr", "kWh"),
+        ("heat", "heat_meter_prev", "heat_meter_curr", "m³/MWh"),
     ]
+    _has_meter_cols = any(c in cur_df.columns for _, _, c, _ in _meter_pairs)
+    if not _has_meter_cols:
+        # Fallback for single-file mode: previous/current ARE cumulative readings
+        _meter_pairs = [
+            ("water", "water_previous", "water_current", "m³"),
+            ("hwater", "hwater_previous", "hwater_current", "m³"),
+            ("elect", "elect_previous", "elect_current", "kWh"),
+            ("heat", "heat_previous", "heat_current", "m³/MWh"),
+        ]
     backward_rows = []
     for prefix, prev_col, curr_col, unit in _meter_pairs:
         if prev_col not in cur_df.columns or curr_col not in cur_df.columns:
@@ -1863,7 +1882,9 @@ def render_anomaly_tab(
     from data import to_numeric_series as _tns_dqw
     _n_bw = 0
     for _pfx in _UTIL_PREFIXES:
-        _pc, _cc = f"{_pfx}_previous", f"{_pfx}_current"
+        # Check cumulative meter readings, not usage
+        _pc = f"{_pfx}_meter_prev" if f"{_pfx}_meter_prev" in cur_df.columns else f"{_pfx}_previous"
+        _cc = f"{_pfx}_meter_curr" if f"{_pfx}_meter_curr" in cur_df.columns else f"{_pfx}_current"
         if _pc in cur_df.columns and _cc in cur_df.columns:
             _p, _c = _tns_dqw(cur_df[_pc]), _tns_dqw(cur_df[_cc])
             _n_bw += int((_c.notna() & _p.notna() & (_c < _p)).sum())

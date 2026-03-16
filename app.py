@@ -999,8 +999,11 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
 
     # ── Data Quality (triggered from sidebar) ─────────────────────────────
     # Clear DQ view if user navigated away via sidebar tabs
-    if st.session_state.get("_show_dq", False) and st.session_state.get(_nav_key) != st.session_state.get("_dq_nav_snapshot"):
+    # Clear DQ view only if user explicitly changed nav tab (not on first load)
+    _dq_snap = st.session_state.get("_dq_nav_snapshot")
+    if st.session_state.get("_show_dq", False) and _dq_snap is not None and st.session_state.get(_nav_key) != _dq_snap:
         st.session_state["_show_dq"] = False
+        st.session_state.pop("_dq_nav_snapshot", None)
     if st.session_state.get("_show_dq", False):
         st.session_state["_dq_nav_snapshot"] = st.session_state.get(_nav_key)
         if st.button("← 돌아가기", key="dq_back_btn"):
