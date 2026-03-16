@@ -868,8 +868,13 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
         if _prev_nav and _prev_nav != _NAV_PROFILE:
             st.session_state["_profile_return_nav"] = _prev_nav
         st.session_state[_nav_key] = _NAV_PROFILE
-    elif st.session_state.get(_nav_key) not in _valid_labels:
-        st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
+    else:
+        # Allow stale badge labels (count may have changed) — match by prefix
+        _cur_nav = st.session_state.get(_nav_key, "")
+        if _cur_nav not in _valid_labels and not _cur_nav.startswith(_NAV_ANOMALY):
+            st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
+        elif _cur_nav.startswith(_NAV_ANOMALY) and _cur_nav != _NAV_ANOMALY_BADGE:
+            st.session_state[_nav_key] = _NAV_ANOMALY_BADGE
     with st.sidebar:
         st.subheader("📊 분석")
         nav_mode = sac.tabs(
