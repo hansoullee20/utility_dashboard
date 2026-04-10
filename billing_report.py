@@ -26,8 +26,13 @@ from report import (
     C_BLUE, C_CRITICAL, C_DIVIDER, C_LIGHT, C_NAVY, C_WHITE,
     M_BAR, M_CRITICAL,
     _ensure_fonts, _make_numbered_canvas, _make_page_template,
-    _make_styles, _png, _section_bar, _FONT_REG,
+    _make_styles, _png, _section_bar, get_report_font_paths,
 )
+
+
+def _report_font(size):
+    font_reg, _ = get_report_font_paths()
+    return _FontProperties(fname=font_reg, size=size)
 
 # ── Utility definitions (key, ko_label, en_label, excl_col, comm_col, total_col, chart_color)
 _UTIL_DEFS = [
@@ -132,7 +137,7 @@ def _chart_hbar(df: pd.DataFrame, x_col: str, y_col: str,
     ax.grid(axis="x", color="#DDDDDD", linewidth=0.5, linestyle="--")
     ax.set_facecolor("white")
     if avg > 0:
-        ax.legend(prop=_FontProperties(fname=_FONT_REG, size=9), framealpha=0.9)
+        ax.legend(prop=_report_font(9), framealpha=0.9)
     xlim = ax.get_xlim()
     x_off = 0.01 * (xlim[1] - xlim[0])
     for i, v in enumerate(vals):
@@ -180,7 +185,7 @@ def _chart_hist(vals: np.ndarray, title: str, unit: str,
         f"하위 {tail_pct:.0f}%  {lo:,.0f}\n상위 {tail_pct:.0f}%  {hi:,.0f}\n중앙값    {med:,.0f}",
         xy=(0.98, 0.97), xycoords="axes fraction",
         ha="right", va="top",
-        fontproperties=_FontProperties(fname=_FONT_REG, size=7.5),
+        fontproperties=_report_font(7.5),
         bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="#AAAAAA", lw=0.8, alpha=0.9),
     )
 
@@ -195,7 +200,7 @@ def _chart_hist(vals: np.ndarray, title: str, unit: str,
     ax.grid(axis="y", color="#DDDDDD", linewidth=0.5, linestyle="--")
     ax.legend(handles=[
         _Line2D([0], [0], color="#C44E52", linewidth=1.5, linestyle="--", label=f"중앙값: {med:,.0f}"),
-    ], prop=_FontProperties(fname=_FONT_REG, size=8), framealpha=0.9)
+    ], prop=_report_font(8), framealpha=0.9)
     fig.tight_layout(pad=0.8)
     return _png_from_fig(fig)
 

@@ -30,62 +30,82 @@ def _leakage_for(source_df, usage_col, fee_col):
     return per_brand, total
 
 
+def _grp_keys(df):
+    """Return groupby keys: ['brand', 'building'] if building exists, else ['brand']."""
+    return ["brand", "building"] if "building" in df.columns else ["brand"]
+
+
 def _build_merged(
     water_df, hotwater_df, elec_df, billing_df, meter_df,
     prev_water_df=None, prev_hotwater_df=None, prev_elec_df=None, prev_billing_df=None,
 ):
-    """Aggregate per-brand cross-sheet data and compute MoM columns.
+    """Aggregate per-(brand, building) cross-sheet data and compute MoM columns.
 
     Returns (merged_df, has_prev).
     """
-    # ── Per-sheet brand aggregation ──────────────────────────────────────────
-    if water_df is not None and not water_df.empty:
-        _w_agg = dict(building=("building", "first"), floor=("floor", "first"),
-                      size_m2=("size_m2", "sum"), water_total=("total", "sum"))
-        if "usage_m3" in water_df.columns:
-            _w_agg["water_m3"] = ("usage_m3", "sum")
-        _w = water_df.groupby("brand").agg(**_w_agg).reset_index()
-    else:
+    # ── Per-sheet (brand, building) aggregation ────────────────────────────────
+    def _gk(df):
+        return ["brand", "building"] if "building" in df.columns else ["brand"]
+
+    def _agg_sheet(df, agg_dict):
+        if df is None or df.empty:
+            return None
+        gk = _gk(df)
+        return df.groupby(gk).agg(**agg_dict).reset_index()
+
+    _JOIN = ["brand", "building"]
+
+    _w_agg = dict(floor=("floor", "first"), size_m2=("size_m2", "sum"),
+                  water_total=("total", "sum"))
+    if water_df is not None and "usage_m3" in (water_df.columns if water_df is not None else []):
+        _w_agg["water_m3"] = ("usage_m3", "sum")
+    _w = _agg_sheet(water_df, _w_agg)
+    if _w is None:
         _w = pd.DataFrame(columns=["brand", "building", "floor", "size_m2", "water_total"])
 
-    if hotwater_df is not None and not hotwater_df.empty:
-        _hw_agg = dict(hw_total=("total", "sum"))
-        if "usage_m3" in hotwater_df.columns:
-            _hw_agg["hw_m3"] = ("usage_m3", "sum")
-        _hw = hotwater_df.groupby("brand").agg(**_hw_agg).reset_index()
-    else:
-        _hw = pd.DataFrame(columns=["brand", "hw_total"])
+    _hw_agg = dict(hw_total=("total", "sum"))
+    if hotwater_df is not None and "usage_m3" in (hotwater_df.columns if hotwater_df is not None else []):
+        _hw_agg["hw_m3"] = ("usage_m3", "sum")
+    _hw = _agg_sheet(hotwater_df, _hw_agg)
+    if _hw is None:
+        _hw = pd.DataFrame(columns=_JOIN + ["hw_total"])
 
-    if elec_df is not None and not elec_df.empty:
-        _el_agg = dict(elec_total=("grand_total", "sum"), kwh_total=("kwh_total", "sum"))
+    _el_agg = dict(elec_total=("grand_total", "sum"), kwh_total=("kwh_total", "sum"))
+    if elec_df is not None:
         if "kwh_ehp" in elec_df.columns:
             _el_agg["kwh_ehp"] = ("kwh_ehp", "sum")
         if "kwh_fcu" in elec_df.columns:
             _el_agg["kwh_fcu"] = ("kwh_fcu", "sum")
-        _el = elec_df.groupby("brand").agg(**_el_agg).reset_index()
+    _el = _agg_sheet(elec_df, _el_agg)
+    if _el is not None:
         _el["kwh_hvac"] = _el.get("kwh_ehp", 0) + _el.get("kwh_fcu", 0)
         _el = _el.drop(columns=["kwh_ehp", "kwh_fcu"], errors="ignore")
     else:
-        _el = pd.DataFrame(columns=["brand", "elec_total", "kwh_total", "kwh_hvac"])
+        _el = pd.DataFrame(columns=_JOIN + ["elec_total", "kwh_total", "kwh_hvac"])
 
     if billing_df is not None and not billing_df.empty and "heat_total" in billing_df.columns:
-        _ht = billing_df.groupby("brand").agg(heat_total=("heat_total", "sum")).reset_index()
+        _ht = _agg_sheet(billing_df, dict(heat_total=("heat_total", "sum")))
         _ht["heat_total"] = _ht["heat_total"] * 10000  # 만원 → 원
     else:
-        _ht = pd.DataFrame(columns=["brand", "heat_total"])
+        _ht = pd.DataFrame(columns=_JOIN + ["heat_total"])
 
     if meter_df is not None and not meter_df.empty and "heat_current" in meter_df.columns:
         from data import to_numeric_series as _tns
         _hm = meter_df.copy()
         _hm["heat_m3"] = _tns(_hm["heat_current"])
-        _hm = _hm.groupby("brand").agg(heat_m3=("heat_m3", "sum")).reset_index()
+        _hm = _agg_sheet(_hm, dict(heat_m3=("heat_m3", "sum")))
     else:
-        _hm = pd.DataFrame(columns=["brand", "heat_m3"])
+        _hm = pd.DataFrame(columns=_JOIN + ["heat_m3"])
 
-    merged = (_w.merge(_hw, on="brand", how="outer")
-                .merge(_el, on="brand", how="outer")
-                .merge(_ht, on="brand", how="outer")
-                .merge(_hm, on="brand", how="outer"))
+    # Ensure all frames have building column for join
+    for _df in [_w, _hw, _el, _ht, _hm]:
+        if "building" not in _df.columns:
+            _df["building"] = ""
+
+    merged = (_w.merge(_hw, on=_JOIN, how="outer")
+                .merge(_el, on=_JOIN, how="outer")
+                .merge(_ht, on=_JOIN, how="outer")
+                .merge(_hm, on=_JOIN, how="outer"))
 
     for col in ["water_total", "hw_total", "elec_total", "heat_total", "kwh_total",
                 "kwh_hvac", "size_m2", "water_m3", "hw_m3", "heat_m3"]:
@@ -96,31 +116,44 @@ def _build_merged(
 
     # Recover brand_raw for display
     _raw_parts = [
-        df.groupby("brand")["brand_raw"].first()
+        df.groupby(_gk(df))["brand_raw"].first()
         for df in [water_df, hotwater_df, elec_df, billing_df, meter_df]
         if df is not None and not df.empty and "brand_raw" in df.columns
     ]
     if _raw_parts:
-        _raw_map = pd.concat(_raw_parts).groupby(level=0).first()
-        merged["brand_raw"] = merged["brand"].map(_raw_map)
+        _raw_map = pd.concat(_raw_parts)
+        if isinstance(_raw_map.index, pd.MultiIndex):
+            _raw_map = _raw_map.groupby(level=list(range(_raw_map.index.nlevels))).first()
+            _raw_lookup = _raw_map.reset_index()
+            _raw_lookup.columns = list(_raw_lookup.columns[:-1]) + ["brand_raw"]
+            merged = merged.merge(_raw_lookup, on=_JOIN, how="left", suffixes=("", "_raw_dup"))
+            merged.drop(columns=[c for c in merged.columns if c.endswith("_raw_dup")], inplace=True)
+        else:
+            _raw_map = _raw_map.groupby(level=0).first()
+            merged["brand_raw"] = merged["brand"].map(_raw_map)
 
+    # Fill missing building/floor/size from other sheets
     _meta_parts = [
-        df.groupby("brand")[["building", "floor", "size_m2"]].first()
+        df.groupby(_gk(df))[["floor", "size_m2"]].first()
         for df in [water_df, hotwater_df, elec_df, billing_df]
         if df is not None and not df.empty
-        and all(c in df.columns for c in ["building", "floor", "size_m2"])
+        and all(c in df.columns for c in ["floor", "size_m2"])
     ]
-    if _meta_parts:
-        _meta = pd.concat(_meta_parts).groupby(level=0).first()
-        merged = merged.set_index("brand")
-        _no_bld = merged["building"].isna() | (merged["building"].astype(str).str.strip() == "")
-        merged["building"] = merged["building"].where(~_no_bld, _meta["building"].reindex(merged.index))
-        merged["floor"] = merged["floor"].where(~_no_bld, _meta["floor"].reindex(merged.index))
-        merged["size_m2"] = merged["size_m2"].where(
-            merged["size_m2"] > 0,
-            _meta["size_m2"].reindex(merged.index, fill_value=0),
-        )
-        merged = merged.reset_index()
+    if _meta_parts and "floor" in merged.columns:
+        _meta = pd.concat(_meta_parts)
+        if isinstance(_meta.index, pd.MultiIndex):
+            _meta = _meta.groupby(level=list(range(_meta.index.nlevels))).first()
+        else:
+            _meta = _meta.groupby(level=0).first()
+        # Only fill where floor is missing
+        _no_floor = merged["floor"].isna() | (merged["floor"].astype(str).str.strip() == "")
+        if isinstance(_meta.index, pd.MultiIndex):
+            _meta_r = _meta.reset_index()
+            _meta_r.columns = _JOIN + ["_fill_floor", "_fill_size"]
+            merged = merged.merge(_meta_r, on=_JOIN, how="left")
+            merged["floor"] = merged["floor"].where(~_no_floor, merged.get("_fill_floor"))
+            merged["size_m2"] = merged["size_m2"].where(merged["size_m2"] > 0, merged.get("_fill_size", 0))
+            merged.drop(columns=["_fill_floor", "_fill_size"], errors="ignore", inplace=True)
 
     merged["util_total"] = merged["water_total"] + merged["hw_total"] + merged["elec_total"] + merged["heat_total"]
     merged = merged[merged["util_total"] > 0].sort_values("util_total", ascending=False).reset_index(drop=True)
@@ -132,18 +165,29 @@ def _build_merged(
     _has_prev = any(d is not None and not d.empty
                     for d in [prev_water_df, prev_hotwater_df, prev_elec_df, prev_billing_df])
     if _has_prev:
-        _prev_parts = {}
+        _prev_aggs = []
         if prev_water_df is not None and not prev_water_df.empty:
-            _prev_parts["water_prev"] = prev_water_df.groupby("brand")["total"].sum()
+            _prev_aggs.append(("water_prev", prev_water_df, "total"))
         if prev_hotwater_df is not None and not prev_hotwater_df.empty:
-            _prev_parts["hw_prev"] = prev_hotwater_df.groupby("brand")["total"].sum()
+            _prev_aggs.append(("hw_prev", prev_hotwater_df, "total"))
         if prev_elec_df is not None and not prev_elec_df.empty:
-            _prev_parts["elec_prev"] = prev_elec_df.groupby("brand")["grand_total"].sum()
+            _prev_aggs.append(("elec_prev", prev_elec_df, "grand_total"))
         if prev_billing_df is not None and not prev_billing_df.empty and "heat_total" in prev_billing_df.columns:
-            _prev_parts["heat_prev"] = prev_billing_df.groupby("brand")["heat_total"].sum() * 10000
+            _prev_aggs.append(("heat_prev", prev_billing_df, "heat_total"))
 
-        for col, series in _prev_parts.items():
-            merged[col] = merged["brand"].map(series).fillna(0)
+        for col_name, pdf, val_col in _prev_aggs:
+            _pk = _gk(pdf)
+            _prev_s = pdf.groupby(_pk)[val_col].sum()
+            if col_name == "heat_prev":
+                _prev_s = _prev_s * 10000
+            if isinstance(_prev_s.index, pd.MultiIndex):
+                _prev_r = _prev_s.reset_index()
+                _prev_r.columns = _pk + [col_name]
+                merged = merged.merge(_prev_r, on=_pk, how="left")
+                merged[col_name] = merged[col_name].fillna(0)
+            else:
+                merged[col_name] = merged["brand"].map(_prev_s).fillna(0)
+
         for col in ["water_prev", "hw_prev", "elec_prev", "heat_prev"]:
             if col not in merged.columns:
                 merged[col] = 0.0

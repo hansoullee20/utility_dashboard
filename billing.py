@@ -576,11 +576,12 @@ def _hvac_analysis(df: pd.DataFrame) -> None:
             _top1_fee_share   = brand_agg_all.loc[_top1_fee,   amount_col] / _fee_total   * 100
             _top1_usage_share = brand_agg_all.loc[_top1_usage, usage_col]  / _usage_total * 100
             _fee_cv           = brand_agg_all[amount_col].std() / brand_agg_all[amount_col].mean()
+            from utils import esc as _esc
             def _mini_metric(col, label, value, sub):
                 col.markdown(
-                    f"<div style='font-size:13px;color:#888;margin-bottom:4px'>{label}</div>"
-                    f"<div style='font-size:20px;font-weight:600;line-height:1.3;word-break:keep-all'>{value}</div>"
-                    f"<div style='font-size:13px;color:#555;margin-top:3px'>{sub}</div>",
+                    f"<div style='font-size:13px;color:#888;margin-bottom:4px'>{_esc(label)}</div>"
+                    f"<div style='font-size:20px;font-weight:600;line-height:1.3;word-break:keep-all'>{_esc(value)}</div>"
+                    f"<div style='font-size:13px;color:#555;margin-top:3px'>{_esc(sub)}</div>",
                     unsafe_allow_html=True,
                 )
             _sc = st.columns(3)

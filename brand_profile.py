@@ -298,16 +298,17 @@ def _render_single_brand_profile(
     )
 
     # Brand header card
+    from utils import esc as _esc
     st.markdown(
         f'<div style="background:linear-gradient(135deg,#4C72B010,#4C72B005);'
         f'border:1px solid #4C72B025;border-radius:12px;padding:16px 20px;margin-bottom:16px">'
         f'<div style="font-size:1.5rem;font-weight:800;color:inherit;margin-bottom:8px">'
-        f'{selected}</div>'
+        f'{_esc(selected)}</div>'
         f'<div style="display:flex;gap:24px;font-size:0.88rem;color:inherit;opacity:0.7">'
-        f'<span>🏢 <b>{bldg}</b></span>'
-        f'<span>📍 <b>{floor}</b></span>'
-        f'<span>📐 <b>{size_str}</b></span>'
-        f'<span>📅 <b>{period_str}</b></span>'
+        f'<span>🏢 <b>{_esc(bldg)}</b></span>'
+        f'<span>📍 <b>{_esc(floor)}</b></span>'
+        f'<span>📐 <b>{_esc(size_str)}</b></span>'
+        f'<span>📅 <b>{_esc(period_str)}</b></span>'
         f'</div></div>',
         unsafe_allow_html=True,
     )
@@ -337,7 +338,7 @@ def _render_single_brand_profile(
                     st.markdown(
                         f'<div style="background:{_risk_clr}10;border-left:3px solid {_risk_clr};'
                         f'padding:8px 12px;border-radius:4px;font-size:0.82rem">'
-                        f'<b>이유</b>: {_reason}</div>',
+                        f'<b>이유</b>: {_esc(_reason)}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -999,6 +1000,7 @@ def _render_brand_comparison(
     billing_df, water_df, hotwater_df, electricity_df, brands,
 ):
     """Side-by-side comparison of 2+ brands."""
+    from utils import esc as _esc
     selected = st.multiselect(
         "비교할 브랜드 선택 (2개 이상)", brands,
         default=brands[:2] if len(brands) >= 2 else brands,
@@ -1158,7 +1160,7 @@ def _render_brand_comparison(
         # ── Difference charts (2 brands only) — 3-column layout ──────────
         if len(selected) == 2:
             _da, _db = selected[0], selected[1]
-            st.markdown(f"**△ 차이 ({_da[:10]} − {_db[:10]})**")
+            st.markdown(f"**△ 차이 ({_esc(_da[:10])} − {_esc(_db[:10])})**")
             st.caption(
                 f"양수(빨간색)는 {_da[:10]}이 더 높음, "
                 f"음수(초록색)는 {_db[:10]}이 더 높음을 의미합니다."
@@ -1296,7 +1298,7 @@ def _render_brand_comparison(
 
                 # Billing difference chart (2 brands)
                 if len(selected) == 2 and len(bill_rows) == 2:
-                    st.markdown(f"**△ 비용 차이 ({selected[0][:10]} − {selected[1][:10]})**")
+                    st.markdown(f"**△ 비용 차이 ({_esc(selected[0][:10])} − {_esc(selected[1][:10])})**")
                     _b_diff_vals = [
                         bill_rows[0].get(l, 0) - bill_rows[1].get(l, 0) for _, l in _avail
                     ]

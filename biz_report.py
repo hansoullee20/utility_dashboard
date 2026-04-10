@@ -34,7 +34,7 @@ from report import (
     C_WATCH, C_ALERT, C_STABLE, C_NORMAL, C_ACCENT,
     _ensure_fonts, _make_numbered_canvas, _make_page_template,
     _make_styles, _section_bar,
-    _FONT_REG,
+    get_report_font_paths,
 )
 
 # ── Risk colour map ───────────────────────────────────────────────────────────
@@ -186,9 +186,11 @@ def _cover_items(title: str, subtitle: str, context: dict, T) -> list:
 
 def _mpl_font():
     """Get matplotlib FontProperties for NanumGothic."""
-    import os
-    if os.path.exists(_FONT_REG):
-        return _fm.FontProperties(fname=_FONT_REG)
+    try:
+        font_reg, _ = get_report_font_paths()
+        return _fm.FontProperties(fname=font_reg)
+    except FileNotFoundError:
+        pass
     return _fm.FontProperties()
 
 
@@ -268,6 +270,305 @@ def _divider_line(W) -> list:
               colWidths=[W],
               style=TableStyle([("LINEBELOW", (0, 0), (-1, 0), 0.5, C_DIVIDER)]))
     return [Spacer(1, 0.2 * cm), t, Spacer(1, 0.3 * cm)]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Management-facing helpers (P1 report redesign)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _coverage_box(coverage: dict, T, W) -> list:
+    """Data completeness / analysis scope box for PDF reports.
+
+    Args:
+        coverage: dict with keys like 'sheets', 'features', 'excluded_dims',
+                  'unmatched_count', 'dup_periods'.
+    """
+    rows = []
+    # Sheet status
+    sheet_status = coverage.get("sheets", {})
+    sheet_parts = []
+    for name, loaded in sheet_status.items():
+        mark = "✅" if loaded else "❌"
+        sheet_parts.append(f"{mark} {name}")
+    if sheet_parts:
+        rows.append([Paragraph(
+            f"<b>데이터 현황</b>: {' &nbsp;|&nbsp; '.join(sheet_parts)}", T["note"]
+        )])
+
+    # Feature availability
+    features = coverage.get("features", {})
+    feat_parts = []
+    for name, active in features.items():
+        mark = "✅" if active else "⚠ 비활성"
+        feat_parts.append(f"{mark} {name}")
+    if feat_parts:
+        rows.append([Paragraph(
+            f"<b>분석 기능</b>: {' &nbsp;|&nbsp; '.join(feat_parts)}", T["note"]
+        )])
+
+    # Excluded dimensions
+    excluded = coverage.get("excluded_dims", [])
+    if excluded:
+        rows.append([Paragraph(
+            f"<b>비활성 차원</b>: {', '.join(excluded)} → 나머지 차원에 가중치 재분배됨", T["note"]
+        )])
+
+    # Join coverage
+    unmatched = coverage.get("unmatched_count", 0)
+    if unmatched:
+        rows.append([Paragraph(
+            f"<font color='#F4882A'><b>청구 매칭 실패</b>: {unmatched}건 (단가 분석 제외)</font>", T["note"]
+        )])
+
+    # Duplicate periods
+    dup = coverage.get("dup_periods")
+    if dup:
+        rows.append([Paragraph(
+            f"<font color='#F4882A'><b>동일 기간 파일 중복</b>: {dup}</font>", T["note"]
+        )])
+
+    if not rows:
+        return []
+
+    t = Table(
+        rows, colWidths=[W - 0.5 * cm],
+        style=TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F5F7FA")),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("LINEBEFORE", (0, 0), (0, -1), 2.5, C_BLUE),
+            ("ROUNDEDCORNERS", [0, 4, 4, 0]),
+        ]),
+    )
+    return [
+        _section_bar("📊 데이터 완전성 및 분석 범위", T, W),
+        Spacer(1, 0.15 * cm),
+        t,
+        Spacer(1, 0.4 * cm),
+    ]
+
+
+def _estimate_risk_amount(anomaly_df, unit_df=None, cur_df=None):
+    """Estimate total billing risk in 원 for management reporting.
+
+    Returns (total_risk_won, risk_brands_list).
+    """
+    from utils import fmt_won
+    risk_brands = []
+    total_risk = 0.0
+
+    if anomaly_df is None or anomaly_df.empty:
+        return 0, []
+
+    # For high-cost outliers: excess = (brand_cost_per_m2 - median) * brand_size_m2
+    if unit_df is not None and not unit_df.empty:
+        cost_col = "total_cost_per_m2" if "total_cost_per_m2" in unit_df.columns else None
+        z_col = "total_cost_per_m2_z" if "total_cost_per_m2_z" in unit_df.columns else None
+        if cost_col and z_col and "size_m2" in unit_df.columns:
+            median_cost = unit_df[cost_col].median()
+            outliers = unit_df[unit_df[z_col].abs() >= 1.5].copy()
+            for _, row in outliers.iterrows():
+                excess = abs(row[cost_col] - median_cost) * row.get("size_m2", 0)
+                excess_won = excess * 10000  # 만원 → 원
+                if excess_won > 0:
+                    brand = str(row.get("brand", "—"))
+                    bldg = str(row.get("building", ""))
+                    total_risk += excess_won
+                    risk_brands.append({
+                        "brand": brand,
+                        "building": bldg,
+                        "risk_won": excess_won,
+                        "reason": f"평당비용 이상 (중앙값 대비 {fmt_won(excess_won)} 차이)",
+                    })
+
+    # For zero-usage brands with billing: billing amount is "unverifiable"
+    if (unit_df is not None and not unit_df.empty
+            and "water_usage_m3" in unit_df.columns and "total" in unit_df.columns):
+        zero_usage = unit_df[
+            (unit_df["water_usage_m3"].fillna(0) == 0) & (unit_df["total"].fillna(0) > 0)
+        ]
+        for _, row in zero_usage.iterrows():
+            bill_won = row["total"] * 10000
+            if bill_won > 0:
+                brand = str(row.get("brand", "—"))
+                total_risk += bill_won
+                risk_brands.append({
+                    "brand": brand,
+                    "building": str(row.get("building", "")),
+                    "risk_won": bill_won,
+                    "reason": f"미계량 상태에서 청구 발생 ({fmt_won(bill_won)})",
+                })
+
+    # Sort by risk amount descending
+    risk_brands.sort(key=lambda x: x["risk_won"], reverse=True)
+    return total_risk, risk_brands[:15]
+
+
+def _priority_action_table(anomaly_df, risk_brands, T, W) -> list:
+    """Generate priority action table for PDF — top flagged brands with actionable columns."""
+    from utils import fmt_won
+
+    # Map risk level to recommended action
+    def _action(risk, reason):
+        r = str(reason).lower() if reason else ""
+        if "미계량" in r:
+            return "미터 설치/계약 확인"
+        if "누수" in r or "급등" in r:
+            return "즉시 검침기·현장 점검"
+        if "위험" in str(risk):
+            return "즉시 검침기·청구서·현장 점검"
+        if "주의" in str(risk):
+            return "다음 월 추적 + 계약 확인"
+        return "정기 모니터링"
+
+    # Build rows from anomaly_df top brands + risk amount mapping
+    risk_map = {(rb["brand"], rb.get("building", "")): rb["risk_won"]
+                for rb in (risk_brands or [])}
+
+    top = anomaly_df.head(20)
+    header = ["브랜드", "건물", "등급", "이유", "추정 영향액", "권장 조치", "상태"]
+    rows = [header]
+    for _, row in top.iterrows():
+        risk = str(row.get("risk_level", ""))
+        if "정상" in risk:
+            continue
+        brand = str(row.get("brand", "—"))
+        bldg = str(row.get("building", "—"))
+        reason = str(row.get("reason", "—"))
+        risk_won = risk_map.get((brand, bldg), 0)
+        risk_str = fmt_won(risk_won) if risk_won > 0 else "—"
+        plain_risk = _RISK_PLAIN.get(risk, risk)
+        action = _action(risk, reason)
+        rows.append([brand[:14], bldg, plain_risk, reason[:30], risk_str, action, "미확인"])
+
+    if len(rows) <= 1:
+        return []
+
+    col_w = [2.5 * cm, 1.2 * cm, 1.2 * cm, 4.5 * cm, 2.0 * cm, 3.2 * cm, 1.5 * cm]
+    # Color-code risk column
+    risk_styles = []
+    for i, row in enumerate(rows[1:], 1):
+        if row[2] == "위험":
+            risk_styles.append(("BACKGROUND", (2, i), (2, i), C_CRITICAL))
+            risk_styles.append(("TEXTCOLOR", (2, i), (2, i), C_WHITE))
+        elif row[2] == "주의":
+            risk_styles.append(("BACKGROUND", (2, i), (2, i), C_WATCH))
+            risk_styles.append(("TEXTCOLOR", (2, i), (2, i), C_WHITE))
+
+    return [
+        _section_bar("🔍 우선 조치 리스트", T, W),
+        Spacer(1, 0.15 * cm),
+        _highlight_table(rows, col_w, risk_styles),
+        Spacer(1, 0.4 * cm),
+    ]
+
+
+def _exec_summary_story(
+    anomaly_df, unit_df, cur_df, present, coverage, T, W,
+) -> list:
+    """Build 1-page executive summary flowables for directors."""
+    from utils import fmt_won
+    story = []
+    total = len(anomaly_df) if anomaly_df is not None else 0
+    risk_counts = (anomaly_df["risk_level"].value_counts().to_dict()
+                   if anomaly_df is not None and "risk_level" in anomaly_df.columns else {})
+    danger = risk_counts.get("🔴 위험", 0)
+    caution = risk_counts.get("🟠 주의", 0)
+    observe = risk_counts.get("🟡 관찰", 0)
+    normal = risk_counts.get("🟢 정상", 0)
+    flagged = danger + caution
+
+    # Estimated risk
+    risk_won, risk_brands = _estimate_risk_amount(anomaly_df, unit_df, cur_df)
+
+    # ── KPI row ─────────────────────────────────────────────────────────────
+    story.append(_section_bar("핵심 지표", T, W))
+    kpi_labels = ["총 브랜드", "🔴 위험", "🟠 주의", "추정 위험액", "데이터"]
+    completeness = coverage.get("completeness_pct", "—")
+    kpi_values = [
+        str(total), str(danger), str(caution),
+        fmt_won(risk_won) if risk_won > 0 else "—",
+        f"{completeness}" if isinstance(completeness, str) else f"{completeness:.0f}%",
+    ]
+    kpi_data = [kpi_labels, kpi_values]
+    kpi_ts = TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), C_NAVY),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), C_WHITE),
+        ("FONTNAME",      (0, 0), (-1, 0), "NanumGothic-Bold"),
+        ("FONTNAME",      (0, 1), (-1, -1), "NanumGothic-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, 0), 8.5),
+        ("FONTSIZE",      (0, 1), (-1, 1), 11),
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_DIVIDER),
+        ("TOPPADDING",    (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BACKGROUND",    (1, 1), (1, 1), C_CRITICAL),
+        ("BACKGROUND",    (2, 1), (2, 1), C_WATCH),
+        ("TEXTCOLOR",     (1, 1), (2, 1), C_WHITE),
+    ])
+    story.append(Table(kpi_data, colWidths=[W / 5] * 5, style=kpi_ts))
+    story.append(Spacer(1, 0.4 * cm))
+
+    # ── Key messages (3 bullets) ────────────────────────────────────────────
+    story.append(_section_bar("이번 달 핵심 메시지", T, W))
+    messages = []
+    if flagged:
+        messages.append(
+            f"이상 브랜드 <b>{flagged}건</b> 발견"
+            + (f" — 추정 위험액 <b>{fmt_won(risk_won)}</b>" if risk_won > 0 else "")
+        )
+    else:
+        messages.append("금월 점검 필요 브랜드 없음 — 청구 데이터 정상 범위")
+
+    excluded = coverage.get("excluded_dims", [])
+    if excluded:
+        dim_names = {"spike_score": "급등 감지", "consumption_score": "사분면 분석",
+                     "cost_score": "단가 분석", "hvac_score": "HVAC 분석"}
+        inactive = [dim_names.get(d, d) for d in excluded]
+        messages.append(f"분석 제한: {', '.join(inactive)} 비활성 (전월 파일 또는 시트 미업로드)")
+    else:
+        messages.append("모든 분석 차원 활성 — 5차원 복합 이상 분석 완료")
+
+    # Early detection framing
+    if flagged:
+        messages.append(
+            f"이번 달 이상 {flagged}건을 사전 발견하여 민원·오청구 위험을 줄였습니다."
+        )
+    else:
+        messages.append("사전 이상감지 체계가 정상 가동 중입니다.")
+
+    msg_rows = [[Paragraph(f"• {m}", T["callout"])] for m in messages]
+    msg_t = Table(msg_rows, colWidths=[W - 0.5 * cm], style=TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), C_CALLOUT_BG),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, C_BLUE),
+        ("ROUNDEDCORNERS", [0, 4, 4, 0]),
+    ]))
+    story.append(msg_t)
+    story.append(Spacer(1, 0.4 * cm))
+
+    # ── Top 3 action items ──────────────────────────────────────────────────
+    actions = []
+    if danger:
+        d_brands = anomaly_df[anomaly_df["risk_level"] == "🔴 위험"]["brand"].tolist()
+        actions.append(f"🔴 즉시 점검: {', '.join(str(b)[:10] for b in d_brands[:3])} — 검침기·현장 확인")
+    if caution:
+        actions.append(f"🟠 모니터링 대상 {caution}건 — 다음 월 추적 및 계약 확인")
+    if risk_won > 0:
+        actions.append(f"💰 추정 위험액 {fmt_won(risk_won)} — 청구서 발행 전 검증 필요")
+    if not actions:
+        actions.append("현재 특이사항 없음 — 정기 모니터링 유지")
+
+    story += _action_box(actions, T, W)
+
+    # ── Coverage ────────────────────────────────────────────────────────────
+    story += _coverage_box(coverage, T, W)
+
+    return story
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1087,6 +1388,64 @@ def generate_efficiency_pdf(
 # 4. 종합 리포트 PDF
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _build_coverage_dict(anomaly_df=None, has_billing=False, has_elec=False,
+                         has_water=False, has_hotwater=False, has_mom=False):
+    """Build a coverage dict for _coverage_box from available data."""
+    coverage = {
+        "sheets": {
+            "검침": True,
+            "청구": has_billing,
+            "전기": has_elec,
+            "수도": has_water,
+            "온수": has_hotwater,
+        },
+        "features": {
+            "급등 감지": has_mom,
+            "단가 분석": has_billing,
+            "HVAC 분석": has_elec,
+        },
+    }
+    if anomaly_df is not None and hasattr(anomaly_df, "attrs"):
+        coverage["excluded_dims"] = anomaly_df.attrs.get("_excluded_dims", [])
+        coverage["unmatched_count"] = len(anomaly_df.attrs.get("_cost_unmatched", []))
+    # Completeness = fraction of sheets loaded
+    n_loaded = sum(1 for v in coverage["sheets"].values() if v)
+    n_total = len(coverage["sheets"])
+    coverage["completeness_pct"] = f"{n_loaded}/{n_total}"
+    return coverage
+
+
+def generate_exec_summary_pdf(
+    anomaly_df: pd.DataFrame | None = None,
+    unit_df: pd.DataFrame | None = None,
+    cur_df: pd.DataFrame | None = None,
+    present: list[str] | None = None,
+    context: dict = None,
+    coverage: dict = None,
+) -> bytes:
+    """Generate a 1-page executive summary PDF for directors.
+
+    Answers: 이번 달 뭐가 문제인가 / 얼마나 중요한가 / 누가 무엇을 해야 하는가
+    """
+    buf = io.BytesIO()
+    doc, T = _build_doc(buf, footer_left="임원용 요약 보고서  ·  대외비")
+    W = doc.width
+
+    story = _cover_items(
+        "임원용 1페이지 요약",
+        "이상감지 결과 · 추정 위험액 · 조치 사항",
+        context, T,
+    )
+
+    if coverage is None:
+        coverage = _build_coverage_dict(anomaly_df)
+
+    story += _exec_summary_story(anomaly_df, unit_df, cur_df, present, coverage, T, W)
+
+    doc.build(story, canvasmaker=_make_numbered_canvas(T))
+    return buf.getvalue()
+
+
 def generate_comprehensive_pdf(
     anomaly_df: pd.DataFrame | None = None,
     unit_df: pd.DataFrame | None = None,
@@ -1094,8 +1453,19 @@ def generate_comprehensive_pdf(
     cur_df: pd.DataFrame | None = None,
     present: list[str] | None = None,
     context: dict = None,
+    coverage: dict = None,
 ) -> bytes:
-    """Generate a single comprehensive PDF combining all analysis sections."""
+    """Generate a comprehensive PDF: exec summary → action table → analysis → appendix.
+
+    New structure (P1 redesign):
+      1. Cover
+      2. 1-page executive summary
+      3. Priority action table
+      4. Anomaly analysis
+      5. Cost analysis
+      6. Efficiency analysis
+      7. Data completeness / limitations
+    """
     buf = io.BytesIO()
     doc, T = _build_doc(buf, footer_left="종합 분석 보고서  ·  대외비")
     W = doc.width
@@ -1106,43 +1476,31 @@ def generate_comprehensive_pdf(
         context, T,
     )
 
-    # Executive brief on cover page
-    sections_included = []
-    brief_parts = []
-    if anomaly_df is not None and not anomaly_df.empty:
-        sections_included.append("이상감지 분석")
-        total = len(anomaly_df)
-        risk_counts = anomaly_df["risk_level"].value_counts().to_dict() if "risk_level" in anomaly_df.columns else {}
-        danger = risk_counts.get("🔴 위험", 0)
-        caution = risk_counts.get("🟠 주의", 0)
-        brief_parts.append(
-            f"전체 {total}개 브랜드 중 위험 {danger}개, 주의 {caution}개"
-        )
-    if (unit_df is not None and not unit_df.empty) or (elec_br_df is not None and not elec_br_df.empty):
-        sections_included.append("비용 분석")
-    if cur_df is not None and present:
-        sections_included.append("효율 분석")
+    if coverage is None:
+        coverage = _build_coverage_dict(anomaly_df,
+                                        has_billing=unit_df is not None,
+                                        has_elec=elec_br_df is not None)
 
-    if sections_included:
-        # Table of contents with visual flow
-        toc_items = " &nbsp;→&nbsp; ".join(
-            [f"<b>{s}</b>" for s in sections_included]
-        )
-        story += _callout_box(
-            f"<b>보고서 구성</b><br/>{toc_items}"
-            + (f"<br/><br/><b>핵심 요약</b>: {'. '.join(brief_parts)}." if brief_parts else ""),
-            T, W,
-        )
-        story.append(Spacer(1, 0.2 * cm))
+    # ── Section 1: Executive summary (always first) ───────────────────────
+    story += _exec_summary_story(anomaly_df, unit_df, cur_df, present, coverage, T, W)
+
+    # ── Section 2: Priority action table ──────────────────────────────────
+    if anomaly_df is not None and not anomaly_df.empty:
+        _, risk_brands = _estimate_risk_amount(anomaly_df, unit_df, cur_df)
+        action_table = _priority_action_table(anomaly_df, risk_brands, T, W)
+        if action_table:
+            story.append(PageBreak())
+            story += action_table
 
     has_content = False
 
-    # Section 1: Anomaly
+    # ── Section 3: Anomaly detail ─────────────────────────────────────────
     if anomaly_df is not None and not anomaly_df.empty:
         has_content = True
+        story.append(PageBreak())
         story += _anomaly_story(anomaly_df, T, W)
 
-    # Section 2: Cost analysis
+    # ── Section 4: Cost analysis ──────────────────────────────────────────
     cross = _cross_story(unit_df, elec_br_df, T, W)
     if cross:
         has_content = True
@@ -1151,7 +1509,7 @@ def generate_comprehensive_pdf(
         story.append(Spacer(1, 0.3 * cm))
         story += cross
 
-    # Section 3: Efficiency
+    # ── Section 5: Efficiency ─────────────────────────────────────────────
     if cur_df is not None and present:
         eff = _efficiency_story(cur_df, present, T, W)
         if eff:
@@ -1160,6 +1518,12 @@ def generate_comprehensive_pdf(
             story.append(_section_bar("── 효율 분석 ──", T, W))
             story.append(Spacer(1, 0.3 * cm))
             story += eff
+
+    # ── Section 6: Data completeness (appendix) ───────────────────────────
+    cov_section = _coverage_box(coverage, T, W)
+    if cov_section:
+        story.append(PageBreak())
+        story += cov_section
 
     if not has_content:
         story.append(Paragraph("분석 데이터를 불러올 수 없습니다.", T["body"]))

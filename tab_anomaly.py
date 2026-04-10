@@ -516,21 +516,22 @@ def _render_zero_change_period(
             _new_df = change_df[change_df["상태"] == "새로 미계량"]
             _rec_df = change_df[change_df["상태"] == "계량 복구"]
 
-            _c1, _c2 = st.columns(2)
-            with _c1:
-                if not _new_df.empty:
-                    st.markdown(f"**🔴 새로 미계량 — {len(_new_df)}건**")
-                    st.dataframe(
-                        _new_df[["브랜드", "유틸리티", "조치"]].reset_index(drop=True),
-                        hide_index=True, use_container_width=True,
-                    )
-            with _c2:
-                if not _rec_df.empty:
-                    st.markdown(f"**🟢 계량 복구 — {len(_rec_df)}건**")
-                    st.dataframe(
-                        _rec_df[["브랜드", "유틸리티", "조치"]].reset_index(drop=True),
-                        hide_index=True, use_container_width=True,
-                    )
+            with st.expander("📋 미계량 변화 상세", expanded=False):
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    if not _new_df.empty:
+                        st.markdown(f"**🔴 새로 미계량 — {len(_new_df)}건**")
+                        st.dataframe(
+                            _new_df[["브랜드", "유틸리티", "조치"]].reset_index(drop=True),
+                            hide_index=True, use_container_width=True,
+                        )
+                with _c2:
+                    if not _rec_df.empty:
+                        st.markdown(f"**🟢 계량 복구 — {len(_rec_df)}건**")
+                        st.dataframe(
+                            _rec_df[["브랜드", "유틸리티", "조치"]].reset_index(drop=True),
+                            hide_index=True, use_container_width=True,
+                        )
 
             # Correction tool
             with st.expander("✏️ 미계량 상태 보정", expanded=False):
@@ -848,180 +849,180 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
     _kpi_html += '</div>'
     st.markdown(_kpi_html, unsafe_allow_html=True)
 
-    # ── 1. All-utility overview: horizontal stacked bar ─────────────────────
-    _avail_pfx = [p for p in _UTIL_PREFIXES if f"{p}_spike_pct" in df.columns]
-    if len(_avail_pfx) >= 2:
-        _overview_df = df[df["spike_max_pct"] >= _SPIKE_MEDIUM].nlargest(
-            min(15, len(df)), "spike_max_pct"
-        ).copy()
-        if not _overview_df.empty:
-            _n_ov = len(_overview_df)
-            _ov_c1, _ov_c2 = st.columns([4, 1])
-            with _ov_c1:
-                st.markdown(f"**{_cmp_label} 대비 유틸리티별 급등 현황** — 상위 {_n_ov}개 브랜드")
-            with _ov_c2:
-                _ov_logy = st.checkbox("Log 스케일", key=f"spike_ov_logy{sfx}")
-            fig_ov = go.Figure()
-            _util_colors = {"water": "#4C72B0", "hwater": "#C44E52",
-                            "elect": "#DD8A00", "heat": "#E377C2"}
-            _dup_ov = set(_overview_df["brand"][_overview_df["brand"].duplicated(keep=False)]) if "building" in _overview_df.columns else set()
-            brands = [
-                f"{str(b)[:16]}({bldg})" if b in _dup_ov else str(b)[:20]
-                for b, bldg in zip(_overview_df["brand"], _overview_df.get("building", [""] * len(_overview_df)))
-            ]
-            for p in _avail_pfx:
-                col = f"{p}_spike_pct"
-                lbl = _UTIL_LABELS_UI.get(p, p)
-                vals = _overview_df[col].fillna(0).clip(lower=0).tolist()
-                fig_ov.add_trace(go.Bar(
-                    name=lbl, y=brands, x=vals,
-                    orientation="h",
-                    marker_color=_util_colors.get(p, "#888"),
-                    text=[f"{v:.0f}%" if v >= _SPIKE_MEDIUM else "" for v in vals],
-                    textposition="inside", textfont=dict(size=10, color="white"),
-                    insidetextanchor="middle",
-                    hovertemplate=f"<b>%{{y}}</b><br>{lbl}: %{{x:.1f}}%<extra></extra>",
-                ))
-            # Threshold lines
-            for lvl, clr, lbl in [
-                (_SPIKE_CRITICAL, "rgba(196,78,82,0.6)", f"급등 {_SPIKE_CRITICAL:.0f}%"),
-                (_SPIKE_HIGH, "rgba(221,138,0,0.6)", f"주의 {_SPIKE_HIGH:.0f}%"),
-            ]:
-                fig_ov.add_vline(x=lvl, line_dash="dot", line_color=clr, line_width=1.5,
-                                 annotation_text=lbl, annotation_position="top",
-                                 annotation_font_size=10, annotation_font_color=clr)
-            _ov_xaxis = dict(title="증가율 합계 (%)",
-                            gridcolor="rgba(128,128,128,0.15)", griddash="dot")
-            if _ov_logy:
-                _ov_xaxis["type"] = "log"
-            fig_ov.update_layout(
-                barmode="stack",
-                height=max(420, _n_ov * 36 + 100),
-                margin=dict(l=10, r=80, t=40, b=40),
-                xaxis=_ov_xaxis,
-                yaxis=dict(autorange="reversed", categoryorder="array",
-                           categoryarray=brands, tickfont=dict(size=11)),
-                legend=dict(orientation="h", y=1.06, x=0, font_size=12),
-                plot_bgcolor="rgba(0,0,0,0)",
-                bargap=0.25,
-            )
-            ev_ov = st.plotly_chart(fig_ov, use_container_width=True,
-                                    key=f"spike_overview{sfx}", on_select="rerun")
-            _handle_chart_click(ev_ov, _overview_df, field="y", match="contains", trunc=20)
+    with st.expander("📈 급등 시각화", expanded=False):
+        # ── 1. All-utility overview: horizontal stacked bar ─────────────────────
+        _avail_pfx = [p for p in _UTIL_PREFIXES if f"{p}_spike_pct" in df.columns]
+        if len(_avail_pfx) >= 2:
+            _overview_df = df[df["spike_max_pct"] >= _SPIKE_MEDIUM].nlargest(
+                min(15, len(df)), "spike_max_pct"
+            ).copy()
+            if not _overview_df.empty:
+                _n_ov = len(_overview_df)
+                _ov_c1, _ov_c2 = st.columns([4, 1])
+                with _ov_c1:
+                    st.markdown(f"**{_cmp_label} 대비 유틸리티별 급등 현황** — 상위 {_n_ov}개 브랜드")
+                with _ov_c2:
+                    _ov_logy = st.checkbox("Log 스케일", key=f"spike_ov_logy{sfx}")
+                fig_ov = go.Figure()
+                _util_colors = {"water": "#4C72B0", "hwater": "#C44E52",
+                                "elect": "#DD8A00", "heat": "#E377C2"}
+                _dup_ov = set(_overview_df["brand"][_overview_df["brand"].duplicated(keep=False)]) if "building" in _overview_df.columns else set()
+                brands = [
+                    f"{str(b)[:16]}({bldg})" if b in _dup_ov else str(b)[:20]
+                    for b, bldg in zip(_overview_df["brand"], _overview_df.get("building", [""] * len(_overview_df)))
+                ]
+                for p in _avail_pfx:
+                    col = f"{p}_spike_pct"
+                    lbl = _UTIL_LABELS_UI.get(p, p)
+                    vals = _overview_df[col].fillna(0).clip(lower=0).tolist()
+                    fig_ov.add_trace(go.Bar(
+                        name=lbl, y=brands, x=vals,
+                        orientation="h",
+                        marker_color=_util_colors.get(p, "#888"),
+                        text=[f"{v:.0f}%" if v >= _SPIKE_MEDIUM else "" for v in vals],
+                        textposition="inside", textfont=dict(size=10, color="white"),
+                        insidetextanchor="middle",
+                        hovertemplate=f"<b>%{{y}}</b><br>{lbl}: %{{x:.1f}}%<extra></extra>",
+                    ))
+                # Threshold lines
+                for lvl, clr, lbl in [
+                    (_SPIKE_CRITICAL, "rgba(196,78,82,0.6)", f"급등 {_SPIKE_CRITICAL:.0f}%"),
+                    (_SPIKE_HIGH, "rgba(221,138,0,0.6)", f"주의 {_SPIKE_HIGH:.0f}%"),
+                ]:
+                    fig_ov.add_vline(x=lvl, line_dash="dot", line_color=clr, line_width=1.5,
+                                     annotation_text=lbl, annotation_position="top",
+                                     annotation_font_size=10, annotation_font_color=clr)
+                _ov_xaxis = dict(title="증가율 합계 (%)",
+                                gridcolor="rgba(128,128,128,0.15)", griddash="dot")
+                if _ov_logy:
+                    _ov_xaxis["type"] = "log"
+                fig_ov.update_layout(
+                    barmode="stack",
+                    height=max(420, _n_ov * 36 + 100),
+                    margin=dict(l=10, r=80, t=40, b=40),
+                    xaxis=_ov_xaxis,
+                    yaxis=dict(autorange="reversed", categoryorder="array",
+                               categoryarray=brands, tickfont=dict(size=11)),
+                    legend=dict(orientation="h", y=1.06, x=0, font_size=12),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    bargap=0.25,
+                )
+                ev_ov = st.plotly_chart(fig_ov, use_container_width=True,
+                                        key=f"spike_overview{sfx}", on_select="rerun")
+                _handle_chart_click(ev_ov, _overview_df, field="y", match="contains", trunc=20)
 
-    # ── 2. Spike severity distribution (donut + scatter) ──────────────────────
-    _viz1, _viz2 = st.columns([1, 2])
-    with _viz1:
-        st.markdown(f"**등급 분포**")
-        fig_donut = go.Figure(go.Pie(
-            labels=[k[0] for k in _kpi_items],
-            values=[k[1] for k in _kpi_items],
-            marker_colors=[k[2] for k in _kpi_items],
-            hole=0.55,
-            textinfo="value+percent",
-            textfont_size=11,
-            sort=False,
-        ))
-        fig_donut.update_layout(
-            height=300, margin=dict(t=10, b=10, l=10, r=10),
-            showlegend=False,
-            annotations=[dict(
-                text=f"<b>{n_critical + n_high}</b><br>위험",
-                x=0.5, y=0.5, font_size=16, showarrow=False,
-                font_color="#C44E52" if n_critical > 0 else "#DD8A00",
-            )],
-        )
-        st.plotly_chart(fig_donut, use_container_width=True, key=f"spike_donut{sfx}")
-
-    with _viz2:
-        # Scatter: max spike pct vs peer ratio (bubble = brand)
-        if "spike_peer_ratio" in df.columns:
-            _sc_c1, _sc_c2 = st.columns([4, 1])
-            with _sc_c1:
-                st.markdown(f"**급등율 vs 건물 대비 배수** — 우상단이 가장 위험")
-            with _sc_c2:
-                _scat_logy = st.checkbox("Log 스케일", key=f"spike_scat_logy{sfx}")
-            _scat_df = df[df["spike_max_pct"] > 0].copy()
-            _scat_df["_label"] = _scat_df["brand"].astype(str).str[:15]
-            _scat_df["_color"] = _scat_df["spike_max_pct"].apply(
-                lambda v: "#C44E52" if v >= _SPIKE_CRITICAL
-                else "#DD8A00" if v >= _SPIKE_HIGH
-                else "#F0C040" if v >= _SPIKE_MEDIUM
-                else "#2ca02c"
+        # ── 2. Spike severity distribution (donut + scatter) ──────────────────────
+        _viz1, _viz2 = st.columns([1, 2])
+        with _viz1:
+            st.markdown(f"**등급 분포**")
+            fig_donut = go.Figure(go.Pie(
+                labels=[k[0] for k in _kpi_items],
+                values=[k[1] for k in _kpi_items],
+                marker_colors=[k[2] for k in _kpi_items],
+                hole=0.55,
+                textinfo="value+percent",
+                textfont_size=11,
+                sort=False,
+            ))
+            fig_donut.update_layout(
+                height=300, margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                annotations=[dict(
+                    text=f"<b>{n_critical + n_high}</b><br>위험",
+                    x=0.5, y=0.5, font_size=16, showarrow=False,
+                    font_color="#C44E52" if n_critical > 0 else "#DD8A00",
+                )],
             )
-            fig_scat = go.Figure()
-            for _, _row in _scat_df.iterrows():
-                fig_scat.add_trace(go.Scatter(
-                    x=[_row["spike_max_pct"]],
-                    y=[_row["spike_peer_ratio"] if pd.notna(_row["spike_peer_ratio"]) else 1],
-                    mode="markers",
-                    marker=dict(
-                        size=10, color=_row["_color"],
-                        line=dict(width=1, color="white"),
+            st.plotly_chart(fig_donut, use_container_width=True, key=f"spike_donut{sfx}")
+
+        with _viz2:
+            # Scatter: max spike pct vs peer ratio (bubble = brand)
+            if "spike_peer_ratio" in df.columns:
+                _sc_c1, _sc_c2 = st.columns([4, 1])
+                with _sc_c1:
+                    st.markdown(f"**급등율 vs 건물 대비 배수** — 우상단이 가장 위험")
+                with _sc_c2:
+                    _scat_logy = st.checkbox("Log 스케일", key=f"spike_scat_logy{sfx}")
+                _scat_df = df[df["spike_max_pct"] > 0].copy()
+                _scat_df["_label"] = _scat_df["brand"].astype(str).str[:15]
+                _scat_df["_color"] = _scat_df["spike_max_pct"].apply(
+                    lambda v: "#C44E52" if v >= _SPIKE_CRITICAL
+                    else "#DD8A00" if v >= _SPIKE_HIGH
+                    else "#F0C040" if v >= _SPIKE_MEDIUM
+                    else "#2ca02c"
+                )
+                fig_scat = go.Figure()
+                for _, _row in _scat_df.iterrows():
+                    fig_scat.add_trace(go.Scatter(
+                        x=[_row["spike_max_pct"]],
+                        y=[_row["spike_peer_ratio"] if pd.notna(_row["spike_peer_ratio"]) else 1],
+                        mode="markers",
+                        marker=dict(
+                            size=10, color=_row["_color"],
+                            line=dict(width=1, color="white"),
+                        ),
+                        name=_row["_label"],
+                        hovertemplate=(
+                            f"<b>{_row['_label']}</b><br>"
+                            f"{_cmp_label} 대비: %{{x:.1f}}%<br>"
+                            "vs건물: %{y:.1f}x<extra></extra>"
+                        ),
+                    ))
+                # Danger zone shading — use yref/xref="paper" (0–1) for far edge
+                # so shapes don't pin the axis range when legend items are toggled
+                fig_scat.add_shape(
+                    type="rect", x0=_SPIKE_CRITICAL, x1=1, y0=0, y1=1,
+                    xref="x", yref="paper",
+                    fillcolor="rgba(196,78,82,0.03)", line_width=0, layer="below",
+                )
+                fig_scat.add_shape(
+                    type="rect", x0=0, x1=1, y0=2, y1=1,
+                    xref="paper", yref="y",
+                    fillcolor="rgba(196,78,82,0.03)", line_width=0, layer="below",
+                )
+                fig_scat.add_hline(y=2, line_dash="dot", line_color="rgba(196,78,82,0.3)",
+                                   annotation_text="동종 2배", annotation_position="right",
+                                   annotation_font_size=9)
+                fig_scat.add_vline(x=_SPIKE_HIGH, line_dash="dot", line_color="rgba(221,138,0,0.3)")
+                fig_scat.update_layout(
+                    height=400,
+                    xaxis=dict(title=f"{_cmp_label} 대비 최대 증가율 (%)",
+                               gridcolor="rgba(128,128,128,0.15)", griddash="dot",
+                               **({"type": "log"} if _scat_logy else {})),
+                    yaxis=dict(title="건물 평균 대비 (배수)",
+                               gridcolor="rgba(128,128,128,0.15)", griddash="dot",
+                               **({"type": "log"} if _scat_logy else {})),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    margin=dict(t=10, b=40, l=50, r=20),
+                    showlegend=True,
+                    legend=dict(
+                        font_size=10,
+                        itemsizing="constant",
+                        orientation="v",
+                        yanchor="top", y=1,
+                        xanchor="left", x=1.02,
                     ),
-                    name=_row["_label"],
-                    hovertemplate=(
-                        f"<b>{_row['_label']}</b><br>"
-                        f"{_cmp_label} 대비: %{{x:.1f}}%<br>"
-                        "vs건물: %{y:.1f}x<extra></extra>"
-                    ),
-                ))
-            # Danger zone shading — use yref/xref="paper" (0–1) for far edge
-            # so shapes don't pin the axis range when legend items are toggled
-            fig_scat.add_shape(
-                type="rect", x0=_SPIKE_CRITICAL, x1=1, y0=0, y1=1,
-                xref="x", yref="paper",
-                fillcolor="rgba(196,78,82,0.03)", line_width=0, layer="below",
-            )
-            fig_scat.add_shape(
-                type="rect", x0=0, x1=1, y0=2, y1=1,
-                xref="paper", yref="y",
-                fillcolor="rgba(196,78,82,0.03)", line_width=0, layer="below",
-            )
-            fig_scat.add_hline(y=2, line_dash="dot", line_color="rgba(196,78,82,0.3)",
-                               annotation_text="동종 2배", annotation_position="right",
-                               annotation_font_size=9)
-            fig_scat.add_vline(x=_SPIKE_HIGH, line_dash="dot", line_color="rgba(221,138,0,0.3)")
-            fig_scat.update_layout(
-                height=400,
-                xaxis=dict(title=f"{_cmp_label} 대비 최대 증가율 (%)",
-                           gridcolor="rgba(128,128,128,0.15)", griddash="dot",
-                           **({"type": "log"} if _scat_logy else {})),
-                yaxis=dict(title="건물 평균 대비 (배수)",
-                           gridcolor="rgba(128,128,128,0.15)", griddash="dot",
-                           **({"type": "log"} if _scat_logy else {})),
-                plot_bgcolor="rgba(0,0,0,0)",
-                margin=dict(t=10, b=40, l=50, r=20),
-                showlegend=True,
-                legend=dict(
-                    font_size=10,
-                    itemsizing="constant",
-                    orientation="v",
-                    yanchor="top", y=1,
-                    xanchor="left", x=1.02,
-                ),
-            )
-            st.plotly_chart(fig_scat, use_container_width=True, key=f"spike_scatter{sfx}")
-        else:
-            st.markdown(f"**유틸리티별 급등 분포**")
-            # Fallback: box plot per utility
-            _box_data = []
-            for p in _avail_pfx:
-                col = f"{p}_spike_pct"
-                for _, r in df.iterrows():
-                    v = r.get(col)
-                    if pd.notna(v) and v != 0:
-                        _box_data.append({"유틸리티": _UTIL_LABELS_UI.get(p, p), "증가율": float(v)})
-            if _box_data:
-                _box_df = pd.DataFrame(_box_data)
-                fig_box = px.box(_box_df, x="유틸리티", y="증가율",
-                                 color="유틸리티", points="outliers")
-                fig_box.add_hline(y=_SPIKE_HIGH, line_dash="dot", line_color="#DD8A00")
-                fig_box.update_layout(height=300, plot_bgcolor="rgba(0,0,0,0)",
-                                      margin=dict(t=10, b=30), showlegend=False)
-                st.plotly_chart(fig_box, use_container_width=True, key=f"spike_box{sfx}")
+                )
+                st.plotly_chart(fig_scat, use_container_width=True, key=f"spike_scatter{sfx}")
+            else:
+                st.markdown(f"**유틸리티별 급등 분포**")
+                # Fallback: box plot per utility
+                _box_data = []
+                for p in _avail_pfx:
+                    col = f"{p}_spike_pct"
+                    for _, r in df.iterrows():
+                        v = r.get(col)
+                        if pd.notna(v) and v != 0:
+                            _box_data.append({"유틸리티": _UTIL_LABELS_UI.get(p, p), "증가율": float(v)})
+                if _box_data:
+                    _box_df = pd.DataFrame(_box_data)
+                    fig_box = px.box(_box_df, x="유틸리티", y="증가율",
+                                     color="유틸리티", points="outliers")
+                    fig_box.add_hline(y=_SPIKE_HIGH, line_dash="dot", line_color="#DD8A00")
+                    fig_box.update_layout(height=300, plot_bgcolor="rgba(0,0,0,0)",
+                                          margin=dict(t=10, b=30), showlegend=False)
+                    st.plotly_chart(fig_box, use_container_width=True, key=f"spike_box{sfx}")
 
-    st.divider()
 
     # ── 3. Spike brands table (with peer context) ─────────────────────────────
     spike_df = df[df["spike_max_pct"] >= thresh].copy()
@@ -1086,72 +1087,72 @@ def _render_spike_tab(df: pd.DataFrame, split_by_building: bool,
                 f"누수·설비 이상·계량 오류 여부를 확인하세요."
             )
 
-    # ── 4. Per-utility deep dive ──────────────────────────────────────────────
-    st.divider()
-    util_sel = st.selectbox(
-        f"유틸리티별 상세 분석",
-        [p for p in _UTIL_PREFIXES if f"{p}_spike_pct" in df.columns],
-        format_func=lambda p: _UTIL_LABELS_UI.get(p, p),
-        key=f"spike_util_sel{sfx}",
-    )
-    pct_col = f"{util_sel}_spike_pct"
-    flag_col = f"{util_sel}_spike_flag"
-
-    chart_df = df[["brand"] + [c for c in ["building", pct_col, flag_col] if c in df.columns]].copy()
-    chart_df = chart_df[chart_df[pct_col].notna()].sort_values(pct_col, ascending=False).head(50)
-
-    color_col = "building" if split_by_building and "building" in chart_df.columns else None
-
-    # Color bars by severity level
-    if color_col is None:
-        chart_df["_severity"] = chart_df[pct_col].apply(
-            lambda v: "🔴 급등" if v >= _SPIKE_CRITICAL
-            else "🟠 주의" if v >= _SPIKE_HIGH
-            else "🟡 관찰" if v >= _SPIKE_MEDIUM
-            else "정상"
+    with st.expander("🔍 유틸리티별 상세", expanded=False):
+        util_sel = st.selectbox(
+            f"유틸리티별 상세 분석",
+            [p for p in _UTIL_PREFIXES if f"{p}_spike_pct" in df.columns],
+            format_func=lambda p: _UTIL_LABELS_UI.get(p, p),
+            key=f"spike_util_sel{sfx}",
         )
-        _sev_color_map = {"🔴 급등": "#C44E52", "🟠 주의": "#DD8A00",
-                          "🟡 관찰": "#F0C040", "정상": "#4C72B0"}
-        fig = px.bar(
-            chart_df, x="brand", y=pct_col,
-            color="_severity", color_discrete_map=_sev_color_map,
-            title=f"{_UTIL_LABELS_UI.get(util_sel, util_sel)} {_cmp_label} 대비 증가율 (%) — 상위 50개",
-            labels={pct_col: "증가율 (%)", "brand": "브랜드", "_severity": "등급"},
-            log_y=_logy,
-        )
-    else:
-        fig = px.bar(
-            chart_df, x="brand", y=pct_col,
-            color=color_col, color_discrete_map=_BLDG_COLOR,
-            title=f"{_UTIL_LABELS_UI.get(util_sel, util_sel)} {_cmp_label} 대비 증가율 (%) — 상위 50개",
-            labels={pct_col: "증가율 (%)", "brand": "브랜드"},
-            log_y=_logy,
-        )
+        pct_col = f"{util_sel}_spike_pct"
+        flag_col = f"{util_sel}_spike_flag"
 
-    for lvl, color, label in [
-        (_SPIKE_CRITICAL, "#C44E52", f"급등 {_SPIKE_CRITICAL:.0f}%"),
-        (_SPIKE_HIGH,     "#DD8A00", f"주의 {_SPIKE_HIGH:.0f}%"),
-        (_SPIKE_MEDIUM,   "#F0C040", f"관찰 {_SPIKE_MEDIUM:.0f}%"),
-    ]:
-        fig.add_hline(y=lvl, line_dash="dot", line_color=color,
-                      annotation_text=label, annotation_position="top right",
-                      annotation_font_size=9)
-    _raw_pcts = df[pct_col].clip(lower=0).fillna(0)
-    _overall_avg = float(_raw_pcts.mean())
-    if _overall_avg > 0:
-        fig.add_hline(y=_overall_avg, line_dash="dash", line_color="#4C72B0", line_width=2,
-                      annotation_text=f"전체 평균 {_overall_avg:.0f}%",
-                      annotation_position="bottom right",
-                      annotation_font_color="#4C72B0",
-                      annotation_font_size=9)
-    fig.update_layout(
-        height=420, xaxis_tickangle=-45,
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=55, b=90, l=50, r=20),
-        legend=dict(orientation="h", y=1.08, x=0),
-    )
-    ev = st.plotly_chart(fig, use_container_width=True, key=f"anom_spike_bar{sfx}", on_select="rerun")
-    _handle_chart_click(ev, chart_df, field="x")
+        chart_df = df[["brand"] + [c for c in ["building", pct_col, flag_col] if c in df.columns]].copy()
+        chart_df = chart_df[chart_df[pct_col].notna()].sort_values(pct_col, ascending=False).head(50)
+
+        color_col = "building" if split_by_building and "building" in chart_df.columns else None
+
+        # Color bars by severity level
+        if color_col is None:
+            chart_df["_severity"] = chart_df[pct_col].apply(
+                lambda v: "🔴 급등" if v >= _SPIKE_CRITICAL
+                else "🟠 주의" if v >= _SPIKE_HIGH
+                else "🟡 관찰" if v >= _SPIKE_MEDIUM
+                else "정상"
+            )
+            _sev_color_map = {"🔴 급등": "#C44E52", "🟠 주의": "#DD8A00",
+                              "🟡 관찰": "#F0C040", "정상": "#4C72B0"}
+            fig = px.bar(
+                chart_df, x="brand", y=pct_col,
+                color="_severity", color_discrete_map=_sev_color_map,
+                title=f"{_UTIL_LABELS_UI.get(util_sel, util_sel)} {_cmp_label} 대비 증가율 (%) — 상위 50개",
+                labels={pct_col: "증가율 (%)", "brand": "브랜드", "_severity": "등급"},
+                log_y=_logy,
+            )
+        else:
+            fig = px.bar(
+                chart_df, x="brand", y=pct_col,
+                color=color_col, color_discrete_map=_BLDG_COLOR,
+                title=f"{_UTIL_LABELS_UI.get(util_sel, util_sel)} {_cmp_label} 대비 증가율 (%) — 상위 50개",
+                labels={pct_col: "증가율 (%)", "brand": "브랜드"},
+                log_y=_logy,
+            )
+
+        for lvl, color, label in [
+            (_SPIKE_CRITICAL, "#C44E52", f"급등 {_SPIKE_CRITICAL:.0f}%"),
+            (_SPIKE_HIGH,     "#DD8A00", f"주의 {_SPIKE_HIGH:.0f}%"),
+            (_SPIKE_MEDIUM,   "#F0C040", f"관찰 {_SPIKE_MEDIUM:.0f}%"),
+        ]:
+            fig.add_hline(y=lvl, line_dash="dot", line_color=color,
+                          annotation_text=label, annotation_position="top right",
+                          annotation_font_size=9)
+        _raw_pcts = df[pct_col].clip(lower=0).fillna(0)
+        _overall_avg = float(_raw_pcts.mean())
+        if _overall_avg > 0:
+            fig.add_hline(y=_overall_avg, line_dash="dash", line_color="#4C72B0", line_width=2,
+                          annotation_text=f"전체 평균 {_overall_avg:.0f}%",
+                          annotation_position="bottom right",
+                          annotation_font_color="#4C72B0",
+                          annotation_font_size=9)
+        fig.update_layout(
+            height=420, xaxis_tickangle=-45,
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(t=55, b=90, l=50, r=20),
+            legend=dict(orientation="h", y=1.08, x=0),
+        )
+        ev = st.plotly_chart(fig, use_container_width=True, key=f"anom_spike_bar{sfx}", on_select="rerun")
+        _handle_chart_click(ev, chart_df, field="x")
+
 
 
 # ── Tab: 데이터 품질 (consolidated) ──────────────────────────────────────────
@@ -1605,19 +1606,20 @@ def _render_reconciliation_body(
                     f'border-radius:10px;font-size:0.82em;white-space:nowrap">'
                     f'{sheet}</span>')
 
+        from utils import esc as _esc
         trs = []
         for item in inconsistencies:
             by_variant: dict[str, list[str]] = {}
             for sheet, raw in item["variants"].items():
                 by_variant.setdefault(raw, []).append(sheet)
             parts = [
-                f'{variant} {" ".join(_badge(sh) for sh in sheets)}'
+                f'{_esc(variant)} {" ".join(_badge(sh) for sh in sheets)}'
                 for variant, sheets in by_variant.items()
             ]
             detail = "<br>".join(parts)
             trs.append(
                 f'<tr style="border-bottom:1px solid #eee">'
-                f'<td style="padding:5px;vertical-align:top">{item["normalized"]}</td>'
+                f'<td style="padding:5px;vertical-align:top">{_esc(item["normalized"])}</td>'
                 f'<td style="padding:5px">{detail}</td></tr>'
             )
         html = (
@@ -1898,6 +1900,83 @@ def render_anomaly_tab(
 
     has_billing = BILLING_SHEET_NAME in sheets
     has_elec    = ELECTRICITY_SHEET_NAME in sheets
+    has_water   = WATER_SHEET_NAME in sheets
+    has_hotwater = HOTWATER_SHEET_NAME in sheets
+    has_mom     = any(f"{p}_pct" in anomaly_df.columns and anomaly_df[f"{p}_pct"].notna().any()
+                      for p in _UTIL_PREFIXES)
+
+    # ── Analysis capability banner ───────────────────────────────────────
+    from utils import esc as _esc_banner
+    _cap_items = [
+        ("검침",   True,        None),
+        ("청구",   has_billing,  None),
+        ("전기",   has_elec,     None),
+        ("수도",   has_water,    None),
+        ("온수",   has_hotwater, None),
+    ]
+    _feat_items = [
+        ("급등 감지",  has_mom,     "전월 파일 미업로드" if not has_mom else None),
+        ("단가 분석",  has_billing,  "청구 시트 없음"     if not has_billing else None),
+        ("HVAC 분석", has_elec,     "전기 시트 없음"     if not has_elec else None),
+    ]
+    _sheet_html = " ".join(
+        f'<span style="background:{"#2ca02c" if ok else "#C44E52"}18;'
+        f'color:{"#2ca02c" if ok else "#C44E52"};border:1px solid {"#2ca02c" if ok else "#C44E52"}30;'
+        f'border-radius:8px;padding:2px 8px;font-size:0.78rem;font-weight:600">'
+        f'{"✅" if ok else "❌"} {_esc_banner(lbl)}</span>'
+        for lbl, ok, _ in _cap_items
+    )
+    _feat_html = " ".join(
+        f'<span style="background:{"#2ca02c" if ok else "#DD8A00"}18;'
+        f'color:{"#2ca02c" if ok else "#DD8A00"};border:1px solid {"#2ca02c" if ok else "#DD8A00"}30;'
+        f'border-radius:8px;padding:2px 8px;font-size:0.78rem;font-weight:600">'
+        f'{"✅" if ok else "⚠"} {_esc_banner(lbl)}'
+        f'{"" if ok else " — " + _esc_banner(reason or "")}'
+        f'</span>'
+        for lbl, ok, reason in _feat_items
+    )
+    # Calculate effective weight info for degraded mode
+    _inactive = []
+    if not has_mom:
+        _inactive.append("급등(40%)")
+    if not has_mom:
+        _inactive.append("사분면(25%)")
+    if not has_billing:
+        _inactive.append("단가(20%)")
+    if not has_elec:
+        _inactive.append("HVAC(5%)")
+    _weight_note = ""
+    if _inactive:
+        _weight_note = (
+            f'<div style="font-size:0.76rem;color:inherit;opacity:0.55;margin-top:6px">'
+            f'ℹ 비활성 차원: {", ".join(_inactive)} → 나머지 차원에 가중치 재분배됨</div>'
+        )
+    # Join coverage alert
+    _unmatched = anomaly_df.attrs.get("_cost_unmatched", [])
+    _coverage = anomaly_df.attrs.get("_cost_coverage", 1.0)
+    _join_note = ""
+    if _unmatched:
+        n_um = len(_unmatched)
+        _samples = ", ".join(str(u) for u in _unmatched[:5])
+        if n_um > 5:
+            _samples += f" 외 {n_um - 5}건"
+        _join_note = (
+            f'<div style="font-size:0.76rem;color:#DD8A00;margin-top:6px">'
+            f'⚠ 청구 매칭 실패 {n_um}건 (단가 분석 제외): {_esc_banner(_samples)}'
+            f'</div>'
+        )
+    _weight_note += _join_note
+    st.markdown(
+        f'<div style="border:1px solid rgba(128,128,128,0.2);border-radius:10px;'
+        f'padding:10px 14px;margin-bottom:10px">'
+        f'<div style="font-size:0.78rem;font-weight:700;color:inherit;opacity:0.6;margin-bottom:6px">'
+        f'📂 분석 데이터 현황</div>'
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">{_sheet_html}</div>'
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap">{_feat_html}</div>'
+        f'{_weight_note}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     # ── Data quality warning ─────────────────────────────────────────────
     from data import to_numeric_series as _tns_dqw
@@ -1947,7 +2026,7 @@ def render_anomaly_tab(
             unsafe_allow_html=True,
         )
 
-    # ── 0. Overall trend — context first ────────────────────────────────
+    # ── 0. Overall trend — context ───────────────────────────────────────
     _render_overall_trend(anomaly_df, sheets=sheets)
 
     # ── 0b. KPI row ──────────────────────────────────────────────────────
@@ -1966,15 +2045,6 @@ def render_anomaly_tab(
             "복합 이상 점수는 사용량 급등, 단가 이상, 사분면 분류, HVAC 강도, 미계량 여부를 종합한 지표입니다. "
             "점수가 높을수록 빌링 오류 또는 설비 이상 가능성이 높으며, 상위 브랜드부터 조사를 권장합니다."
         )
-
-        _n = st.slider("표시 브랜드 수", 10, len(anomaly_df),
-                       min(20, len(anomaly_df)), key="anom_n")
-
-        _col_bar, _col_heat = st.columns(2)
-        with _col_bar:
-            _render_composite_bar(anomaly_df, _n, split_by_building)
-        with _col_heat:
-            _render_heatmap(anomaly_df, _n)
 
         id_cols    = [c for c in ["brand", "building", "floor"] if c in anomaly_df.columns]
         reason_col = ["reason"] if "reason" in anomaly_df.columns else []
@@ -2007,6 +2077,16 @@ def render_anomaly_tab(
             use_container_width=True,
         )
         download_df_as_excel(master_view, filename="anomaly_investigation.xlsx", sheet_name="조사대상")
+
+        with st.expander("📊 이상 점수 시각화", expanded=False):
+            _n = st.slider("표시 브랜드 수", 10, len(anomaly_df),
+                           min(20, len(anomaly_df)), key="anom_n")
+
+            _col_bar, _col_heat = st.columns(2)
+            with _col_bar:
+                _render_composite_bar(anomaly_df, _n, split_by_building)
+            with _col_heat:
+                _render_heatmap(anomaly_df, _n)
 
     with tab_spike:
         # Two comparison modes: 전월 대비 (MoM) and 작년동월 대비 (YoY)

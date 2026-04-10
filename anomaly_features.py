@@ -333,8 +333,10 @@ def _add_cost_signals(df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.DataFram
     """
     try:
         unit_df = build_unit_costs(df, billing_df)
-    except Exception:
-        return df.assign(cost_score=0.0, _cost_available=False)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Cost analysis failed: %s", e)
+        return df.assign(cost_score=np.nan, _cost_available=False)
 
     join_cols = ["brand", "building"] if "building" in df.columns else ["brand"]
     cost_cols = [c for c in [
@@ -358,6 +360,10 @@ def _add_cost_signals(df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.DataFram
     else:
         merged["cost_score"] = 0.0
     merged["_cost_available"] = True
+    # Propagate join coverage metadata
+    if hasattr(unit_df, "attrs"):
+        merged.attrs["_cost_unmatched"] = unit_df.attrs.get("_unmatched_brands", [])
+        merged.attrs["_cost_coverage"] = unit_df.attrs.get("_join_coverage", 1.0)
     return merged
 
 
@@ -371,8 +377,10 @@ def _add_hvac_signals(df: pd.DataFrame, elec_df: pd.DataFrame) -> pd.DataFrame:
     """
     try:
         elec_br = build_elec_breakdown(elec_df, meter_df=df)
-    except Exception:
-        return df.assign(hvac_score=0.0, _hvac_available=False)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("HVAC analysis failed: %s", e)
+        return df.assign(hvac_score=np.nan, _hvac_available=False)
 
     join_cols = ["brand", "building"] if "building" in df.columns else ["brand"]
     hvac_cols = [c for c in [
@@ -548,7 +556,18 @@ def build_anomaly_df(
     available_dims = {}
     _cost_avail = df["_cost_available"].any() if "_cost_available" in df.columns else True
     _hvac_avail = df["_hvac_available"].any() if "_hvac_available" in df.columns else True
+    # Spike is unavailable when no MoM change columns exist (single-file upload)
+    _spike_avail = df["spike_score"].gt(0).any() if "spike_score" in df.columns else False
+    # Consumption quadrants need change columns too
+    _consumption_avail = any(
+        f"{pfx}_change" in df.columns and df[f"{pfx}_change"].notna().any()
+        for pfx in _UTIL_PREFIXES
+    )
     for k, v in _WEIGHTS.items():
+        if k == "spike_score" and not _spike_avail:
+            continue  # no MoM data — exclude from weighting
+        if k == "consumption_score" and not _consumption_avail:
+            continue  # no change data — quadrants are all "No Data"
         if k == "cost_score" and not _cost_avail:
             continue  # billing sheet not loaded — exclude from weighting
         if k == "hvac_score" and not _hvac_avail:
@@ -575,4 +594,11 @@ def build_anomaly_df(
         return RISK_NORMAL
 
     df["risk_level"] = df["composite_score"].map(_risk)
-    return df.sort_values("composite_score", ascending=False).reset_index(drop=True)
+
+    # Propagate join-coverage metadata for UI display
+    result = df.sort_values("composite_score", ascending=False).reset_index(drop=True)
+    result.attrs["_cost_unmatched"] = df.attrs.get("_cost_unmatched", [])
+    result.attrs["_cost_coverage"] = df.attrs.get("_cost_coverage", 1.0)
+    result.attrs["_available_dims"] = list(available_dims.keys())
+    result.attrs["_excluded_dims"] = [k for k in _WEIGHTS if k not in available_dims]
+    return result

@@ -26,7 +26,7 @@ from report import (
     C_BLUE, C_CRITICAL, C_DIVIDER, C_LIGHT, C_NAVY, C_STABLE, C_WHITE,
     M_BAR, M_CRITICAL,
     _ensure_fonts, _make_numbered_canvas, _make_page_template,
-    _make_styles, _png, _section_bar, _FONT_REG,
+    _make_styles, _png, _section_bar, get_report_font_paths,
 )
 
 _PALETTE = ["#4C72B0", "#DD8A00", "#C44E52", "#55A868", "#8172B2", "#937860"]

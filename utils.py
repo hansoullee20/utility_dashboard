@@ -1,6 +1,14 @@
 """utils.py — Shared constants and helpers used across all view modules."""
+import html as _html_mod
 import numpy as np
 import pandas as pd
+
+
+def esc(val) -> str:
+    """HTML-escape a value for safe interpolation into st.markdown(unsafe_allow_html=True)."""
+    if val is None:
+        return ""
+    return _html_mod.escape(str(val))
 
 
 def display_brand(df: pd.DataFrame) -> pd.DataFrame:

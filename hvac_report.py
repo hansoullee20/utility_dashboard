@@ -25,8 +25,13 @@ from report import (
     C_BLUE, C_DIVIDER, C_LIGHT, C_NAVY, C_WHITE,
     M_BAR, M_CRITICAL,
     _ensure_fonts, _make_numbered_canvas, _make_page_template,
-    _make_styles, _png, _section_bar, _FONT_REG,
+    _make_styles, _png, _section_bar, get_report_font_paths,
 )
+
+
+def _report_font(size):
+    font_reg, _ = get_report_font_paths()
+    return _FontProperties(fname=font_reg, size=size)
 
 _C_BASE  = "#9B59B6"
 _C_USAGE = "#27AE60"
@@ -197,7 +202,7 @@ def _chart_stacked_hbar(agg, base_col, usage_fee_col, comm_fee_col, fee_col,
     ax.tick_params(axis="y", length=0)
     ax.grid(axis="x", color="#DDDDDD", linewidth=0.5, linestyle="--")
     ax.set_facecolor("white")
-    ax.legend(prop=_FontProperties(fname=_FONT_REG, size=9),
+    ax.legend(prop=_report_font(9),
               loc="lower right", framealpha=0.9)
     fig.tight_layout(pad=0.8)
     return _png_from_fig(fig)
@@ -262,7 +267,7 @@ def _chart_hbar_single(series, title, unit, color=M_BAR, top_n=25, iqr_fence=Non
     ax.grid(axis="x", color="#DDDDDD", linewidth=0.5, linestyle="--")
     ax.set_facecolor("white")
     if avg > 0 or iqr_fence:
-        ax.legend(prop=_FontProperties(fname=_FONT_REG, size=8), framealpha=0.9)
+        ax.legend(prop=_report_font(8), framealpha=0.9)
     fig.tight_layout(pad=0.8)
     return _png_from_fig(fig)
 
@@ -290,7 +295,7 @@ def _chart_scatter(x_s, y_s, xlabel, ylabel, title, ko=True):
         ax.spines[sp].set_visible(False)
     ax.grid(color="#DDDDDD", linewidth=0.5, linestyle="--")
     ax.set_facecolor("white")
-    ax.legend(prop=_FontProperties(fname=_FONT_REG, size=9), framealpha=0.9)
+    ax.legend(prop=_report_font(9), framealpha=0.9)
     fig.tight_layout(pad=0.8)
     return _png_from_fig(fig)
 

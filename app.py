@@ -147,6 +147,7 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
     from biz_report import (
         generate_anomaly_pdf, generate_cross_pdf, generate_efficiency_pdf,
         generate_comprehensive_pdf, generate_insight_pdf,
+        generate_exec_summary_pdf, _build_coverage_dict,
     )
     from report import generate_report_pdf
 
@@ -201,6 +202,25 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
         except Exception as e:
             st.warning(f"전기 분석 데이터 생성 실패: {e}")
 
+    # Build coverage dict for reports that need it
+    _cov = _build_coverage_dict(
+        anomaly_df=anomaly_df,
+        has_billing=billing_df is not None,
+        has_elec=elec_df is not None,
+        has_water=sheets.get(WATER_SHEET_NAME) is not None,
+        has_hotwater=sheets.get(HOTWATER_SHEET_NAME) is not None,
+        has_mom=(cur_df is not None and any(
+            f"{p}_pct" in cur_df.columns for p in ["water", "hwater", "elect", "heat"]
+        )) if cur_df is not None else False,
+    )
+
+    if scope == "임원요약":
+        return generate_exec_summary_pdf(
+            anomaly_df=anomaly_df, unit_df=unit_df,
+            cur_df=cur_df, present=present,
+            context=context, coverage=_cov,
+        )
+
     if scope == "이상감지":
         if anomaly_df is None or anomaly_df.empty:
             return None
@@ -217,6 +237,7 @@ def _generate_report(scope, file_name, file_map, sheet_map, all_sheet_keys,
         cur_df=cur_df,
         present=present,
         context=context,
+        coverage=_cov,
     )
 
 
@@ -790,7 +811,13 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
                           key=lambda f: _parse_period(file_periods[f]),
                           reverse=True)
     meter_files = [f for f in sorted_files if _parse_period(file_periods[f]) > (0, 0)]
-    prev_file = meter_files[1] if len(meter_files) > 1 else None
+
+    # Detect duplicate periods (e.g., two January files)
+    _period_to_files: Dict[tuple, list] = {}
+    for f in meter_files:
+        p = _parse_period(file_periods[f])
+        _period_to_files.setdefault(p, []).append(f)
+    _dup_periods = {p: fs for p, fs in _period_to_files.items() if len(fs) > 1}
 
     # Detect YoY file: same month, previous year
     def _find_yoy_file(target_file: str) -> str | None:
@@ -807,11 +834,32 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
         period = file_periods.get(fname)
         return f"{period} — {fname}" if period else fname
 
-    file_name = st.selectbox(t("select_file"), sorted_files, index=0,
-                             format_func=_file_label)
+    with st.sidebar:
+        st.divider()
+        file_name = st.selectbox(t("select_file"), sorted_files, index=0,
+                                 format_func=_file_label)
+        if _dup_periods:
+            for (y, m), fs in _dup_periods.items():
+                st.warning(
+                    f"⚠ {y}년 {m}월 파일이 {len(fs)}개 업로드됨: "
+                    f"{', '.join(fs)}. 현재 선택된 파일 기준으로 분석합니다."
+                )
 
-    if prev_file is None:
-        st.warning("이전 달 파일이 없습니다 — 월별 변화량을 계산할 수 없습니다.")
+    # prev_file = next distinct older period relative to the SELECTED file.
+    # Must be computed after `file_name` is chosen — otherwise picking any
+    # file other than the newest compares MoM against the wrong period.
+    prev_file = None
+    if file_name in meter_files:
+        _cur_period = _parse_period(file_periods[file_name])
+        _cur_idx = meter_files.index(file_name)
+        for f in meter_files[_cur_idx + 1:]:
+            if _parse_period(file_periods[f]) != _cur_period:
+                prev_file = f
+                break
+
+    with st.sidebar:
+        if prev_file is None:
+            st.caption("⚠ 이전 달 파일 없음 — 변화량 비교 불가")
 
     all_sheet_keys = sheet_map[file_name]
 
@@ -902,69 +950,71 @@ hr { opacity: 0.15 !important; margin: 0.8rem 0 !important; }
                 st.session_state["_profile_do_return"] = True
                 st.rerun()
 
-        # ── Report generation ─────────────────────────────────────────────
+        # ── Export (report + Excel) ──────────────────────────────────────
         st.divider()
-        st.subheader("📄 보고서 생성")
-        _REPORT_OPTIONS = ["종합 리포트", "이상감지 리포트", "비용·효율 리포트", "검침 상세"]
-        _SCOPE_MAP = {"종합 리포트": "종합", "이상감지 리포트": "이상감지",
-                      "비용·효율 리포트": "인사이트", "검침 상세": "상세"}
-        _report_scope_label = st.radio(
-            "보고서 범위",
-            _REPORT_OPTIONS,
-            key="report_scope",
-            horizontal=True,
-        )
-        _report_scope = _SCOPE_MAP[_report_scope_label]
-        _report_pdf_key = f"sidebar_report_{file_name}"
-        if st.button("📄 보고서 생성", key="gen_report_sidebar", use_container_width=True):
-            with st.spinner("보고서 생성 중…"):
-                _pdf = _generate_report(
-                    _report_scope, file_name, file_map, sheet_map,
-                    all_sheet_keys, prev_file, file_periods, tail,
-                )
-                if _pdf:
-                    st.session_state[_report_pdf_key] = _pdf
-                    _fn_map = {"종합": "종합_리포트", "이상감지": "이상감지_리포트",
-                               "인사이트": "비용효율_리포트", "상세": "검침상세_리포트"}
-                    st.session_state[f"{_report_pdf_key}_fn"] = f"{_fn_map[_report_scope]}.pdf"
-                    st.success("생성 완료!")
-                else:
-                    st.error("데이터가 부족하여 보고서를 생성할 수 없습니다.")
-        if _report_pdf_key in st.session_state:
-            st.download_button(
-                "⬇️ PDF 다운로드",
-                st.session_state[_report_pdf_key],
-                file_name=st.session_state.get(f"{_report_pdf_key}_fn", "보고서.pdf"),
-                mime="application/pdf",
-                key="dl_report_sidebar",
-                use_container_width=True,
+        with st.expander("📄 내보내기", expanded=False):
+            st.subheader("📄 보고서 생성")
+            _REPORT_OPTIONS = ["임원 요약", "종합 리포트", "이상감지 리포트", "비용·효율 리포트", "검침 상세"]
+            _SCOPE_MAP = {"임원 요약": "임원요약", "종합 리포트": "종합", "이상감지 리포트": "이상감지",
+                          "비용·효율 리포트": "인사이트", "검침 상세": "상세"}
+            _report_scope_label = st.radio(
+                "보고서 범위",
+                _REPORT_OPTIONS,
+                key="report_scope",
+                horizontal=True,
             )
-
-        # ── Excel export ────────────────────────────────────────────────
-        st.subheader("📊 데이터 내보내기")
-        _xl_key = f"sidebar_xl_{file_name}"
-        if st.button("📊 Excel 내보내기", key="gen_xl_sidebar", use_container_width=True):
-            with st.spinner("Excel 생성 중…"):
-                try:
-                    _xl = _generate_excel_export(
-                        file_name, file_map, sheet_map, all_sheet_keys, prev_file,
+            _report_scope = _SCOPE_MAP[_report_scope_label]
+            _report_pdf_key = f"sidebar_report_{file_name}"
+            if st.button("📄 보고서 생성", key="gen_report_sidebar", use_container_width=True):
+                with st.spinner("보고서 생성 중…"):
+                    _pdf = _generate_report(
+                        _report_scope, file_name, file_map, sheet_map,
+                        all_sheet_keys, prev_file, file_periods, tail,
                     )
-                    st.session_state[_xl_key] = _xl
-                    st.success("생성 완료!")
-                except Exception as _e:
-                    st.error(f"Excel 생성 실패: {_e}")
-        if _xl_key in st.session_state:
-            st.download_button(
-                "⬇️ Excel 다운로드",
-                st.session_state[_xl_key],
-                file_name="유틸리티_분석.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_xl_sidebar",
-                use_container_width=True,
-            )
+                    if _pdf:
+                        st.session_state[_report_pdf_key] = _pdf
+                        _fn_map = {"임원요약": "임원요약_1페이지", "종합": "종합_리포트",
+                                   "이상감지": "이상감지_리포트",
+                                   "인사이트": "비용효율_리포트", "상세": "검침상세_리포트"}
+                        st.session_state[f"{_report_pdf_key}_fn"] = f"{_fn_map[_report_scope]}.pdf"
+                        st.success("생성 완료!")
+                    else:
+                        st.error("데이터가 부족하여 보고서를 생성할 수 없습니다.")
+            if _report_pdf_key in st.session_state:
+                st.download_button(
+                    "⬇️ PDF 다운로드",
+                    st.session_state[_report_pdf_key],
+                    file_name=st.session_state.get(f"{_report_pdf_key}_fn", "보고서.pdf"),
+                    mime="application/pdf",
+                    key="dl_report_sidebar",
+                    use_container_width=True,
+                )
 
-        st.divider()
-        debug = st.checkbox(t("debug"), value=False)
+            # ── Excel export ────────────────────────────────────────────
+            st.subheader("📊 데이터 내보내기")
+            _xl_key = f"sidebar_xl_{file_name}"
+            if st.button("📊 Excel 내보내기", key="gen_xl_sidebar", use_container_width=True):
+                with st.spinner("Excel 생성 중…"):
+                    try:
+                        _xl = _generate_excel_export(
+                            file_name, file_map, sheet_map, all_sheet_keys, prev_file,
+                        )
+                        st.session_state[_xl_key] = _xl
+                        st.success("생성 완료!")
+                    except Exception as _e:
+                        st.error(f"Excel 생성 실패: {_e}")
+            if _xl_key in st.session_state:
+                st.download_button(
+                    "⬇️ Excel 다운로드",
+                    st.session_state[_xl_key],
+                    file_name="유틸리티_분석.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_xl_sidebar",
+                    use_container_width=True,
+                )
+
+        with st.expander("⚙️ 설정", expanded=False):
+            debug = st.checkbox(t("debug"), value=False)
 
         # ── Brands of Interest (관심 브랜드) — bottom of sidebar ─────────
         _watchlist = st.session_state.get("_brand_watchlist", [])

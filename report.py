@@ -35,22 +35,62 @@ from data import to_numeric_series
 
 # ── Korean font setup ────────────────────────────────────────────────────────
 
-_FONT_DIR  = os.path.expanduser("~/.fonts")
-_FONT_REG  = os.path.join(_FONT_DIR, "NanumGothic-Regular.ttf")
+_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+_FONT_DIR = os.path.expanduser("~/.fonts")
+_FONT_REG = os.path.join(_FONT_DIR, "NanumGothic-Regular.ttf")
 _FONT_BOLD = os.path.join(_FONT_DIR, "NanumGothic-Bold.ttf")
-_FONT_URLS = {
-    _FONT_REG:  "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf",
-    _FONT_BOLD: "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Bold.ttf",
-}
+_FONT_CACHE: tuple[str, str] | None = None
+
+
+def _candidate_font_pairs() -> list[tuple[str, str]]:
+    return [
+        (
+            os.path.join(_ROOT_DIR, "fonts", "NanumGothic-Regular.ttf"),
+            os.path.join(_ROOT_DIR, "fonts", "NanumGothic-Bold.ttf"),
+        ),
+        (
+            os.path.join(_ROOT_DIR, "NanumGothic-Regular.ttf"),
+            os.path.join(_ROOT_DIR, "NanumGothic-Bold.ttf"),
+        ),
+        (_FONT_REG, _FONT_BOLD),
+        (
+            r"C:\Windows\Fonts\malgun.ttf",
+            r"C:\Windows\Fonts\malgunbd.ttf",
+        ),
+        (
+            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+            "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+        ),
+        (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        ),
+        (
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+            "/System/Library/Fonts/Supplemental/AppleSDGothicNeo.ttc",
+        ),
+    ]
+
+
+def _resolve_font_paths() -> tuple[str, str]:
+    global _FONT_CACHE
+    if _FONT_CACHE is not None:
+        return _FONT_CACHE
+
+    for reg_path, bold_path in _candidate_font_pairs():
+        if os.path.exists(reg_path) and os.path.exists(bold_path):
+            _FONT_CACHE = (reg_path, bold_path)
+            return _FONT_CACHE
+
+    raise FileNotFoundError(
+        "No Korean font files were found. Place NanumGothic font files in "
+        "'fonts/' next to the app, or build/run on Windows with Malgun Gothic installed."
+    )
 
 def _ensure_fonts():
-    import urllib.request
-    os.makedirs(_FONT_DIR, exist_ok=True)
-    for path, url in _FONT_URLS.items():
-        if not os.path.exists(path):
-            urllib.request.urlretrieve(url, path)
-    pdfmetrics.registerFont(TTFont("NanumGothic",      _FONT_REG))
-    pdfmetrics.registerFont(TTFont("NanumGothic-Bold", _FONT_BOLD))
+    font_reg, font_bold = _resolve_font_paths()
+    pdfmetrics.registerFont(TTFont("NanumGothic", font_reg))
+    pdfmetrics.registerFont(TTFont("NanumGothic-Bold", font_bold))
     from reportlab.pdfbase.pdfmetrics import registerFontFamily
     registerFontFamily("NanumGothic",
                        normal="NanumGothic", bold="NanumGothic-Bold",
@@ -64,8 +104,8 @@ def _ensure_fonts():
         except OSError:
             pass
 
-    _fm.fontManager.addfont(_FONT_REG)
-    _fm.fontManager.addfont(_FONT_BOLD)
+    _fm.fontManager.addfont(font_reg)
+    _fm.fontManager.addfont(font_bold)
 
     # Clear the findfont LRU cache so lookups use the updated font list
     try:
@@ -73,12 +113,17 @@ def _ensure_fonts():
     except AttributeError:
         pass
 
-    _font_name = _fm.FontProperties(fname=_FONT_REG).get_name()
+    _font_name = _fm.FontProperties(fname=font_reg).get_name()
     plt.rcParams["font.sans-serif"] = [_font_name] + [
         f for f in plt.rcParams.get("font.sans-serif", []) if f != _font_name
     ]
     plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["axes.unicode_minus"] = False
+
+
+def get_report_font_paths() -> tuple[str, str]:
+    """Expose the resolved regular/bold font paths for other report modules."""
+    return _resolve_font_paths()
 
 # ── Palette ──────────────────────────────────────────────────────────────────
 

@@ -222,9 +222,10 @@ def render_active_filters(key_prefix: str = "") -> None:
         pills.append(f"검색: {search}")
 
     if pills:
+        from utils import esc as _esc
         _html = " ".join(
             f'<span style="background:#4C72B0;color:#fff;padding:2px 8px;'
-            f'border-radius:12px;font-size:0.8em;margin-right:4px">{p}</span>'
+            f'border-radius:12px;font-size:0.8em;margin-right:4px">{_esc(p)}</span>'
             for p in pills
         )
         st.markdown(f"🔖 {_html}", unsafe_allow_html=True)

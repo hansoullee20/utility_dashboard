@@ -66,7 +66,12 @@ def build_unit_costs(meter_df: pd.DataFrame, billing_df: pd.DataFrame) -> pd.Dat
     _to_num(meter_side, [c for c in meter_cols if c not in {"brand", "building"}])
 
     join_on = ["brand", "building"] if "building" in meter_side.columns else ["brand"]
-    merged = meter_side.merge(bill_agg, on=join_on, how="inner")
+    merged = meter_side.merge(bill_agg, on=join_on, how="left")
+    # Track unmatched brands (in meter but not in billing)
+    _bill_keys = set(bill_agg[join_on].apply(tuple, axis=1)) if len(join_on) > 1 else set(bill_agg["brand"])
+    _meter_keys = set(meter_side[join_on].apply(tuple, axis=1)) if len(join_on) > 1 else set(meter_side["brand"])
+    merged.attrs["_unmatched_brands"] = sorted(_meter_keys - _bill_keys)
+    merged.attrs["_join_coverage"] = len(_meter_keys & _bill_keys) / max(len(_meter_keys), 1)
 
     size = merged["size_m2"].replace(0, np.nan) if "size_m2" in merged.columns else None
 

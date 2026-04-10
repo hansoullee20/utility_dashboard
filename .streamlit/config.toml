@@ -1,0 +1,6 @@
+[server]
+maxUploadSize = 50          # MB — prevents OOM from oversized files
+maxMessageSize = 200        # MB
+
+[browser]
+gatherUsageStats = false

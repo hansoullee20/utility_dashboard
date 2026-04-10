@@ -1,36 +1,39 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all, collect_data_files
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_all
 
 # Collect all streamlit assets (static web files, runtime, etc.)
 st_datas, st_binaries, st_hiddenimports = collect_all('streamlit')
 altair_datas, altair_binaries, altair_hiddenimports = collect_all('altair')
+sac_datas, sac_binaries, sac_hiddenimports = collect_all('streamlit_antd_components')
 
-app_datas = [
-    ('app.py',                    '.'),
-    ('data.py',                   '.'),
-    ('features.py',               '.'),
-    ('viz.py',                    '.'),
-    ('billing.py',                '.'),
-    ('billing_report.py',         '.'),
-    ('ehp.py',                    '.'),
-    ('ehp_report.py',             '.'),
-    ('report.py',                 '.'),
+root = Path(__file__).resolve().parent
+app_datas = [(str(path), '.') for path in root.glob('*.py')]
+app_datas += [
+    (str(path), '.')
+    for pattern in ('*.json', '*.pdf')
+    for path in root.glob(pattern)
 ]
+if (root / 'fonts').exists():
+    app_datas += [(str(path), 'fonts') for path in (root / 'fonts').glob('*') if path.is_file()]
 
 a = Analysis(
     ['launcher.py'],
     pathex=[],
-    binaries=st_binaries + altair_binaries,
-    datas=st_datas + altair_datas + app_datas,
-    hiddenimports=st_hiddenimports + altair_hiddenimports + [
+    binaries=st_binaries + altair_binaries + sac_binaries,
+    datas=st_datas + altair_datas + sac_datas + app_datas,
+    hiddenimports=st_hiddenimports + altair_hiddenimports + sac_hiddenimports + [
         'pandas',
         'numpy',
+        'python_calamine',
         'plotly',
         'plotly.express',
         'plotly.graph_objects',
         'plotly.io',
         'scipy',
         'scipy.stats',
+        'streamlit_antd_components',
         'reportlab',
         'reportlab.lib',
         'reportlab.lib.colors',
@@ -55,6 +58,7 @@ a = Analysis(
         'openpyxl.utils',
         'pyarrow',
         'pyarrow.vendored.version',
+        'xlsxwriter',
         'packaging',
         'packaging.version',
         'packaging.specifiers',
@@ -83,7 +87,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

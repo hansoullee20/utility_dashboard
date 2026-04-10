@@ -29,19 +29,12 @@ echo.
 echo [3/4] Installing dependencies (this may take a few minutes)...
 call build_env\Scripts\activate.bat
 python -m pip install --upgrade pip --quiet
-pip install --quiet ^
-    streamlit ^
-    pandas ^
-    numpy ^
-    plotly ^
-    scipy ^
-    reportlab ^
-    matplotlib ^
-    Pillow ^
-    openpyxl ^
-    pyarrow ^
+pip install --quiet -r requirements_client.txt ^
     altair ^
-    pyinstaller
+    pyarrow ^
+    pyinstaller ^
+    python-calamine ^
+    streamlit-antd-components
 
 :: Build
 echo.
@@ -50,9 +43,17 @@ pyinstaller launcher.spec --clean --noconfirm
 
 echo.
 if exist dist\UtilityDashboard.exe (
+    echo Preparing client handoff folder...
+    if exist release\UtilityDashboard rmdir /s /q release\UtilityDashboard
+    mkdir release\UtilityDashboard
+    copy /Y dist\UtilityDashboard.exe release\UtilityDashboard\UtilityDashboard.exe >nul
+    copy /Y CLIENT_README.txt release\UtilityDashboard\README_FIRST.txt >nul
     echo ============================================
     echo   SUCCESS! Your exe is ready:
-    echo   dist\UtilityDashboard.exe
+    echo   release\UtilityDashboard\UtilityDashboard.exe
+    echo.
+    echo   Send your client this whole folder:
+    echo   release\UtilityDashboard
     echo ============================================
 ) else (
     echo   BUILD FAILED. Check errors above.

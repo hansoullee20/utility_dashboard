@@ -99,91 +99,121 @@ def render_summary_view(
         _cap += "  |  전월 파일 없음 — 단일 월 분석"
     st.caption(_cap)
 
-    # ── Aggregate each available sheet by brand ────────────────────────────────
-    if water_df is not None and not water_df.empty:
-        _w_agg = dict(building=("building","first"), floor=("floor","first"),
-                      size_m2=("size_m2","sum"), water_total=("total","sum"))
-        if "usage_m3" in water_df.columns:
-            _w_agg["water_m3"] = ("usage_m3", "sum")
-        _w = water_df.groupby("brand").agg(**_w_agg).reset_index()
-    else:
-        _w = pd.DataFrame(columns=["brand","building","floor","size_m2","water_total"])
+    # ── Aggregate each available sheet by (brand, building) ─────────────────────
+    def _gk(df):
+        return ["brand", "building"] if "building" in df.columns else ["brand"]
 
-    if hotwater_df is not None and not hotwater_df.empty:
-        _hw_agg = dict(hw_total=("total","sum"))
-        if "usage_m3" in hotwater_df.columns:
-            _hw_agg["hw_m3"] = ("usage_m3", "sum")
-        _hw = hotwater_df.groupby("brand").agg(**_hw_agg).reset_index()
-    else:
-        _hw = pd.DataFrame(columns=["brand","hw_total"])
+    def _agg_sheet(df, agg_dict):
+        if df is None or df.empty:
+            return None
+        gk = _gk(df)
+        return df.groupby(gk).agg(**agg_dict).reset_index()
 
-    if elec_df is not None and not elec_df.empty:
-        _el_agg = dict(elec_total=("grand_total","sum"), kwh_total=("kwh_total","sum"))
+    _JOIN = ["brand", "building"]
+
+    _w_agg = dict(floor=("floor", "first"), size_m2=("size_m2", "sum"),
+                  water_total=("total", "sum"))
+    if water_df is not None and "usage_m3" in (water_df.columns if water_df is not None else []):
+        _w_agg["water_m3"] = ("usage_m3", "sum")
+    _w = _agg_sheet(water_df, _w_agg)
+    if _w is None:
+        _w = pd.DataFrame(columns=["brand", "building", "floor", "size_m2", "water_total"])
+
+    _hw_agg = dict(hw_total=("total", "sum"))
+    if hotwater_df is not None and "usage_m3" in (hotwater_df.columns if hotwater_df is not None else []):
+        _hw_agg["hw_m3"] = ("usage_m3", "sum")
+    _hw = _agg_sheet(hotwater_df, _hw_agg)
+    if _hw is None:
+        _hw = pd.DataFrame(columns=_JOIN + ["hw_total"])
+
+    _el_agg = dict(elec_total=("grand_total", "sum"), kwh_total=("kwh_total", "sum"))
+    if elec_df is not None:
         if "kwh_ehp" in elec_df.columns:
             _el_agg["kwh_ehp"] = ("kwh_ehp", "sum")
         if "kwh_fcu" in elec_df.columns:
             _el_agg["kwh_fcu"] = ("kwh_fcu", "sum")
-        _el = elec_df.groupby("brand").agg(**_el_agg).reset_index()
+    _el = _agg_sheet(elec_df, _el_agg)
+    if _el is not None:
         _el["kwh_hvac"] = _el.get("kwh_ehp", 0) + _el.get("kwh_fcu", 0)
         _el = _el.drop(columns=["kwh_ehp", "kwh_fcu"], errors="ignore")
     else:
-        _el = pd.DataFrame(columns=["brand","elec_total","kwh_total","kwh_hvac"])
+        _el = pd.DataFrame(columns=_JOIN + ["elec_total", "kwh_total", "kwh_hvac"])
 
     if billing_df is not None and not billing_df.empty and "heat_total" in billing_df.columns:
-        _ht = billing_df.groupby("brand").agg(heat_total=("heat_total","sum")).reset_index()
-        # billing data is in 만원 — convert to 원 for consistency with other utilities
+        _ht = _agg_sheet(billing_df, dict(heat_total=("heat_total", "sum")))
         _ht["heat_total"] = _ht["heat_total"] * 10000
     else:
-        _ht = pd.DataFrame(columns=["brand","heat_total"])
+        _ht = pd.DataFrame(columns=_JOIN + ["heat_total"])
 
-    # Heat volume (m³) from meter data
     if meter_df is not None and not meter_df.empty and "heat_current" in meter_df.columns:
         from data import to_numeric_series as _tns
         _hm = meter_df.copy()
         _hm["heat_m3"] = _tns(_hm["heat_current"])
-        _hm = _hm.groupby("brand").agg(heat_m3=("heat_m3", "sum")).reset_index()
+        _hm = _agg_sheet(_hm, dict(heat_m3=("heat_m3", "sum")))
     else:
-        _hm = pd.DataFrame(columns=["brand", "heat_m3"])
+        _hm = pd.DataFrame(columns=_JOIN + ["heat_m3"])
 
-    merged = (_w.merge(_hw, on="brand", how="outer")
-                .merge(_el, on="brand", how="outer")
-                .merge(_ht, on="brand", how="outer")
-                .merge(_hm, on="brand", how="outer"))
-    # Fill missing utilities with 0
-    for col in ["water_total","hw_total","elec_total","heat_total","kwh_total","kwh_hvac","size_m2",
-                "water_m3","hw_m3","heat_m3"]:
+    # Ensure all frames have building column for join
+    for _df in [_w, _hw, _el, _ht, _hm]:
+        if "building" not in _df.columns:
+            _df["building"] = ""
+
+    merged = (_w.merge(_hw, on=_JOIN, how="outer")
+                .merge(_el, on=_JOIN, how="outer")
+                .merge(_ht, on=_JOIN, how="outer")
+                .merge(_hm, on=_JOIN, how="outer"))
+
+    for col in ["water_total", "hw_total", "elec_total", "heat_total", "kwh_total", "kwh_hvac", "size_m2",
+                "water_m3", "hw_m3", "heat_m3"]:
         if col in merged.columns:
             merged[col] = merged[col].fillna(0)
         else:
             merged[col] = 0
+
     # Recover brand_raw from source data for display
     _raw_parts = [
-        df.groupby("brand")["brand_raw"].first()
+        df.groupby(_gk(df))["brand_raw"].first()
         for df in [water_df, hotwater_df, elec_df, billing_df, meter_df]
         if df is not None and not df.empty and "brand_raw" in df.columns
     ]
     if _raw_parts:
-        _raw_map = pd.concat(_raw_parts).groupby(level=0).first()
-        merged["brand_raw"] = merged["brand"].map(_raw_map)
+        _raw_map = pd.concat(_raw_parts)
+        if isinstance(_raw_map.index, pd.MultiIndex):
+            _raw_map = _raw_map.groupby(level=list(range(_raw_map.index.nlevels))).first()
+            _raw_lookup = _raw_map.reset_index()
+            _raw_lookup.columns = list(_raw_lookup.columns[:-1]) + ["brand_raw"]
+            merged = merged.merge(_raw_lookup, on=_JOIN, how="left", suffixes=("", "_raw_dup"))
+            merged.drop(columns=[c for c in merged.columns if c.endswith("_raw_dup")], inplace=True)
+        else:
+            _raw_map = _raw_map.groupby(level=0).first()
+            merged["brand_raw"] = merged["brand"].map(_raw_map)
 
-    # Fill building/floor/size_m2 from all available sources (vectorized)
+    # Fill missing floor/size from other sheets
     _meta_parts = [
-        df.groupby("brand")[["building", "floor", "size_m2"]].first()
+        df.groupby(_gk(df))[["floor", "size_m2"]].first()
         for df in [water_df, hotwater_df, elec_df, billing_df]
         if df is not None and not df.empty
-        and all(c in df.columns for c in ["building", "floor", "size_m2"])
+        and all(c in df.columns for c in ["floor", "size_m2"])
     ]
-    if _meta_parts:
-        _meta = pd.concat(_meta_parts).groupby(level=0).first()
-        merged = merged.set_index("brand")
-        _no_bld = merged["building"].isna() | (merged["building"].astype(str).str.strip() == "")
-        merged["building"] = merged["building"].where(~_no_bld, _meta["building"].reindex(merged.index))
-        merged["floor"]    = merged["floor"].where(~_no_bld, _meta["floor"].reindex(merged.index))
-        merged["size_m2"]  = merged["size_m2"].where(
-            merged["size_m2"] > 0,
-            _meta["size_m2"].reindex(merged.index, fill_value=0),
-        )
-        merged = merged.reset_index()
+    if _meta_parts and "floor" in merged.columns:
+        _meta = pd.concat(_meta_parts)
+        if isinstance(_meta.index, pd.MultiIndex):
+            _meta = _meta.groupby(level=list(range(_meta.index.nlevels))).first()
+            _meta_r = _meta.reset_index()
+            _meta_r.columns = _JOIN + ["_fill_floor", "_fill_size"]
+            merged = merged.merge(_meta_r, on=_JOIN, how="left")
+            _no_floor = merged["floor"].isna() | (merged["floor"].astype(str).str.strip() == "")
+            merged["floor"] = merged["floor"].where(~_no_floor, merged.get("_fill_floor"))
+            merged["size_m2"] = merged["size_m2"].where(merged["size_m2"] > 0, merged.get("_fill_size", 0))
+            merged.drop(columns=["_fill_floor", "_fill_size"], errors="ignore", inplace=True)
+        else:
+            _meta = _meta.groupby(level=0).first()
+            merged = merged.set_index("brand")
+            _no_bld = merged["building"].isna() | (merged["building"].astype(str).str.strip() == "")
+            merged["floor"] = merged["floor"].where(~_no_bld, _meta["floor"].reindex(merged.index))
+            merged["size_m2"] = merged["size_m2"].where(
+                merged["size_m2"] > 0, _meta["size_m2"].reindex(merged.index, fill_value=0))
+            merged = merged.reset_index()
 
     _PY_FACTOR = 3.3058
     merged["size_py"] = (merged["size_m2"] / _PY_FACTOR).round(2)
@@ -199,18 +229,29 @@ def render_summary_view(
                     for d in [prev_water_df, prev_hotwater_df, prev_elec_df, prev_billing_df])
 
     if _has_prev:
-        _prev_parts = {}
+        _prev_aggs = []
         if prev_water_df is not None and not prev_water_df.empty:
-            _prev_parts["water_prev"] = prev_water_df.groupby("brand")["total"].sum()
+            _prev_aggs.append(("water_prev", prev_water_df, "total"))
         if prev_hotwater_df is not None and not prev_hotwater_df.empty:
-            _prev_parts["hw_prev"] = prev_hotwater_df.groupby("brand")["total"].sum()
+            _prev_aggs.append(("hw_prev", prev_hotwater_df, "total"))
         if prev_elec_df is not None and not prev_elec_df.empty:
-            _prev_parts["elec_prev"] = prev_elec_df.groupby("brand")["grand_total"].sum()
+            _prev_aggs.append(("elec_prev", prev_elec_df, "grand_total"))
         if prev_billing_df is not None and not prev_billing_df.empty and "heat_total" in prev_billing_df.columns:
-            _prev_parts["heat_prev"] = prev_billing_df.groupby("brand")["heat_total"].sum() * 10000
+            _prev_aggs.append(("heat_prev", prev_billing_df, "heat_total"))
 
-        for col, series in _prev_parts.items():
-            merged[col] = merged["brand"].map(series).fillna(0)
+        for col_name, pdf, val_col in _prev_aggs:
+            _pk = _gk(pdf)
+            _prev_s = pdf.groupby(_pk)[val_col].sum()
+            if col_name == "heat_prev":
+                _prev_s = _prev_s * 10000
+            if isinstance(_prev_s.index, pd.MultiIndex):
+                _prev_r = _prev_s.reset_index()
+                _prev_r.columns = _pk + [col_name]
+                merged = merged.merge(_prev_r, on=_pk, how="left")
+                merged[col_name] = merged[col_name].fillna(0)
+            else:
+                merged[col_name] = merged["brand"].map(_prev_s).fillna(0)
+
         for col in ["water_prev", "hw_prev", "elec_prev", "heat_prev"]:
             if col not in merged.columns:
                 merged[col] = 0.0
@@ -611,7 +652,8 @@ def render_summary_view(
                 _tbl_df[_cur_col_label] = _tbl_df[_cur_col_label].map(_fmt_won)
                 _tbl_df[_prev_col_label] = _tbl_df[_prev_col_label].map(_fmt_won)
                 _tbl_df["변화(원)"] = _tbl_df["변화(원)"].map(_fmt_won)
-                st.dataframe(_tbl_df, hide_index=True, use_container_width=True)
+                with st.expander("📋 전체 변화 상세", expanded=False):
+                    st.dataframe(_tbl_df, hide_index=True, use_container_width=True)
 
                 # Top / bottom
                 _chg_cols = ["brand"] + (["building"] if "building" in _plot_df.columns else []) + [_chg_col]
@@ -782,14 +824,15 @@ def render_summary_view(
                         st.caption(f"선택됨: **{_ry}**")
                         st.dataframe(_rdf[_RANK_DISP_COLS].reset_index(drop=True),
                                      column_config=_RANK_COL_CFG, use_container_width=True, hide_index=True)
-            _rank_tbl = (
-                merged.nlargest(_n, _sel_col)
-                .sort_values(_sel_col, ascending=False)
-                .reset_index(drop=True)
-            )
-            _rank_tbl.index = _rank_tbl.index + 1
-            st.dataframe(_rank_tbl[_RANK_DISP_COLS], column_config=_RANK_COL_CFG,
-                         use_container_width=True)
+            with st.expander("📋 순위 테이블", expanded=False):
+                _rank_tbl = (
+                    merged.nlargest(_n, _sel_col)
+                    .sort_values(_sel_col, ascending=False)
+                    .reset_index(drop=True)
+                )
+                _rank_tbl.index = _rank_tbl.index + 1
+                st.dataframe(_rank_tbl[_RANK_DISP_COLS], column_config=_RANK_COL_CFG,
+                             use_container_width=True)
 
         elif _rank_view == "박스플롯":
             _boxplot_with_labels(_sel_series, merged["brand"],
@@ -798,7 +841,8 @@ def render_summary_view(
                                  disp_cols=_RANK_DISP_COLS)
             _top_mask = _sel_series >= _r_hi_w
             _bot_mask = _sel_series <= _r_lo_w
-            _rank_tables(merged, _top_mask, _bot_mask, ~_top_mask & ~_bot_mask)
+            with st.expander("📋 이상치 상세 테이블", expanded=False):
+                _rank_tables(merged, _top_mask, _bot_mask, ~_top_mask & ~_bot_mask)
 
         else:  # 히스토그램
             _h_bins = _synced_slider_input("sum_rank_hist_bins", "Bins", 5, 200, 50, 5)
@@ -823,7 +867,8 @@ def render_summary_view(
                        show_bins_slider=False)
             _top_iqr_m = _sel_series > _hi_u
             _bot_iqr_m = _sel_series < _lo_u
-            _rank_tables(merged, _top_iqr_m, _bot_iqr_m, ~_top_iqr_m & ~_bot_iqr_m)
+            with st.expander("📋 이상치 상세 테이블", expanded=False):
+                _rank_tables(merged, _top_iqr_m, _bot_iqr_m, ~_top_iqr_m & ~_bot_iqr_m)
 
         # ── Category breakdowns (when specific utility selected) ─────────
         if _cat_sel == "⚡ 전기" and elec_df is not None and not elec_df.empty:
@@ -847,108 +892,108 @@ def render_summary_view(
         # ── Building comparison dashboard ─────────────────────────────────
         if "building" in merged.columns and merged["building"].nunique() > 1:
             st.divider()
-            st.markdown("#### 🏢 건물별 비교")
-            _bld_agg_cols = dict(
-                brands=("brand", "count"),
-                area=("size_m2", "sum"),
-                water_m3=("water_m3", "sum"),
-                hw_m3=("hw_m3", "sum"),
-                kwh_total=("kwh_total", "sum"),
-            )
-            if "heat_m3" in merged.columns and merged["heat_m3"].sum() > 0:
-                _bld_agg_cols["heat_m3"] = ("heat_m3", "sum")
-            _bld_agg = merged.groupby("building").agg(**_bld_agg_cols
-            ).reindex(["A", "B", "C", "D"]).dropna(how="all")
-            _bld_area = _bld_agg["area"].replace(0, float("nan"))
-            _bld_agg["water_pm2"] = (_bld_agg["water_m3"] / _bld_area).round(3)
-            _bld_agg["hw_pm2"] = (_bld_agg["hw_m3"] / _bld_area).round(3)
-            _bld_agg["kwh_pm2"] = (_bld_agg["kwh_total"] / _bld_area).round(2)
-            _has_heat_vol = "heat_m3" in _bld_agg.columns and _bld_agg["heat_m3"].sum() > 0
-            if _has_heat_vol:
-                _bld_agg["heat_pm2"] = (_bld_agg["heat_m3"] / _bld_area).round(3)
-
-            from plotly.subplots import make_subplots as _make_sub
-
-            _bld_logy = st.checkbox("Log 스케일", key="sum_bld_logy")
-            _bc1, _bc2 = st.columns(2)
-            with _bc1:
-                # Dual-axis bar: m³ (left) + kWh (right) per building
-                _fig_bld = _make_sub(specs=[[{"secondary_y": True}]])
-                _buildings = _bld_agg.index.tolist()
-                _fig_bld.add_trace(go.Bar(
-                    x=_buildings, y=_bld_agg["water_m3"], name="수도 (m³)",
-                    marker_color="#4C72B0", offsetgroup=0,
-                ), secondary_y=False)
-                _fig_bld.add_trace(go.Bar(
-                    x=_buildings, y=_bld_agg["hw_m3"], name="온수 (m³)",
-                    marker_color="#C44E52", offsetgroup=1,
-                ), secondary_y=False)
+            with st.expander("🏢 건물별 비교", expanded=False):
+                _bld_agg_cols = dict(
+                    brands=("brand", "count"),
+                    area=("size_m2", "sum"),
+                    water_m3=("water_m3", "sum"),
+                    hw_m3=("hw_m3", "sum"),
+                    kwh_total=("kwh_total", "sum"),
+                )
+                if "heat_m3" in merged.columns and merged["heat_m3"].sum() > 0:
+                    _bld_agg_cols["heat_m3"] = ("heat_m3", "sum")
+                _bld_agg = merged.groupby("building").agg(**_bld_agg_cols
+                ).reindex(["A", "B", "C", "D"]).dropna(how="all")
+                _bld_area = _bld_agg["area"].replace(0, float("nan"))
+                _bld_agg["water_pm2"] = (_bld_agg["water_m3"] / _bld_area).round(3)
+                _bld_agg["hw_pm2"] = (_bld_agg["hw_m3"] / _bld_area).round(3)
+                _bld_agg["kwh_pm2"] = (_bld_agg["kwh_total"] / _bld_area).round(2)
+                _has_heat_vol = "heat_m3" in _bld_agg.columns and _bld_agg["heat_m3"].sum() > 0
                 if _has_heat_vol:
+                    _bld_agg["heat_pm2"] = (_bld_agg["heat_m3"] / _bld_area).round(3)
+
+                from plotly.subplots import make_subplots as _make_sub
+
+                _bld_logy = st.checkbox("Log 스케일", key="sum_bld_logy")
+                _bc1, _bc2 = st.columns(2)
+                with _bc1:
+                    # Dual-axis bar: m³ (left) + kWh (right) per building
+                    _fig_bld = _make_sub(specs=[[{"secondary_y": True}]])
+                    _buildings = _bld_agg.index.tolist()
                     _fig_bld.add_trace(go.Bar(
-                        x=_buildings, y=_bld_agg["heat_m3"], name="난방 (m³)",
-                        marker_color="#E377C2", offsetgroup=2,
+                        x=_buildings, y=_bld_agg["water_m3"], name="수도 (m³)",
+                        marker_color="#4C72B0", offsetgroup=0,
                     ), secondary_y=False)
-                _fig_bld.add_trace(go.Bar(
-                    x=_buildings, y=_bld_agg["kwh_total"], name="전기 (kWh)",
-                    marker_color="#DD8A00", offsetgroup=3,
-                ), secondary_y=True)
-                _fig_bld.update_layout(
-                    title="건물별 총 사용량", barmode="group", height=380,
-                    margin=dict(t=45, b=30),
-                    legend=dict(orientation="h", yanchor="top", y=-0.12,
-                                xanchor="center", x=0.5, font=dict(size=10)),
-                )
-                _fig_bld.update_yaxes(title_text="m³", secondary_y=False,
-                                      type="log" if _bld_logy else None)
-                _fig_bld.update_yaxes(title_text="kWh", secondary_y=True,
-                                      type="log" if _bld_logy else None)
-                st.plotly_chart(_fig_bld, use_container_width=True, key="sum_bld_abs")
+                    _fig_bld.add_trace(go.Bar(
+                        x=_buildings, y=_bld_agg["hw_m3"], name="온수 (m³)",
+                        marker_color="#C44E52", offsetgroup=1,
+                    ), secondary_y=False)
+                    if _has_heat_vol:
+                        _fig_bld.add_trace(go.Bar(
+                            x=_buildings, y=_bld_agg["heat_m3"], name="난방 (m³)",
+                            marker_color="#E377C2", offsetgroup=2,
+                        ), secondary_y=False)
+                    _fig_bld.add_trace(go.Bar(
+                        x=_buildings, y=_bld_agg["kwh_total"], name="전기 (kWh)",
+                        marker_color="#DD8A00", offsetgroup=3,
+                    ), secondary_y=True)
+                    _fig_bld.update_layout(
+                        title="건물별 총 사용량", barmode="group", height=380,
+                        margin=dict(t=45, b=30),
+                        legend=dict(orientation="h", yanchor="top", y=-0.12,
+                                    xanchor="center", x=0.5, font=dict(size=10)),
+                    )
+                    _fig_bld.update_yaxes(title_text="m³", secondary_y=False,
+                                          type="log" if _bld_logy else None)
+                    _fig_bld.update_yaxes(title_text="kWh", secondary_y=True,
+                                          type="log" if _bld_logy else None)
+                    st.plotly_chart(_fig_bld, use_container_width=True, key="sum_bld_abs")
 
-            with _bc2:
-                # Dual-axis bar: per-m² usage per building
-                _fig_pm2 = _make_sub(specs=[[{"secondary_y": True}]])
-                _fig_pm2.add_trace(go.Bar(
-                    x=_buildings, y=_bld_agg["water_pm2"], name="수도 (m³/m²)",
-                    marker_color="#4C72B0", offsetgroup=0,
-                ), secondary_y=False)
-                _fig_pm2.add_trace(go.Bar(
-                    x=_buildings, y=_bld_agg["hw_pm2"], name="온수 (m³/m²)",
-                    marker_color="#C44E52", offsetgroup=1,
-                ), secondary_y=False)
-                if _has_heat_vol:
+                with _bc2:
+                    # Dual-axis bar: per-m² usage per building
+                    _fig_pm2 = _make_sub(specs=[[{"secondary_y": True}]])
                     _fig_pm2.add_trace(go.Bar(
-                        x=_buildings, y=_bld_agg["heat_pm2"], name="난방 (m³/m²)",
-                        marker_color="#E377C2", offsetgroup=2,
+                        x=_buildings, y=_bld_agg["water_pm2"], name="수도 (m³/m²)",
+                        marker_color="#4C72B0", offsetgroup=0,
                     ), secondary_y=False)
-                _fig_pm2.add_trace(go.Bar(
-                    x=_buildings, y=_bld_agg["kwh_pm2"], name="전기 (kWh/m²)",
-                    marker_color="#DD8A00", offsetgroup=3,
-                ), secondary_y=True)
-                _fig_pm2.update_layout(
-                    title="건물별 면적당 사용량", barmode="group", height=380,
-                    margin=dict(t=45, b=30),
-                    legend=dict(orientation="h", yanchor="top", y=-0.12,
-                                xanchor="center", x=0.5, font=dict(size=10)),
-                )
-                _fig_pm2.update_yaxes(title_text="m³/m²", secondary_y=False,
-                                      type="log" if _bld_logy else None)
-                _fig_pm2.update_yaxes(title_text="kWh/m²", secondary_y=True,
-                                      type="log" if _bld_logy else None)
-                st.plotly_chart(_fig_pm2, use_container_width=True, key="sum_bld_pm2")
+                    _fig_pm2.add_trace(go.Bar(
+                        x=_buildings, y=_bld_agg["hw_pm2"], name="온수 (m³/m²)",
+                        marker_color="#C44E52", offsetgroup=1,
+                    ), secondary_y=False)
+                    if _has_heat_vol:
+                        _fig_pm2.add_trace(go.Bar(
+                            x=_buildings, y=_bld_agg["heat_pm2"], name="난방 (m³/m²)",
+                            marker_color="#E377C2", offsetgroup=2,
+                        ), secondary_y=False)
+                    _fig_pm2.add_trace(go.Bar(
+                        x=_buildings, y=_bld_agg["kwh_pm2"], name="전기 (kWh/m²)",
+                        marker_color="#DD8A00", offsetgroup=3,
+                    ), secondary_y=True)
+                    _fig_pm2.update_layout(
+                        title="건물별 면적당 사용량", barmode="group", height=380,
+                        margin=dict(t=45, b=30),
+                        legend=dict(orientation="h", yanchor="top", y=-0.12,
+                                    xanchor="center", x=0.5, font=dict(size=10)),
+                    )
+                    _fig_pm2.update_yaxes(title_text="m³/m²", secondary_y=False,
+                                          type="log" if _bld_logy else None)
+                    _fig_pm2.update_yaxes(title_text="kWh/m²", secondary_y=True,
+                                          type="log" if _bld_logy else None)
+                    st.plotly_chart(_fig_pm2, use_container_width=True, key="sum_bld_pm2")
 
-            # Summary table
-            _bld_disp = _bld_agg.copy()
-            _bld_disp.index.name = "건물"
-            _rename_map = {
-                "brands": "브랜드수", "area": "면적(m²)",
-                "water_m3": "수도 (m³)", "hw_m3": "온수 (m³)", "kwh_total": "전기 (kWh)",
-                "water_pm2": "수도/m²", "hw_pm2": "온수/m²", "kwh_pm2": "전기/m²",
-            }
-            if _has_heat_vol:
-                _rename_map["heat_m3"] = "난방 (m³)"
-                _rename_map["heat_pm2"] = "난방/m²"
-            _bld_disp = _bld_disp.rename(columns=_rename_map)
-            st.dataframe(_bld_disp.reset_index(), hide_index=True, use_container_width=True)
+                # Summary table
+                _bld_disp = _bld_agg.copy()
+                _bld_disp.index.name = "건물"
+                _rename_map = {
+                    "brands": "브랜드수", "area": "면적(m²)",
+                    "water_m3": "수도 (m³)", "hw_m3": "온수 (m³)", "kwh_total": "전기 (kWh)",
+                    "water_pm2": "수도/m²", "hw_pm2": "온수/m²", "kwh_pm2": "전기/m²",
+                }
+                if _has_heat_vol:
+                    _rename_map["heat_m3"] = "난방 (m³)"
+                    _rename_map["heat_pm2"] = "난방/m²"
+                _bld_disp = _bld_disp.rename(columns=_rename_map)
+                st.dataframe(_bld_disp.reset_index(), hide_index=True, use_container_width=True)
 
     # ═══════════════════════════ 유틸리티 구성 ════════════════════════════════
     with tab_mix:
@@ -1045,26 +1090,27 @@ def render_summary_view(
                                      hide_index=True, use_container_width=True)
 
         # Summary table: top 20 by util_total
-        _tbl_cols = ["brand","building","floor","water_total","hw_total","elec_total","heat_total","util_total"]
-        _tbl = merged[_tbl_cols].head(20).copy()
-        _tbl["water_total"] = _tbl["water_total"].apply(lambda v: f"{v:,.0f}")
-        _tbl["hw_total"]    = _tbl["hw_total"].apply(lambda v: f"{v:,.0f}")
-        _tbl["elec_total"]  = _tbl["elec_total"].apply(lambda v: f"{v:,.0f}")
-        _tbl["heat_total"]  = _tbl["heat_total"].apply(lambda v: f"{v:,.0f}")
-        _tbl["util_total"]  = _tbl["util_total"].apply(lambda v: f"{v:,.0f}")
-        _tbl = _tbl.rename(columns={"brand":"브랜드","building":"건물","floor":"층",
-                                     "water_total":"수도 (원)","hw_total":"온수 (원)",
-                                     "elec_total":"전기 (원)","heat_total":"난방 (원)","util_total":"합계 (원)"})
-        st.dataframe(
-            _tbl,
-            column_config={
-                "브랜드": st.column_config.TextColumn("브랜드"),
-                "건물":   st.column_config.TextColumn("건물", width="small"),
-                "층":     st.column_config.TextColumn("층", width="small"),
-            },
-            use_container_width=True,
-            hide_index=True,
-        )
+        with st.expander("📋 브랜드별 비용 상세", expanded=False):
+            _tbl_cols = ["brand","building","floor","water_total","hw_total","elec_total","heat_total","util_total"]
+            _tbl = merged[_tbl_cols].head(20).copy()
+            _tbl["water_total"] = _tbl["water_total"].apply(lambda v: f"{v:,.0f}")
+            _tbl["hw_total"]    = _tbl["hw_total"].apply(lambda v: f"{v:,.0f}")
+            _tbl["elec_total"]  = _tbl["elec_total"].apply(lambda v: f"{v:,.0f}")
+            _tbl["heat_total"]  = _tbl["heat_total"].apply(lambda v: f"{v:,.0f}")
+            _tbl["util_total"]  = _tbl["util_total"].apply(lambda v: f"{v:,.0f}")
+            _tbl = _tbl.rename(columns={"brand":"브랜드","building":"건물","floor":"층",
+                                         "water_total":"수도 (원)","hw_total":"온수 (원)",
+                                         "elec_total":"전기 (원)","heat_total":"난방 (원)","util_total":"합계 (원)"})
+            st.dataframe(
+                _tbl,
+                column_config={
+                    "브랜드": st.column_config.TextColumn("브랜드"),
+                    "건물":   st.column_config.TextColumn("건물", width="small"),
+                    "층":     st.column_config.TextColumn("층", width="small"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
     # 경영 보고 moved to tab_mgmt.py (rendered in 점검대상 tab)
