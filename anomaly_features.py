@@ -53,7 +53,8 @@ import pandas as pd
 from cross_features import build_unit_costs, build_elec_breakdown
 from data import to_numeric_series
 from utils import (
-    zscore as _zscore, iqr_upper as _iqr_upper, z_to_grade as _ztg,
+    zscore as _zscore, mad_zscore as _mad_zscore,
+    iqr_upper as _iqr_upper, z_to_grade as _ztg,
     UTIL_PREFIXES as _UTIL_PREFIXES_TUPLE, UTIL_LABELS as _UTIL_LABELS,
     RISK_DANGER, RISK_CAUTION, RISK_OBSERVE, RISK_NORMAL,
 )
@@ -141,6 +142,7 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
     for pfx in _UTIL_PREFIXES:
         pct_col = f"{pfx}_pct"
         chg_col = f"{pfx}_change"
+        prev_col = f"{pfx}_previous"
         out_col = f"{pfx}_spike_pct"
 
         if pct_col not in df.columns:
@@ -148,6 +150,15 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
 
         p = to_numeric_series(df[pct_col])   # % change (can be NaN for new tenants)
         c = to_numeric_series(df[chg_col]) if chg_col in df.columns else pd.Series(np.nan, index=df.index)
+
+        # First-appearance detection: previous value missing entirely.
+        # Distinguishes "new tenant / new meter" (previous=NaN) from
+        # "zero-base growth" (previous=0, pct=NaN from div-by-zero).
+        if prev_col in df.columns:
+            is_new_util = to_numeric_series(df[prev_col]).isna()
+        else:
+            is_new_util = pd.Series(False, index=df.index)
+        out[f"{pfx}_is_new"] = is_new_util
 
         out[out_col] = p.round(1)   # store raw (signed) for display
         per_util_pcts[pfx] = p
@@ -206,6 +217,12 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
             # No building info — fall back to raw absolute scoring
             util_score = raw_util_score
 
+        # Suppress first-appearance spikes: a brand that did not exist in
+        # the previous file has no baseline, so any non-zero "change" is
+        # noise from tenant turnover, not a billing anomaly. Set the
+        # contribution to exactly 0.0, not the sigmoid floor.
+        util_score = util_score.where(~is_new_util, 0.0).round(4)
+
         spike_scores.append(util_score.rename(out_col))
 
     if spike_scores:
@@ -233,6 +250,14 @@ def _add_spike_signals(df: pd.DataFrame) -> pd.DataFrame:
         out["spike_score"]     = 0.0
         out["spike_max_pct"]   = 0.0
         out["spike_worst_util"] = ""
+
+    # Row-level first-appearance flag: all tracked utilities are first-appearance.
+    new_flag_cols = [f"{pfx}_is_new" for pfx in _UTIL_PREFIXES
+                     if f"{pfx}_is_new" in out.columns]
+    if new_flag_cols:
+        out["is_new_tenant"] = out[new_flag_cols].all(axis=1)
+    else:
+        out["is_new_tenant"] = False
 
     return out
 
@@ -394,7 +419,10 @@ def _add_hvac_signals(df: pd.DataFrame, elec_df: pd.DataFrame) -> pd.DataFrame:
 
     if "hvac_intensity" in merged.columns:
         hi_s = to_numeric_series(merged["hvac_intensity"]).fillna(0)
-        z = _zscore(hi_s)
+        # MAD-based z is skew-resistant: a single outlier HVAC tenant
+        # no longer distorts the median/MAD and collapses other tenants
+        # toward 0.
+        z = _mad_zscore(hi_s)
         merged["hvac_intensity_z"] = z
         merged["hvac_score"] = _z_to_score(z)
     else:
@@ -556,8 +584,14 @@ def build_anomaly_df(
     available_dims = {}
     _cost_avail = df["_cost_available"].any() if "_cost_available" in df.columns else True
     _hvac_avail = df["_hvac_available"].any() if "_hvac_available" in df.columns else True
-    # Spike is unavailable when no MoM change columns exist (single-file upload)
-    _spike_avail = df["spike_score"].gt(0).any() if "spike_score" in df.columns else False
+    # Structural availability: does MoM data actually exist in the input?
+    # This is NOT "did any brand score above zero" — a calm month with valid
+    # MoM data but no spikes must still count spike weight, or a normal month
+    # silently redistributes the entire 40% spike weight to other dimensions.
+    _spike_avail = any(
+        f"{pfx}_pct" in df.columns and df[f"{pfx}_pct"].notna().any()
+        for pfx in _UTIL_PREFIXES
+    )
     # Consumption quadrants need change columns too
     _consumption_avail = any(
         f"{pfx}_change" in df.columns and df[f"{pfx}_change"].notna().any()

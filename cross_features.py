@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from data import to_numeric_series
-from utils import zscore as _zscore
+from utils import mad_zscore as _zscore
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

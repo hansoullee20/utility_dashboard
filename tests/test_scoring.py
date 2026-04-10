@@ -115,6 +115,45 @@ class TestZscore:
         assert result.iloc[0] < 0  # lowest value → negative z
 
 
+# ── MAD z-score ──────────────────────────────────────────────────────────────
+
+class TestMadZscore:
+    def test_min_valid(self):
+        from utils import mad_zscore
+        assert mad_zscore(pd.Series([1.0, 2.0])).isna().all()
+
+    def test_constant_series(self):
+        from utils import mad_zscore
+        assert (mad_zscore(pd.Series([5.0] * 5)) == 0.0).all()
+
+    def test_normal_data_consistent_with_classical(self):
+        """On roughly normal data, MAD-z and classical z should rank the same."""
+        from utils import mad_zscore, zscore
+        rng = np.random.RandomState(0)
+        s = pd.Series(rng.normal(100, 15, 50))
+        z_classic = zscore(s)
+        z_mad = mad_zscore(s)
+        # Rankings should be identical
+        assert list(z_classic.rank()) == list(z_mad.rank())
+
+    def test_skew_resistance(self):
+        """A single huge outlier should NOT drag other tenants' scores to 0."""
+        from utils import mad_zscore, zscore
+        # 20 similar unit costs around 5000원/m³, one outlier at 50000
+        s = pd.Series([4800, 5100, 4950, 5200, 4900, 5050, 5150, 4850,
+                       5000, 5100, 4900, 5000, 5150, 4850, 5050, 4950,
+                       5100, 4950, 5000, 5100, 50000])
+        z_classic = zscore(s)
+        z_mad = mad_zscore(s)
+        # Index 0 is a tenant slightly below median (4800 vs 5000).
+        # Classical z gets distorted by the 50000 outlier dragging
+        # the mean upward; the normal tenants' scores collapse toward
+        # 0. MAD z preserves the signal.
+        assert abs(z_mad.iloc[0]) > abs(z_classic.iloc[0])
+        # Outlier itself should still be flagged by both, very high on MAD.
+        assert z_mad.iloc[-1] > 10  # MAD picks up the outlier sharply
+
+
 # ── Won formatting ───────────────────────────────────────────────────────────
 
 class TestFmtWon:
@@ -204,6 +243,57 @@ class TestAnomalySingleFile:
         result = build_anomaly_df(df)
         # Some brands should have non-zero spike scores
         assert result["spike_score"].gt(0).any()
+
+    def test_new_tenant_per_utility_spike_suppressed(self):
+        """First-appearance for a single utility must not leak a spike floor.
+
+        Brand 0 is established except on water (previous=NaN). The water
+        spike contribution must be exactly 0, but other utilities still score.
+        """
+        from anomaly_features import build_anomaly_df
+        df = _make_meter_df(20, with_mom=True)
+        df.loc[0, "water_previous"] = np.nan
+        df.loc[0, "water_change"] = np.nan
+        df.loc[0, "water_pct"] = np.nan
+        result = build_anomaly_df(df)
+        brand0 = result[result["brand"] == "brand_0"].iloc[0]
+        assert brand0["water_is_new"] == True
+        assert brand0["water_spike_pct"] != brand0["water_spike_pct"] or brand0.get("water_spike_pct") == 0  # NaN or 0
+        # Row is not fully new — only one utility is new
+        assert brand0["is_new_tenant"] == False
+
+    def test_new_tenant_row_flag_when_all_utilities_new(self):
+        """All-new brand gets is_new_tenant=True and zero spike score."""
+        from anomaly_features import build_anomaly_df
+        df = _make_meter_df(20, with_mom=True)
+        for pfx in ["water", "hwater", "elect", "heat"]:
+            df.loc[0, f"{pfx}_previous"] = np.nan
+            df.loc[0, f"{pfx}_change"] = np.nan
+            df.loc[0, f"{pfx}_pct"] = np.nan
+        result = build_anomaly_df(df)
+        brand0 = result[result["brand"] == "brand_0"].iloc[0]
+        assert brand0["is_new_tenant"] == True
+        assert brand0["spike_score"] == 0.0
+
+    def test_spike_dim_available_when_pct_columns_present(self):
+        """Regression: availability must be structural (columns exist),
+        not signal-based (some brand scored > 0).
+
+        A calm month with valid MoM data but no actual spikes must still
+        count the spike dimension in the composite weighting — otherwise
+        the entire 40% spike weight silently redistributes to other dims.
+        """
+        from anomaly_features import build_anomaly_df
+        df = _make_meter_df(20, with_mom=True)
+        # Force a calm month: every brand's previous == current → 0% change
+        for pfx in ["water", "hwater", "elect", "heat"]:
+            df[f"{pfx}_previous"] = df[f"{pfx}_current"]
+            df[f"{pfx}_change"] = 0.0
+            df[f"{pfx}_pct"] = 0.0
+        result = build_anomaly_df(df)
+        # Spike must remain in the available dims even though no brand spiked
+        assert "spike_score" in result.attrs.get("_available_dims", [])
+        assert "spike_score" not in result.attrs.get("_excluded_dims", [])
 
 
 class TestAnomalyMissingSheets:

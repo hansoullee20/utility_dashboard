@@ -215,6 +215,27 @@ def zscore(s: pd.Series, min_valid: int = 3, decimals: int = 3) -> pd.Series:
     return ((s - mu) / sigma).round(decimals)
 
 
+def mad_zscore(s: pd.Series, min_valid: int = 3, decimals: int = 3) -> pd.Series:
+    """MAD-based robust z-score — resistant to skew and outliers.
+
+    Uses median + MAD (median absolute deviation) with the 1.4826 scaling
+    factor so that, for normally distributed data, the output is
+    consistent with classical z-scores. For skewed distributions like
+    unit costs (원/m², 원/m³, 원/KWH) a single outlier tenant no longer
+    distorts the mean/std and collapses other tenants' scores toward 0.
+
+    Falls back to 0.0 when MAD is degenerate (all values identical).
+    """
+    valid = s.dropna()
+    if len(valid) < min_valid:
+        return pd.Series(np.nan, index=s.index)
+    med = valid.median()
+    mad = (valid - med).abs().median()
+    if mad < 1e-9:
+        return pd.Series(0.0, index=s.index)
+    return ((s - med) / (1.4826 * mad)).round(decimals)
+
+
 def iqr_upper(s: pd.Series) -> float:
     s = s.dropna()
     s = s[s > 0]
