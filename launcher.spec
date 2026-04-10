@@ -8,7 +8,7 @@ st_datas, st_binaries, st_hiddenimports = collect_all('streamlit')
 altair_datas, altair_binaries, altair_hiddenimports = collect_all('altair')
 sac_datas, sac_binaries, sac_hiddenimports = collect_all('streamlit_antd_components')
 
-root = Path(__file__).resolve().parent
+root = Path(SPECPATH).resolve()
 app_datas = [(str(path), '.') for path in root.glob('*.py')]
 app_datas += [
     (str(path), '.')
